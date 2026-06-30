@@ -93,6 +93,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `npm run build` — clean.
 - Project initialized as a git repo on `main` with two commits: "Initial commit: Intent IDE v8.2 + model/API refresh (Wave 1)" and "Waves 2-3: swarm agents, skills, and in-IDE multi-region agent edits". Private GitHub push pending the user rotating a key committed in `.env`.
 
+## [2026-06-29] v8.3 — Wave 3 Refinements: Reviewable Multi-Region Edits
+
+Multi-region proposed edits are now genuinely reviewable instead of all-or-nothing / bypassing the commit modal. All three surfaces share ONE source of truth: the `proposedChangePlugin` per-edit status (`setProposedEditStatus` / `getProposedAnchors`). The commit modal is authoritative at apply time.
+
+### Added
+- **`src/components/Editor/ProposedEditControl.tsx` + `src/stores/proposedEditUiStore.ts`:** Inline floating Accept/Reject control rendered on each called-out region. Status-only — actual document mutation is deferred to the batched apply.
+- **`src/components/Annotations/CascadeList.tsx`:** Navigable cascade review list ("affects N sections") with click-to-scroll and per-row Accept/Reject. Rendered in `AnnotationCard.tsx`, replacing the throwaway cascade toasts.
+
+### Changed
+- **`src/lib/prosemirror/plugins/proposedChangePlugin.ts`:** Gained `handleDOMEvents`. `buildDecorations` now skips rejected regions and greys accepted ones (`proposed-accepted` class).
+- **`src/components/Editor/SemanticCommitModal.tsx`:** Now renders per-change Accept/Reject toggles when there is >1 change, exposes `onConfirm(acceptedIds: string[])`, and seeds `initialRejected` from the live plugin status.
+- **`src/components/Annotations/ResolutionActions.tsx`:** Routes the multi-edit case through `SemanticCommitModal` (the direct-apply bypass is removed) and applies only the accepted subset via `applyProposedEdits(view, acceptedIds)`.
+- **`src/components/Annotations/AnnotationCard.tsx`:** Owns the decoration review lifecycle — `useEffect` shows proposed-edit decorations while the card is active + `status==='resolved'` + `edits.length>1`, and clears them on apply / dismiss / deactivate. Renders `CascadeList`.
+
+### Fixed (Troublemaker review before commit)
+- **Stale "Pending" after apply:** `CascadeList` (and the decorations) are gated on `status==='resolved'`, not on activity alone.
+- **Inconsistent change-entry old range:** Multi-region change-entry now records the consistent old range (`ap.to`).
+- **Two-click decoration switch / accidental dismiss:** Inline control switches decorations in one click; outside-click handlers ignore `[data-proposed-edit-id]` so clicking a region's own control does not dismiss it.
+- **Empty acceptance:** Defensive guard for an empty `acceptedIds` set on apply.
+- Troublemaker confirmed the two headline risks — source-of-truth divergence and an anchor-read-before-clear race — are NOT bugs.
+
+### Verification
+- `npm run typecheck` — 0 errors.
+- `npm run test` — 194 passing.
+- `npm run build` — clean.
+- Committed and pushed to private GitHub `Vinylfigure/intent-ide` `main` ("Wave 3 refinements: reviewable multi-region edits"); 3 commits on `origin/main`. The `.env` key that reached history is now in the private remote and still needs rotation.
+
 ## [2026-03-16] Phase 14 — Bug Fixes and UX Hardening
 
 ### Added

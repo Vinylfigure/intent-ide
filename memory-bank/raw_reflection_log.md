@@ -7,6 +7,30 @@ This file contains detailed, timestamped, and task-referenced raw entries from t
 ---
 
 Date: 2026-06-29
+TaskRef: "v8.3 Wave 3 Refinements — Reviewable Multi-Region Edits"
+Learnings:
+- **One source of truth + a single authoritative writer beats syncing three UIs:** Inline per-region controls, the multi-diff commit modal, and the cascade list all needed to agree on which edits are accepted/rejected. The clean design was to keep per-edit status in exactly one place (the `proposedChangePlugin` via `setProposedEditStatus`/`getProposedAnchors`) and have every surface READ it, while only the commit modal WRITES the final decision at apply time (`applyProposedEdits(view, acceptedIds)`). The inline and list controls are status-only and defer mutation to the batched apply. This avoids the classic three-way-sync bug where each surface holds its own copy and they drift. Troublemaker specifically probed "source-of-truth divergence" and confirmed it is not a bug precisely because there is only one writer.
+- **Removing a bypass is as important as adding the gate:** The previous multi-edit path direct-applied and skipped `SemanticCommitModal` entirely — the modal existed but was bypassed for the >1-edit case. Routing the multi-edit case through the modal (and applying only the accepted subset) is what actually closes the HITL gate for multi-region edits. A gate that some paths route around is not a gate.
+- **CascadeList-staleness lesson — gate review UI on resolution status, not on activity:** The cascade list initially showed stale "Pending" rows after an apply because it was gated on the card being active rather than on `status==='resolved'`. Derived review surfaces must be gated on the authoritative lifecycle status, and the owning component (`AnnotationCard`) must explicitly clear decorations on apply/dismiss/deactivate. "It looked applied but the list still said Pending" is the symptom of gating on the wrong signal.
+- **Outside-click dismissal must whitelist the control's own DOM:** Clicking a region's inline Accept/Reject was being treated as an outside-click and dismissing the very control being clicked. Ignoring `[data-proposed-edit-id]` in the outside-click handler fixed the one-click switch. Any floating control with an outside-click-to-dismiss needs an explicit allowlist for its own trigger surface.
+- **Record a consistent old range for multi-region change entries:** Multi-region edits must log the same anchor basis (`ap.to`) for the "old" range so the change log and audit stay coherent across regions applied in one transaction.
+- **Anchor-read-before-clear race is safe when reads precede the clear:** Troublemaker flagged a potential race between reading anchors for apply and clearing decorations; confirmed not a bug because the accepted anchors are read before decorations are cleared within the same apply flow.
+Difficulties:
+- The subtlety was entirely in ordering and ownership, not in any single component: which surface owns status, which owns the decoration lifecycle, and when decorations clear. Getting `AnnotationCard` to own the lifecycle (show on active + resolved + >1 edit; clear on apply/dismiss/deactivate) was the linchpin.
+Successes:
+- Multi-region edits are now genuinely reviewable across three coherent surfaces with no drift.
+- The HITL gate is fully satisfied for multi-region edits (no direct-apply bypass remains).
+- `npm run typecheck` 0 errors, `npm run test` 194 passing, `npm run build` clean.
+- Committed and pushed to private `Vinylfigure/intent-ide` `main` (3 commits on `origin/main`).
+Improvements_Identified_For_Consolidation:
+- "One source of truth, one authoritative writer, many readers" is the reusable pattern for any feature where multiple UIs edit the same set of pending decisions. Promote to consolidated_learnings.
+- Derived/review UIs must gate on the authoritative lifecycle status (`status==='resolved'`), and the owning component must explicitly clear derived decorations on terminal transitions — otherwise stale state lingers.
+- Floating controls with outside-click-to-dismiss need an allowlist (`[data-proposed-edit-id]` here) for their own trigger DOM.
+- Optional next polish: write accept/reject toggles inside the modal back to the plugin status so all surfaces stay live-synced even before apply (currently the modal is authoritative only at apply).
+- A pushed secret is not the same as a rotated secret: the code is on private `origin/main`, but the `.env` key now lives in remote history and still requires rotation. Privacy mitigates, it does not resolve.
+---
+
+Date: 2026-06-29
 TaskRef: "v8.3 — Model/API Refresh + In-IDE Multi-Region Agent Edits (Waves 1-3)"
 Learnings:
 - **The model bump's real failure was sampling params, not the model IDs:** Newer Claude models (opus-4-7, opus-4-8, fable-5, mythos) return HTTP 400 when sent sampling params like `temperature`. The agent calls were failing not because of wrong model names but because every route unconditionally attached `temperature`. Centralizing this in `modelRejectsSampling()` (`modelCapabilities.ts`) and omitting the param across `/api/resolve`, `/api/classify`, and `/api/generate` was the actual fix. Lesson: when an API starts 400ing after a model swap, suspect request-shape/param compatibility before suspecting the model identifier.

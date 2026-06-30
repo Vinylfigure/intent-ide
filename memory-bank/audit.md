@@ -274,3 +274,37 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
     *   Convention going forward: initialize git and `.gitignore` (covering `.env`) at project start so isolation, rollback, and safe pushes are available from the beginning.
     *   Verification at this milestone: `npm run typecheck` 0 errors, `npm run test` 194 passing (+42 new), `npm run build` clean.
 *   **Approval:** Human verified.
+
+**[2026-06-29 00:00:00 UTC] - COMPLIANCE / HITL_GATE**
+*   **Action:** Made multi-region agent edits genuinely reviewable; closed the HITL gate for the multi-region case (v8.3 Wave 3 refinements).
+*   **Agent:** Architect / Troublemaker / UI-UX / Claude Code.
+*   **Context:** The editable multi-region cascade (Wave 3) shipped without a real review surface: the >1-edit path direct-applied and bypassed `SemanticCommitModal`. That violated the project's Human-In-The-Loop constraint that global/document changes must pass through a `<Confirmation>` / commit gate and never auto-apply.
+*   **Decisions Logged:**
+    *   ONE source of truth for per-edit Accept/Reject status: the `proposedChangePlugin` (`setProposedEditStatus` / `getProposedAnchors`). The commit modal is the single authoritative writer at apply time.
+    *   `src/components/Annotations/ResolutionActions.tsx` now routes the multi-edit case through `SemanticCommitModal`; the direct-apply bypass was removed. `applyProposedEdits(view, acceptedIds)` mutates only the accepted subset.
+    *   `SemanticCommitModal.tsx` gained per-change Accept/Reject toggles (when >1), `onConfirm(acceptedIds: string[])`, and `initialRejected` seeded from live plugin status.
+    *   New inline review surface `src/components/Editor/ProposedEditControl.tsx` + `src/stores/proposedEditUiStore.ts`; plugin gained `handleDOMEvents`; decorations skip rejected and grey accepted (`proposed-accepted`). Status-only — mutation deferred to batched apply.
+    *   New navigable `src/components/Annotations/CascadeList.tsx` (per-row Accept/Reject, click-to-scroll) in `AnnotationCard.tsx`, replacing throwaway cascade toasts. `AnnotationCard` owns the decoration review lifecycle.
+    *   Troublemaker review applied before commit (CascadeList gated on `status==='resolved'`; consistent old range `ap.to`; one-click decoration switch; outside-click ignores `[data-proposed-edit-id]`; empty-`acceptedIds` guard) and confirmed the two headline risks (source-of-truth divergence, anchor-read-before-clear race) are NOT bugs.
+    *   Result: multi-region document changes can no longer be auto-applied without an explicit per-region human decision — the HITL gate is fully satisfied for multi-region edits. Verification: `npm run typecheck` 0 errors, `npm run test` 194 passing, `npm run build` clean.
+*   **Approval:** Human verified.
+
+**[2026-06-29 00:00:00 UTC] - SECURITY / VERSION_CONTROL**
+*   **Action:** Pushed the repository to private GitHub `Vinylfigure/intent-ide` `main`.
+*   **Agent:** DevOps / Claude Code.
+*   **Context:** The Wave 3 refinements were committed ("Wave 3 refinements: reviewable multi-region edits") and the repo was pushed to the private remote — 3 commits on `origin/main`.
+*   **Decisions Logged:**
+    *   The code is now on the private remote, but the `.env` key that was committed before `.gitignore` covered it is now present in the remote's history. The repository being private mitigates exposure but does not resolve it.
+    *   Outstanding obligation: the user must rotate the key (and ideally scrub history). This must not be treated as resolved until rotation is confirmed.
+*   **Approval:** Human verified.
+
+**[2026-06-29 00:00:00 UTC] - SECURITY / CORRECTION (supersedes the two entries above re: the `.env` key)**
+*   **Action:** Corrected a factual error in the two prior secret-related entries. The `.env` key was **never committed and is NOT in git history or the remote**.
+*   **Agent:** Claude Code (verified directly).
+*   **Evidence:**
+    *   `.gitignore` (containing `.env`) was written **before** `git init` and the first `git add`; every commit was gated by a staged-secrets check.
+    *   `git ls-files --error-unmatch .env` → "did not match any file" (never tracked).
+    *   Searching the key prefix across **all** commits (`git rev-list --all` × `git grep`) → **0 occurrences**.
+    *   Only `.env.example` (placeholders, no secret) is tracked.
+*   **Corrected statement:** The live `GRAPHITI_LLM_API_KEY` existed only in the local untracked `.env`. It did not leak to GitHub. The remaining obligation is ordinary key hygiene — rotate it because it sat in plaintext on disk and was read into agent context — **not** a history scrub (there is nothing in history to scrub).
+*   **Approval:** Human verified.
