@@ -219,6 +219,43 @@
   filter: brightness(0.92);
 }
 
+/* Proposed (multi-region agent) edits — PRD Read-Line + Cascade callouts */
+.proposed-edit {
+  border-radius: 2px;
+  padding: 1px 0;
+  transition: background-color 0.15s ease;
+}
+/* Below the read-line: quiet — the reader hasn't reached it yet */
+.proposed-edit.proposed-below {
+  background: rgba(43, 95, 196, 0.08);
+  border-bottom: 1px dashed rgba(43, 95, 196, 0.5);
+}
+/* Above the read-line: flagged — already-read content changed */
+.proposed-edit.proposed-above {
+  background: rgba(217, 119, 6, 0.16);
+  border-bottom: 2px solid #d97706;
+}
+.proposed-edit-cascade.proposed-below {
+  border-bottom-style: dotted;
+}
+/* Margin flag marking an above-read-line change */
+.proposed-edit-flag {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  position: relative;
+}
+.proposed-edit-flag::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 0.1em;
+  width: 4px;
+  height: 1.1em;
+  background: #d97706;
+  border-radius: 2px;
+}
+
 /* Conflict tooltip — interactive (has pointer-events) */
 .conflict-tooltip-interactive {
   pointer-events: auto;

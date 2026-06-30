@@ -21,6 +21,12 @@ description: Run typecheck, lint, and tests for Intent IDE. Fixes any failures f
 
 5. After all three commands pass, report the results.
 
+6. After a wave or significant change passes, also run the `qa` agent (edge/boundary suites) and the `troublemaker` agent (adversarial review). Don't wait to be asked.
+
+## Current Model IDs
+
+If a test or fixture stubs an LLM model identifier, use a current ID: `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`, or `claude-fable-5`. Replace any stale/legacy model names.
+
 ## Rules
 
 - Always run in the order: typecheck, lint, test. Type errors must be resolved first.

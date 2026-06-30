@@ -10,6 +10,7 @@ import { createReadLinePlugin } from './readLinePlugin'
 import { createContextMenuPlugin } from './contextMenuPlugin'
 import { createConflictPlugin } from './conflictPlugin'
 import { createUncertaintyPlugin } from './uncertaintyPlugin'
+import { createProposedChangePlugin } from './proposedChangePlugin'
 
 export function createPlugins(): Plugin[] {
   return [
@@ -24,6 +25,7 @@ export function createPlugins(): Plugin[] {
     createAnnotationPlugin(),
     createConflictPlugin(),
     createUncertaintyPlugin(),
+    createProposedChangePlugin(),
     createFocusInferencePlugin(),
     createChangeTrackingPlugin(),
     createReadLinePlugin(),

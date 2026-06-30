@@ -71,6 +71,13 @@ export interface Resolution {
   type: AnnotationType
   content: string
   suggestedEdit: SuggestedEdit | null
+  /**
+   * Multi-region proposals from one agent run (PRD Read-Line + Cascade model).
+   * When present, supersedes `suggestedEdit` (a single suggested edit is mirrored
+   * here as a one-element `primary` edit). above/below the read-line is derived at
+   * render time from each edit's `from`, not stored here.
+   */
+  edits?: ProposedEdit[]
   actions: ResolutionAction[]
   /** Audit trail ID for EU AI Act compliance (set after async logging) */
   auditId?: string
@@ -82,6 +89,8 @@ export interface Resolution {
   provocation?: string | null
   /** Whether this resolution came from MADS (multi-agent debate) — indicates higher-risk edit */
   usedMADS?: boolean
+  /** Set when the compliance audit-log write failed, so the UI can flag incomplete coverage */
+  auditFailed?: boolean
 }
 
 export interface SuggestedEdit {
@@ -89,6 +98,30 @@ export interface SuggestedEdit {
   to: number
   newText: string
   reason: string
+}
+
+/** Whether a proposed edit is the annotation's own change or a downstream cascade. */
+export type ProposedEditRelation = 'primary' | 'cascade'
+
+/** Per-edit review state within a multi-region resolution. */
+export type ProposedEditStatus = 'pending' | 'accepted' | 'rejected'
+
+/**
+ * One reviewable change in a multi-region resolution. `from`/`to` are the
+ * positions captured at proposal time; because the doc can change before the
+ * user accepts, apply-time code re-resolves the range and validates it against
+ * `targetText` (fingerprint match) before mutating — never apply a stale range.
+ */
+export interface ProposedEdit {
+  id: string
+  from: number
+  to: number
+  newText: string
+  reason: string
+  relation: ProposedEditRelation
+  status: ProposedEditStatus
+  /** Text the edit expects to replace; used for apply-time validation. */
+  targetText: string
 }
 
 export interface ResolutionAction {

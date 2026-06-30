@@ -23,6 +23,16 @@ description: Build an entire implementation wave from the Intent IDE plan. Reads
 
 6. After completing the entire wave, do a final verification with typecheck.
 
+7. After the wave verifies clean, run the review agents — **`qa`** (edge/boundary tests) and **`troublemaker`** (adversarial review) — before declaring the wave done. Do this even if not explicitly asked. Then hand off to `code-librarian` to update the memory bank.
+
+## Current Model IDs (BYOK defaults)
+
+When a wave wires up or references LLM model identifiers, use the current IDs:
+- `claude-opus-4-8` — deepest reasoning / complex multi-region work
+- `claude-sonnet-4-6` — default balanced model
+- `claude-haiku-4-5` — fast / cheap classification and lightweight calls
+- `claude-fable-5` — narrative / long-form drafting
+
 ## Key Conventions
 
 - Use `@/` import aliases for all project imports.

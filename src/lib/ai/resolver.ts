@@ -1,6 +1,6 @@
 import { EditorState } from 'prosemirror-state'
 import { RESOLVER_SYSTEM_PROMPT, TYPE_PROMPTS, CONTEXT_COMPRESSION_PROMPT } from './prompts'
-import { useSettingsStore } from '@/stores/settingsStore'
+import { useSettingsStore, type LLMConfig } from '@/stores/settingsStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useAgentConfigStore } from '@/stores/agentConfigStore'
 import { useAnnotationStore } from '@/stores/annotationStore'
@@ -8,6 +8,7 @@ import { useChangesStore } from '@/stores/changesStore'
 import { getBlockText, getSectionText } from '@/lib/prosemirror/helpers'
 import { runMADS } from './mads'
 import { logResolutionAudit } from '@/lib/audit/auditLogger'
+import { primaryProposedEdit, proposeCascadeEdits } from './orchestrator'
 import { getDefaultVerbosity } from '@/lib/annotations/types'
 import type { Annotation, ConversationMessage, Resolution, ResolutionAction, SuggestedEdit, Scope, Verbosity } from '@/lib/annotations/types'
 import { generateId } from '@/lib/utils/id'
@@ -106,6 +107,31 @@ function parseSuggestedEdit(content: string, annotation: Annotation): SuggestedE
   return null
 }
 
+/**
+ * Populate resolution.edits with the primary edit plus cascade proposals
+ * (PRD Read-Line + Cascade). Best-effort: cascade failures leave just the
+ * primary edit, never block the resolution.
+ */
+async function attachCascadeEdits(
+  resolution: Resolution,
+  editorState: EditorState,
+  config: LLMConfig,
+  anchorText: string,
+): Promise<void> {
+  if (!resolution.suggestedEdit) return
+  const primary = primaryProposedEdit(resolution.suggestedEdit, anchorText)
+  const docText = editorState.doc
+    .textBetween(0, editorState.doc.content.size, '\n')
+    .slice(0, 6000)
+  const cascades = await proposeCascadeEdits(
+    editorState,
+    resolution.suggestedEdit,
+    docText,
+    config,
+  )
+  resolution.edits = [primary, ...cascades]
+}
+
 export async function resolveAnnotation(
   annotation: Annotation,
   editorState: EditorState,
@@ -139,11 +165,17 @@ export async function resolveAnnotation(
           madsResult.resolution.auditId = auditId
           useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
         }
+      }).catch((e) => {
+        // EU AI Act ledger write failed — surface incomplete coverage, don't drop silently
+        console.error('Audit log failed (MADS)', e)
+        madsResult.resolution.auditFailed = true
       })
       // Pass MADS uncertainty flags for visualization (Claude fallback)
       if (madsResult.uncertaintyFlags.length > 0) {
         madsResult.resolution.uncertaintyFlags = madsResult.uncertaintyFlags
       }
+      // Attach multi-region cascade edits (best-effort)
+      await attachCascadeEdits(madsResult.resolution, editorState, config, annotation.anchor.text)
       return madsResult.resolution
     }
   } catch {
@@ -239,7 +271,14 @@ ${annotation.type === 'edit'
         resolution.auditId = auditId
         useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
       }
+    }).catch((e) => {
+      // EU AI Act ledger write failed — surface incomplete coverage, don't drop silently
+      console.error('Audit log failed (single-agent)', e)
+      resolution.auditFailed = true
     })
+
+    // Attach multi-region cascade edits (best-effort)
+    await attachCascadeEdits(resolution, editorState, config, annotation.anchor.text)
 
     return resolution
   } catch (err) {
@@ -432,7 +471,14 @@ ${annotation.type === 'edit'
         resolution.auditId = auditId
         useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
       }
+    }).catch((e) => {
+      // EU AI Act ledger write failed — surface incomplete coverage, don't drop silently
+      console.error('Audit log failed (single-agent)', e)
+      resolution.auditFailed = true
     })
+
+    // Attach multi-region cascade edits (best-effort)
+    await attachCascadeEdits(resolution, editorState, config, annotation.anchor.text)
 
     return resolution
   } catch (err) {

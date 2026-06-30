@@ -12,6 +12,8 @@ import { runCascadeCheck } from '@/lib/graphrag/cascadeCheck'
 import { ingestAnnotationEpisode, ingestEditEpisode } from '@/lib/graphrag/episodeIngestion'
 import { recordHumanDecision, handlerToApprovalAction } from '@/lib/audit/approvalGate'
 import { applyUncertaintyFromLogprobs, applyUncertaintyFromFlags } from '@/lib/ai/uncertainty'
+import { setProposedEdits, clearProposedEdits } from '@/lib/prosemirror/plugins/proposedChangePlugin'
+import { applyProposedEdits } from '@/lib/prosemirror/applyProposedEdits'
 import { SemanticCommitModal } from '@/components/Editor/SemanticCommitModal'
 import type { Annotation, ConversationMessage } from '@/lib/annotations/types'
 
@@ -81,6 +83,49 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   }
 
   const applyConfirmedEdit = () => {
+    // Multi-region path: a cascade run produced several proposed edits. Apply them
+    // all in one validated transaction (PRD Read-Line + Cascade). Single-edit
+    // resolutions fall through to the original path below (preserving uncertainty).
+    const proposed = annotation.resolution?.edits
+    if (proposed && proposed.length > 1 && view) {
+      setProposedEdits(view, proposed)
+      const result = applyProposedEdits(view, proposed.map((e) => e.id))
+      clearProposedEdits(view)
+      if (!result.ok) {
+        useToastStore.getState().addToast(result.reason, 'error')
+        setShowDiffModal(false)
+        setPendingHandler(null)
+        return
+      }
+      for (const ap of result.applied) {
+        useChangesStore.getState().addEntry({
+          id: generateId(),
+          documentId: annotation.documentId,
+          rootAnnotationId,
+          annotationId: annotation.id,
+          timestamp: Date.now(),
+          description: `${annotation.type} (multi-region): ${annotation.transcript.slice(0, 50)}`,
+          beforeSlice: ap.targetText,
+          afterSlice: ap.newText,
+          from: ap.from,
+          to: ap.from + ap.newText.length,
+          pmStep: null,
+          undone: false,
+        })
+      }
+      if (changeSetId) {
+        useChangesStore.getState().updateChangeSetStatus(changeSetId, 'approved')
+      }
+      updateAnnotation(annotation.id, { status: 'applied' })
+      useToastStore.getState().addToast(
+        `Applied ${result.applied.length} change${result.applied.length > 1 ? 's' : ''}`,
+        'success',
+      )
+      setShowDiffModal(false)
+      setPendingHandler(null)
+      return
+    }
+
     const edit = annotation.resolution?.suggestedEdit
     if (!edit || !view) return
 
