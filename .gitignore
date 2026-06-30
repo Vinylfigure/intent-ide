@@ -1,0 +1,17 @@
+node_modules/
+.next/
+out/
+.env
+.env.local
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+
+/src/generated/prisma
+
+# SQLite (audit ledger / compliance data — never commit)
+*.db
+*.db-journal
+dev.db
+prisma/dev.db
+prisma/dev.db-journal

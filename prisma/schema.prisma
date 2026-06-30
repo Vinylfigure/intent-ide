@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model DocumentSource {
+  id          String       @id @default(cuid())
+  content     String
+  version     Int          @default(1)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  annotations Annotation[]
+}
+
+model Annotation {
+  id          String        @id @default(cuid())
+  sourceId    String
+  source      DocumentSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  transcript  String
+  intentType  String
+  scopeStart  Int
+  scopeEnd    Int
+  createdAt   DateTime      @default(now())
+  resolutions Resolution[]
+}
+
+model Resolution {
+  id              String    @id @default(cuid())
+  annotationId    String
+  annotation      Annotation @relation(fields: [annotationId], references: [id], onDelete: Cascade)
+  semanticCommit  String
+  reasoningChain  String
+  uncertaintyMap  String
+  approvalStatus  String    @default("PENDING")
+  createdAt       DateTime  @default(now())
+  auditLogs       AuditLog[]
+}
+
+/// EU AI Act Article 12 mandatory logging — 14-field Minimum Viable Audit Schema
+/// Append-only: no update/delete operations permitted on audit records.
+model AuditLog {
+  id                  String     @id @default(cuid())
+  resolutionId        String?
+  resolution          Resolution? @relation(fields: [resolutionId], references: [id], onDelete: SetNull)
+  timestampUTC        DateTime   @default(now())
+  userId              String     @default("local")
+  modelName           String     @default("")
+  modelVersion        String
+  promptVersion       String     @default("")
+  promptHash          String
+  queryClassification String     @default("")
+  sourceDocuments     String     @default("[]")
+  confidenceScore     Float?
+  responseId          String     @default("")
+  outputType          String     @default("RESOLUTION")
+  regulatoryContext   String     @default("EU_AI_ACT")
+  approvalStatus      String     @default("PENDING_REVIEW")
+  dataRetentionDays   Int        @default(2555)
+  graphNodesUsed      String     @default("[]")
+  overrideOf          String?
+  overrideReason      String?
+}

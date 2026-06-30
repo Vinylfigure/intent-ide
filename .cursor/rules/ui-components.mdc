@@ -1,0 +1,22 @@
+---
+description: "Strict rules and component standards for all frontend UI development, focusing on shadcn/ui and assistant-ui."
+globs: ["*.tsx", "*.jsx"]
+---
+# UI Component Standards & Generative UI Rules
+
+You are building the frontend for the Intent IDE. All UI components MUST adhere to the following strict guidelines.
+
+## 1. Strict Component Hierarchy
+* **Tier 1 (Foundation):** You MUST use `shadcn/ui` for all standard structural elements (buttons, dialogs, forms, tables). Read and modify the local code in `@/components/ui/` instead of using generic monolithic libraries.
+* **Tier 2 (AI Primitives):** You MUST use `assistant-ui` and Vercel AI SDK Elements for generative AI patterns.
+
+## 2. Safe Rendering & Markdown Streaming (CRITICAL)
+* **No innerHTML:** You MUST NEVER use `innerHTML` or `dangerouslySetInnerHTML`. This is a strict security constraint to prevent XSS.
+* **Streamdown Integration:** To render streaming AI text, you MUST use `@assistant-ui/react-streamdown` and `@streamdown/code` [1].
+* **Flicker Prevention:** You MUST configure the `remend` property within the streamdown configuration [2]. This auto-completes incomplete Markdown syntax during live streaming to prevent the UI layout from breaking or flickering mid-generation [3].
+
+## 3. Cognitive UI Components
+When building AI response interfaces, you must implement these specific patterns to combat automation bias:
+* **`<Reasoning>` Blocks:** The output of the Multi-Agent Debating System (MADS) must be rendered inside a collapsible `<Reasoning>` component [4]. This ensures the AI's internal logic is transparent to the user.
+* **`<Confirmation>` Gates:** Global document changes MUST NOT be applied automatically. You must wrap destructive or global actions in a `<Confirmation>` component that requires explicit human-in-the-loop (HITL) approval [5]. 
+* **Token-Level Uncertainty:** Highlight uncertain tokens using a `<span>` wrapper with dynamic background colors (yellow/red) based on the calculated entropy of the LLM's `logprobs` [6]. Do not just provide a generic document confidence score.

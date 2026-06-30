@@ -1,0 +1,112 @@
+'use client'
+
+import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
+
+export type LLMProvider = 'claude' | 'openai' | 'ollama'
+
+export interface LLMConfig {
+  provider: LLMProvider
+  apiKey: string
+  model: string
+  baseUrl?: string
+}
+
+export const PROVIDER_MODELS: Record<LLMProvider, { label: string; value: string }[]> = {
+  claude: [
+    { label: 'Claude Sonnet 4.6 (Recommended — fast)', value: 'claude-sonnet-4-6' },
+    { label: 'Claude Opus 4.8 (Most capable — higher cost)', value: 'claude-opus-4-8' },
+    { label: 'Claude Fable 5 (Frontier — highest cost)', value: 'claude-fable-5' },
+    { label: 'Claude Haiku 4.5 (Cheapest)', value: 'claude-haiku-4-5' },
+    { label: 'Claude Opus 4.6 (Legacy)', value: 'claude-opus-4-6' },
+  ],
+  openai: [
+    { label: 'GPT-4o (Recommended)', value: 'gpt-4o' },
+    { label: 'GPT-4o mini', value: 'gpt-4o-mini' },
+    { label: 'GPT-4 Turbo', value: 'gpt-4-turbo' },
+  ],
+  ollama: [
+    { label: 'llama3.2', value: 'llama3.2' },
+    { label: 'llama3.1', value: 'llama3.1' },
+    { label: 'mistral', value: 'mistral' },
+    { label: 'qwen2.5', value: 'qwen2.5' },
+    { label: 'deepseek-r1', value: 'deepseek-r1' },
+    { label: 'phi3', value: 'phi3' },
+  ],
+}
+
+export const PROVIDER_DEFAULT_MODEL: Record<LLMProvider, string> = {
+  claude: 'claude-sonnet-4-6',
+  openai: 'gpt-4o',
+  ollama: 'llama3.2',
+}
+
+// Claude model IDs currently offered. Anything else stored in localStorage from
+// an older build (retired models, date-suffixed aliases, prior Opus variants) is
+// migrated to the Sonnet 4.6 default on rehydrate — never silently upgraded to a
+// pricier model.
+const VALID_CLAUDE_MODELS = new Set(
+  PROVIDER_MODELS.claude.map((m) => m.value)
+)
+
+/** Map a possibly-stale stored Claude model ID to a current, valid one. */
+export function normalizeClaudeModel(model: string): string {
+  if (VALID_CLAUDE_MODELS.has(model)) return model
+  // Date-suffixed haiku alias → bare alias.
+  if (model.startsWith('claude-haiku-4-5')) return 'claude-haiku-4-5'
+  // Everything else stale (retired Sonnet/Opus/3.x) → safe, cheap default.
+  return PROVIDER_DEFAULT_MODEL.claude
+}
+
+export const PROVIDER_BASE_URLS: Record<LLMProvider, string | undefined> = {
+  claude: undefined,
+  openai: undefined,
+  ollama: 'http://localhost:11434',
+}
+
+interface SettingsState {
+  llmConfig: LLMConfig
+  whisperApiKey: string
+  showApiKeyModal: boolean
+  setLLMConfig: (config: Partial<LLMConfig>) => void
+  setWhisperKey: (key: string) => void
+  setShowApiKeyModal: (show: boolean) => void
+  hasKeys: () => boolean
+}
+
+export const useSettingsStore = create<SettingsState>()(
+  persist(
+    (set, get) => ({
+      llmConfig: {
+        provider: 'claude',
+        apiKey: '',
+        model: 'claude-sonnet-4-6',
+        baseUrl: undefined,
+      },
+      whisperApiKey: '',
+      showApiKeyModal: false,
+      setLLMConfig: (config) =>
+        set((s) => ({ llmConfig: { ...s.llmConfig, ...config } })),
+      setWhisperKey: (key) => set({ whisperApiKey: key }),
+      setShowApiKeyModal: (show) => set({ showApiKeyModal: show }),
+      hasKeys: () => {
+        const s = get()
+        // Ollama runs locally — no API key needed
+        if (s.llmConfig.provider === 'ollama') return true
+        return s.llmConfig.apiKey.length > 0
+      },
+    }),
+    {
+      name: 'intent-ide-settings',
+      onRehydrateStorage: () => (state) => {
+        // Migrate stale Claude model IDs persisted by older builds.
+        if (state && state.llmConfig.provider === 'claude') {
+          const normalized = normalizeClaudeModel(state.llmConfig.model)
+          if (normalized !== state.llmConfig.model) {
+            state.setLLMConfig({ model: normalized })
+          }
+        }
+      },
+    }
+  )
+)

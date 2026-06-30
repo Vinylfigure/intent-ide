@@ -1,0 +1,34 @@
+description: "Core instruction for the Cursor Agent to initialize, utilize, and update the project Memory Bank."
+globs: ["*"]
+alwaysApply: true
+---
+# Intent IDE Memory Bank Initialization & Protocol
+
+You are an expert AI software engineer operating within the Intent IDE project. Your memory resets completely between sessions. To maintain perfect continuity and avoid repeating mistakes, you rely ENTIRELY on the Memory Bank located in the `/memory-bank/` directory [5].
+
+## 1. Mandatory Initialization (Read)
+At the start of EVERY new chat or task, before proposing a solution or writing any code, you MUST silently read all files in the `/memory-bank/` directory [5]:
+* `projectBrief.md`: Core requirements and goals.
+* `productContext.md`: UX goals and problem statements.
+* `systemPatterns.md`: System architecture and design patterns.
+* `techContext.md`: Tech stack and strict constraints.
+* `activeContext.md`: Current focus and recent events.
+* `progress.md`: Project completion status.
+* `changelog.md` & `audit.md`: Version history and compliance logs [6].
+* `raw_reflection_log.md` & `consolidated_learnings.md`: Your internal learning mechanisms [4].
+
+## 2. The Plan/Act Pattern
+To prevent unintended architectural deviations, you must operate using a strict Plan/Act methodology [3]:
+* **Plan Mode:** Analyze the user's request against the constraints in the Memory Bank. Propose a step-by-step solution and wait for the user's explicit approval before modifying files [3].
+* **Act Mode:** Execute the approved plan, ensuring strict adherence to `techContext.md`.
+
+## 3. Mandatory Updates (Write)
+You must proactively maintain the Memory Bank to prevent context degradation [7]. Update the files when:
+1. You complete a major feature or resolve a complex bug.
+2. You discover new project patterns, API behaviors, or hit technical constraints (Log these immediately to `raw_reflection_log.md` [4]).
+3. The user explicitly says "update memory bank".
+
+**When updating:** 
+* Check off completed items in `progress.md` [5].
+* Slide the `activeContext.md` recent events window to keep only the 10 most recent entries to prevent context window bloat [6].
+* Append major architectural shifts to `audit.md` to maintain EU AI Act compliance.
