@@ -255,6 +255,63 @@
   background: #d97706;
   border-radius: 2px;
 }
+/* Accepted (but not yet batch-applied): quiet greyed-green, awaiting commit */
+.proposed-edit.proposed-accepted {
+  background: rgba(43, 140, 94, 0.1);
+  border-bottom: 1px solid rgba(43, 140, 94, 0.45);
+  opacity: 0.8;
+}
+
+/* Inline Accept/Reject control for proposed edits */
+.proposed-edit-control {
+  pointer-events: auto;
+  animation: tooltipFadeIn 0.12s ease;
+}
+
+.proposed-edit-control-card {
+  max-width: 320px;
+  padding: 8px 12px;
+  background: white;
+  border: 1px solid #e0dcd6;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.proposed-edit-control-reason {
+  font-size: 12px;
+  line-height: 1.4;
+  color: hsl(var(--foreground));
+  margin-bottom: 6px;
+}
+
+.proposed-edit-control-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.proposed-edit-control-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid #e0dcd6;
+  background: white;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.proposed-edit-control-accept {
+  color: #2b8c5e;
+  border-color: rgba(43, 140, 94, 0.3);
+}
+.proposed-edit-control-accept:hover { background: rgba(43, 140, 94, 0.08); }
+
+.proposed-edit-control-reject {
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.3);
+}
+.proposed-edit-control-reject:hover { background: rgba(220, 38, 38, 0.08); }
 
 /* Conflict tooltip — interactive (has pointer-events) */
 .conflict-tooltip-interactive {

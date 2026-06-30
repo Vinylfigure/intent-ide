@@ -1,10 +1,12 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { TextSelection } from 'prosemirror-state'
+import { setProposedEdits, clearProposedEdits } from '@/lib/prosemirror/plugins/proposedChangePlugin'
 import { ResolutionActions } from './ResolutionActions'
+import { CascadeList } from './CascadeList'
 import { ConversationThread } from './ConversationThread'
 import { FollowUpInput } from './FollowUpInput'
 import { continueThread, streamResolveAnnotation } from '@/lib/ai/resolver'
@@ -51,6 +53,24 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
   const addMessage = useAnnotationStore((s) => s.addMessage)
   const view = useEditorStore((s) => s.view)
   const [showBadgeDropdown, setShowBadgeDropdown] = useState(false)
+
+  // Decoration review lifecycle (PRD Read-Line + Cascade): while this card is the
+  // active one and its resolution carries multi-region edits still under review,
+  // "call out" those regions in the editor; clear them once it deactivates or the
+  // edits are applied/dismissed (status leaves 'resolved'). Only the active card
+  // touches decorations, so inactive cards never dispatch.
+  const reviewEdits = annotation.resolution?.edits
+  useEffect(() => {
+    if (!view || !isActive) return
+    if (annotation.status === 'resolved' && reviewEdits && reviewEdits.length > 1) {
+      setProposedEdits(view, reviewEdits)
+    } else {
+      clearProposedEdits(view)
+    }
+    return () => {
+      clearProposedEdits(view)
+    }
+  }, [isActive, annotation.status, reviewEdits, view])
 
   const handleBadgeOverride = async (newType: AnnotationType) => {
     setShowBadgeDropdown(false)
@@ -332,6 +352,9 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
           </div>
         </div>
       )}
+
+      {/* Cascade review list — navigable "affects N sections" (when active) */}
+      {isActive && <CascadeList annotation={annotation} />}
 
       {/* Conversation thread (when active and has conversation messages) */}
       {isActive && annotation.conversation && annotation.conversation.length > 0 && (

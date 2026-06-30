@@ -61,6 +61,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Eliminated immediate UI popups for AI flags, adopting "Event Segmentation Theory" to buffer notifications until natural reading breakpoints.
 
+## [2026-06-29] v8.3 — Model/API Refresh + In-IDE Multi-Region Agent Edits (Waves 1-3)
+
+### Added
+- **[Wave 1] `src/lib/ai/modelCapabilities.ts`:** New `modelRejectsSampling(model)` helper — returns true for opus-4-7, opus-4-8, fable-5, and mythos. These models return HTTP 400 if sampling params (e.g. `temperature`) are sent. Single source of truth for the sampling-param gate.
+- **[Wave 2] `.claude/agents/*.md` (8 roles):** orchestrator, architect, troublemaker, judge, qa, code-librarian, ui-ux, devops — now the authoritative runtime agent definitions.
+- **[Wave 2] `.claude/skills/add-cascade-edit`:** New skill to scaffold the Wave 3 cascade-edit pattern (multi-region ProposedEdit producer + `propose_edit` structured route + read-line-aware decoration + sorted single transaction gated through SemanticCommitModal).
+- **[Wave 3] `ProposedEdit` type in `src/lib/annotations/types.ts`:** `{ id, from, to, newText, reason, relation: 'primary' | 'cascade', status, targetText }`. Added `Resolution.edits?: ProposedEdit[]` and `Resolution.auditFailed?`.
+- **[Wave 3] `src/app/api/structured/route.ts`:** New provider-agnostic tool-calling endpoint backing a `propose_edit` tool. Replaces the brittle regex `parseSuggestedEdit`.
+- **[Wave 3] `src/lib/ai/orchestrator.ts`:** New `proposeCascadeEdits()` — upgrades the read-only cascade into editable multi-region proposals, anchored to live positions by fingerprint match (drops unanchorable / overlapping ones).
+- **[Wave 3] `src/lib/prosemirror/plugins/proposedChangePlugin.ts`:** New "called out" decoration plugin — proposed changes are flagged above the read-line ("you already read this changed") and shown quietly below; positions re-mapped through `tr.mapping`. CSS added in `globals.css`.
+- **[Wave 3] `src/lib/prosemirror/applyProposedEdits.ts`:** New validate-or-abort (fingerprint) + descending single-transaction apply helper.
+
+### Changed
+- **[Wave 1] `src/app/api/resolve/route.ts`, `src/app/api/classify/route.ts`, `src/app/api/generate/route.ts`:** Claude branch now omits `temperature` when `modelRejectsSampling(model)` is true. This was the real reason agent calls were failing on newer models.
+- **[Wave 1] `src/stores/settingsStore.ts`:** Model list refreshed to Opus 4.8 / Fable 5 / Sonnet 4.6 / Haiku 4.5 (+ legacy Opus 4.6). Default remains Sonnet 4.6. New `normalizeClaudeModel()` migrates stale localStorage model IDs to Sonnet 4.6 (never silent-upgrades to Opus) via `onRehydrateStorage`.
+- **[Wave 1] ApiKeyModal:** Now shows cost (multi-call) and diversity-disabled notices for Opus/Fable. Context compaction pinned to Haiku 4.5 regardless of the selected model.
+- **[Wave 2] Root `agents.md`:** Demoted from authoritative config to a summary that points at `.claude/agents/*.md`. `build-wave` and `test` skills refreshed.
+- **[Wave 3] `src/lib/ai/resolver.ts`:** Calls `proposeCascadeEdits()` on both MADS and single-agent paths to populate `Resolution.edits`.
+- **[Wave 3] `src/lib/prosemirror/plugins/index.ts`:** Registered `proposedChangePlugin`.
+- **[Wave 3] `src/components/Annotations/ResolutionActions.tsx`:** Multi-region apply now routes through `applyProposedEdits`.
+
+### Fixed
+- **[Wave 1] Newer-model agent calls returning 400:** Opus 4.8 / Fable 5 and other sampling-rejecting models no longer 400 because `temperature` is omitted for them. This was the underlying cause of failed agent calls after the model bump.
+- **[Wave 3] Stale-position apply bug:** Multi-region apply previously read stale Zustand anchor positions; `applyProposedEdits.ts` now fingerprint-validates against live document text and applies in a single descending transaction.
+- **[Wave 3] Silently-dropped audit records:** `logResolutionAudit` call sites now `.catch()` and set `resolution.auditFailed`, so EU AI Act audit failures are surfaced instead of swallowed.
+
+### Verification
+- `npm run typecheck` — 0 errors.
+- `npm run test` — 194 passing (was 152; +42 new for `modelCapabilities` + settings migration).
+- `npm run build` — clean.
+- Project initialized as a git repo on `main` with two commits: "Initial commit: Intent IDE v8.2 + model/API refresh (Wave 1)" and "Waves 2-3: swarm agents, skills, and in-IDE multi-region agent edits". Private GitHub push pending the user rotating a key committed in `.env`.
+
 ## [2026-03-16] Phase 14 — Bug Fixes and UX Hardening
 
 ### Added

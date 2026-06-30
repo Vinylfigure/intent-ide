@@ -1,6 +1,7 @@
 import { Plugin, PluginKey, Transaction, EditorState } from 'prosemirror-state'
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
 import { readLinePluginKey } from './readLinePlugin'
+import { useProposedEditUiStore } from '@/stores/proposedEditUiStore'
 import type { ProposedEdit, ProposedEditRelation, ProposedEditStatus } from '@/lib/annotations/types'
 
 /**
@@ -48,15 +49,17 @@ function isAboveReadLine(state: EditorState, pos: number): boolean {
 function buildDecorations(state: EditorState, anchors: Map<string, ProposedAnchor>): DecorationSet {
   const decos: Decoration[] = []
   for (const [id, a] of anchors) {
-    if (a.status !== 'pending') continue
+    // Rejected edits are not rendered; pending + accepted are.
+    if (a.status === 'rejected') continue
     if (a.from === a.to) continue
     const above = isAboveReadLine(state, a.from)
+    const accepted = a.status === 'accepted'
     decos.push(
       Decoration.inline(
         a.from,
         a.to,
         {
-          class: `proposed-edit proposed-edit-${a.relation} ${above ? 'proposed-above' : 'proposed-below'}`,
+          class: `proposed-edit proposed-edit-${a.relation} ${above ? 'proposed-above' : 'proposed-below'}${accepted ? ' proposed-accepted' : ''}`,
           'data-proposed-edit-id': id,
           title: above
             ? 'Something you already read was modified'
@@ -65,7 +68,7 @@ function buildDecorations(state: EditorState, anchors: Map<string, ProposedAncho
         { proposedEditId: id },
       ),
     )
-    if (above) {
+    if (above && !accepted) {
       // Margin flag widget for already-read changes.
       decos.push(
         Decoration.widget(
@@ -145,6 +148,39 @@ export function createProposedChangePlugin(): Plugin {
         const ps = proposedChangePluginKey.getState(state)
         if (!ps) return DecorationSet.empty
         return buildDecorations(state, ps.anchors)
+      },
+
+      handleDOMEvents: {
+        mouseover(_view: EditorView, event: Event) {
+          const target = (event.target as HTMLElement).closest?.('[data-proposed-edit-id]')
+          if (target) {
+            const id = target.getAttribute('data-proposed-edit-id')
+            if (id) {
+              useProposedEditUiStore.getState().setHovered(id)
+            }
+          }
+          return false
+        },
+        mouseout(_view: EditorView, event: Event) {
+          const target = (event.target as HTMLElement).closest?.('[data-proposed-edit-id]')
+          if (target) {
+            useProposedEditUiStore.getState().setHovered(null)
+          }
+          return false
+        },
+        click(_view: EditorView, event: Event) {
+          const target = (event.target as HTMLElement).closest?.('[data-proposed-edit-id]')
+          if (target) {
+            const id = target.getAttribute('data-proposed-edit-id')
+            if (id) {
+              const store = useProposedEditUiStore.getState()
+              // Toggle: click again to close
+              store.setActive(store.activeId === id ? null : id)
+              return true
+            }
+          }
+          return false
+        },
       },
     },
   })

@@ -13,18 +13,22 @@ interface SemanticChange {
 
 interface SemanticCommitModalProps {
   changes: SemanticChange[]
-  onConfirm: () => void
+  /** Receives the ids of the changes the user chose to apply. */
+  onConfirm: (acceptedIds: string[]) => void
   onCancel: () => void
   /** Provocation from MADS Troublemaker — shown as amber callout, gates Apply for high-risk */
   provocation?: string | null
   /** Whether this edit came through MADS (multi-agent debate) — indicates higher scrutiny needed */
   isHighRisk?: boolean
+  /** Change ids already rejected inline — pre-toggled off so the two surfaces agree. */
+  initialRejected?: Record<string, boolean>
 }
 
 /**
  * Plan/Act gatekeeper modal.
  * Shows a diff for each proposed change and wraps the apply action
- * in a Confirmation HITL gate.
+ * in a Confirmation HITL gate. When there is more than one change, each gets an
+ * Accept/Reject toggle and only the accepted subset is applied.
  *
  * For high-risk edits (MADS with unresolved provocations), the Apply button
  * is gated — user must acknowledge the provocation first.
@@ -35,12 +39,34 @@ export function SemanticCommitModal({
   onCancel,
   provocation,
   isHighRisk = false,
+  initialRejected,
 }: SemanticCommitModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null)
   const [acknowledged, setAcknowledged] = useState(false)
+  // Per-change selection (default: all accepted, minus anything rejected inline).
+  // Only surfaced when >1 change.
+  const [rejected, setRejected] = useState<Record<string, boolean>>(
+    () => initialRejected ?? {},
+  )
 
-  // Apply is gated when there's a provocation on a high-risk edit
+  const multi = changes.length > 1
+  const acceptedIds = changes.filter((c) => !rejected[c.id]).map((c) => c.id)
+
+  // Apply is gated when there's a provocation on a high-risk edit, or nothing is selected.
   const needsAcknowledgement = isHighRisk && !!provocation && !acknowledged
+  const nothingSelected = acceptedIds.length === 0
+  const blocked = needsAcknowledgement || nothingSelected
+
+  const confirmLabel = needsAcknowledgement
+    ? 'Acknowledge risk first'
+    : nothingSelected
+      ? 'Select at least one'
+      : multi
+        ? `Apply ${acceptedIds.length} change${acceptedIds.length !== 1 ? 's' : ''}`
+        : 'Apply All Changes'
+
+  const toggle = (id: string) =>
+    setRejected((r) => ({ ...r, [id]: !r[id] }))
 
   return (
     <div
@@ -53,22 +79,53 @@ export function SemanticCommitModal({
       <div className="semantic-commit-modal">
         <Confirmation
           title="Review Semantic Commit"
-          description={`${changes.length} change${changes.length !== 1 ? 's' : ''} will be applied to the document.${isHighRisk ? ' This edit was flagged for extra review.' : ''}`}
-          confirmLabel={needsAcknowledgement ? 'Acknowledge risk first' : 'Apply All Changes'}
+          description={`${changes.length} change${changes.length !== 1 ? 's' : ''} proposed.${multi ? ' Accept or reject each, then apply your selection.' : ''}${isHighRisk ? ' This edit was flagged for extra review.' : ''}`}
+          confirmLabel={confirmLabel}
           cancelLabel="Discard"
           variant="destructive"
-          onConfirm={needsAcknowledgement ? () => {} : onConfirm}
+          onConfirm={blocked ? () => {} : () => onConfirm(acceptedIds)}
           onCancel={onCancel}
         >
           <div className="semantic-commit-diffs">
-            {changes.map((change) => (
-              <DiffViewer
-                key={change.id}
-                before={change.before}
-                after={change.after}
-                title={change.label}
-              />
-            ))}
+            {changes.map((change) => {
+              const isRejected = !!rejected[change.id]
+              return (
+                <div
+                  key={change.id}
+                  className={isRejected ? 'opacity-50' : undefined}
+                >
+                  {multi && (
+                    <div className="flex items-center justify-end gap-1.5 mb-1">
+                      <button
+                        onClick={() => !isRejected || toggle(change.id)}
+                        className={`px-2 py-0.5 text-xs font-medium rounded border transition-colors ${
+                          !isRejected
+                            ? 'border-green-400 bg-green-50 text-green-700'
+                            : 'border-border text-muted hover:text-ink'
+                        }`}
+                      >
+                        Accept
+                      </button>
+                      <button
+                        onClick={() => isRejected || toggle(change.id)}
+                        className={`px-2 py-0.5 text-xs font-medium rounded border transition-colors ${
+                          isRejected
+                            ? 'border-red-400 bg-red-50 text-red-700'
+                            : 'border-border text-muted hover:text-ink'
+                        }`}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  )}
+                  <DiffViewer
+                    before={change.before}
+                    after={change.after}
+                    title={change.label}
+                  />
+                </div>
+              )
+            })}
           </div>
 
           {/* Provocation callout */}

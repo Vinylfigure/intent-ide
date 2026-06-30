@@ -1,13 +1,40 @@
-# Progress Tracker: Intent IDE (v8.2)
+# Progress Tracker: Intent IDE (v8.3)
 
 ## 1. High-Level Status
-**Current Phase:** Phase 14 — Bug Fixes and UX Hardening — COMPLETE
-**Overall Completion:** Core architecture (5 phases) complete. Reliability-First UX Overhaul complete. Phases 8, 13, and 14 complete. 152 unit tests passing.
-**System Status:** Alpha / Core systems built, crash-free, and interaction-complete. Document hub, collections, location-first annotation review, adaptive concise defaults, grouped change-set review, formatting toolbar, selection-triggered annotations, and hardened persistence are now in place. Ready for dashboard/collaboration phases.
+**Current Phase:** Model/API Refresh + In-IDE Multi-Region Agent Edits (Waves 1-3) — COMPLETE
+**Overall Completion:** Core architecture (5 phases) complete. Reliability-First UX Overhaul complete. Phases 8, 13, and 14 complete. v8.3 model/API refresh and in-IDE multi-region agent edits complete. 194 unit tests passing.
+**System Status:** Alpha / Core systems built, crash-free, and interaction-complete. Now a git repo on `main`. Newer Claude models (Opus 4.8 / Fable 5 / Sonnet 4.6 / Haiku 4.5) supported with sampling-param compatibility. Read-only cascade upgraded to editable multi-region `ProposedEdit` proposals backed by provider-agnostic tool-calling. Authoritative `.claude/agents/*` runtime agent definitions. Ready for dashboard/collaboration phases.
 
 ---
 
 ## 2. Completed Milestones (What Works)
+
+### v8.3 — Model/API Refresh + In-IDE Multi-Region Agent Edits (Waves 1-3) -- COMPLETE
+
+#### Wave 1 — Model/API Refresh
+- [x] **W1-1 — Model capability gate:** New `src/lib/ai/modelCapabilities.ts` with `modelRejectsSampling(model)` returning true for opus-4-7/opus-4-8/fable-5/mythos. These models 400 on sampling params (`temperature`).
+- [x] **W1-2 — Sampling-param omission:** Claude branch of `/api/resolve`, `/api/classify`, and `/api/generate` now omits `temperature` when `modelRejectsSampling(model)` is true. This was the real cause of agent-call failures on newer models.
+- [x] **W1-3 — Model list refresh:** `settingsStore.ts` model list is now Opus 4.8 / Fable 5 / Sonnet 4.6 / Haiku 4.5 (+ legacy Opus 4.6). Default stays Sonnet 4.6.
+- [x] **W1-4 — Safe migration:** `normalizeClaudeModel()` migrates stale localStorage model IDs to Sonnet 4.6 (never silent-upgrades to Opus) via `onRehydrateStorage`.
+- [x] **W1-5 — Cost / diversity notices:** ApiKeyModal shows cost (multi-call) and diversity-disabled notices for Opus/Fable. Context compaction pinned to Haiku 4.5 regardless of the selected model.
+
+#### Wave 2 — Agents & Skills
+- [x] **W2-1 — Authoritative agent definitions:** `.claude/agents/*.md` (8 roles: orchestrator, architect, troublemaker, judge, qa, code-librarian, ui-ux, devops) are now the runtime agent definitions. Root `agents.md` demoted to a summary that points at them.
+- [x] **W2-2 — New + refreshed skills:** New skill `.claude/skills/add-cascade-edit`. Refreshed `build-wave` and `test` skills.
+
+#### Wave 3 — In-IDE Multi-Region Agent Edits (PRD Read-Line + Cascade, Sections 06-09)
+- [x] **W3-1 — ProposedEdit type:** `src/lib/annotations/types.ts` gains `ProposedEdit` (`{id, from, to, newText, reason, relation: 'primary' | 'cascade', status, targetText}`), `Resolution.edits?: ProposedEdit[]`, and `Resolution.auditFailed?`.
+- [x] **W3-2 — Structured tool-calling endpoint:** New `src/app/api/structured/route.ts` — provider-agnostic tool-calling endpoint backing a `propose_edit` tool. Replaces the brittle regex `parseSuggestedEdit`.
+- [x] **W3-3 — Cascade-to-edit orchestrator:** New `src/lib/ai/orchestrator.ts` — `proposeCascadeEdits()` upgrades the read-only cascade into editable multi-region proposals, anchored to live positions by fingerprint match (drops unanchorable / overlapping ones). `resolver.ts` calls it on both MADS and single-agent paths to populate `Resolution.edits`.
+- [x] **W3-4 — Called-out decorations plugin:** New `src/lib/prosemirror/plugins/proposedChangePlugin.ts` — flags proposed changes above the read-line ("you already read this changed") and shows them quietly below; positions re-mapped through `tr.mapping`. Registered in `plugins/index.ts`; CSS in `globals.css`.
+- [x] **W3-5 — Validate-or-abort apply:** New `src/lib/prosemirror/applyProposedEdits.ts` — fingerprint validate-or-abort + descending single-transaction apply. Fixes a latent stale-position bug (apply previously read stale Zustand anchor positions). `ResolutionActions.tsx` routes multi-region apply through it.
+- [x] **W3-6 — Audit durability:** `logResolutionAudit` call sites now have `.catch()` that sets `resolution.auditFailed`, so EU AI Act records are no longer dropped silently.
+
+#### Verification
+- [x] **`npm run typecheck`** — 0 errors.
+- [x] **`npm run test`** — 194 passing (was 152; +42 new for modelCapabilities + settings migration).
+- [x] **`npm run build`** — clean.
+- [x] **Git:** Project is now a git repo on `main`. Two commits: "Initial commit: Intent IDE v8.2 + model/API refresh (Wave 1)" and "Waves 2-3: swarm agents, skills, and in-IDE multi-region agent edits". Private GitHub push pending the user rotating a key that was committed in `.env`.
 
 ### Phase 14 — Bug Fixes and UX Hardening -- COMPLETE
 - [x] **14A1 — DocumentHubSidebar crash fix:** Defensive `(doc.collectionIds ?? [])` at all access sites + migration in documentStore `onRehydrateStorage` to normalize legacy docs missing `collectionIds`.
@@ -59,6 +86,13 @@
 
 ## 3. Roadmap & Pending Tasks (What's Left to Build)
 
+### v8.3 Follow-ups (Pending)
+- [ ] **Private GitHub push:** Blocked on the user rotating a key that was committed in `.env`. Push to private repo once the secret is rotated and history is clean.
+- [ ] **Inline per-edit Accept/Reject UI:** Surface per-`ProposedEdit` accept/reject controls directly on the called-out decorations (optional Wave 3 refinement).
+- [ ] **Multi-diff SemanticCommitModal:** Extend SemanticCommitModal to review multiple `ProposedEdit` regions in one modal instead of a single diff.
+- [ ] **Navigable cascade review list:** A list UI to step through cascade proposals region-by-region.
+
+
 ### Wave 2: Single-Input Interaction Model + 4-Intent System -- COMPLETE
 - [x] **2A — Type Consolidation (6 to 4):** New union `'ask' | 'edit' | 'dig' | 'flag'` in `types.ts`. `LegacyAnnotationType`, `mapLegacyType()`, new colors (ask=blue, edit=red, dig=purple, flag=amber), `ANNOTATION_DESCRIPTIONS`. Store migration via `migrateAnnotations()` on rehydrate. Updated `agentConfigStore.ts`, `actions.ts`, `decorations.ts`, `schema.ts`.
 - [x] **2B — Invisible Classification:** `FloatingIconBar.tsx` rewritten as single input bar (text + mic + submit). Voice pipeline simplified (no ActionPicker). `AnnotationCard.tsx` badge clickable with dropdown override (non-mutating relabels, mutating re-resolves). `classifier.ts` and `/api/classify` updated for 4 types.
@@ -100,6 +134,10 @@
 * **Document hub still shows duplicate visibility paths:** Documents appear in the global list and inside collections. This is intentional for Phase 8 clarity but may be refined in Phase 9 dashboard work.
 * **Visual system not yet fully tokenized:** Phase 13 improved the main app shell and review surfaces, but a full design-token sweep across every modal/overlay is still pending.
 * **changesStore persistence has caps:** `partialize` limits entries to 500 and changeSets to 100. If exceeded, oldest are pruned. Emergency pruning clears all entries if localStorage quota is hit.
+* **Newer Claude models reject sampling params:** opus-4-7/opus-4-8/fable-5/mythos 400 if `temperature` is sent. Gated by `modelRejectsSampling()` in `modelCapabilities.ts`. Any new API route that calls Claude with sampling params must consult this gate.
+* **Secret committed to git history:** A key was committed in `.env` before `.gitignore` covered it. Private GitHub push is blocked until the user rotates the key and the history is scrubbed. Do not push until then.
+* **Cascade anchoring is fingerprint-based:** `proposeCascadeEdits()` drops proposals whose target text cannot be re-anchored to live positions, or that overlap. Edits that silently disappear are expected behavior when the document drifted, not a bug.
+* **parseSuggestedEdit superseded:** Regex `parseSuggestedEdit` is replaced by the `propose_edit` tool on `api/structured`. The regex path remains only for backward compatibility and should be removed in a later pass.
 
 ---
 
@@ -129,3 +167,6 @@
 * **[2026-03-16] PHASE 8 COMPLETE:** Document hub + collections, shared annotation composer, location-first annotation grouping, change-set review layer, and adaptive concise defaults shipped. `npm run typecheck`, `npm test`, and `npm run build` all pass.
 * **[2026-03-16] PHASE 13 COMPLETE:** Stronger layout hierarchy, warmer surfaces, clearer badges/chips, and improved panel contrast shipped. `npm run typecheck` and `npm run build` pass after the visual pass.
 * **[2026-03-16] PHASE 14 COMPLETE — Bug Fixes and UX Hardening:** Three waves: (A) crash fixes — DocumentHubSidebar collectionIds crash, changesStore quota overflow, drill-action visibility; (B) core interaction fixes — selection-triggered annotations, document modal startup, annotation collapse scope, nested scrolling; (C) enhancements — DiffView in changes panel, formatting toolbar, document hub readability, annotation click-to-scroll. 152 tests passing, typecheck and build clean.
+* **[2026-06-29] v8.3 Wave 1 — Model/API refresh:** Newer Claude models reject sampling params and were 400ing every agent call. `modelCapabilities.ts` gates `temperature` omission across `/api/resolve`, `/api/classify`, `/api/generate`. Model list refreshed (Opus 4.8 / Fable 5 / Sonnet 4.6 / Haiku 4.5), default Sonnet 4.6, `normalizeClaudeModel()` migrates stale IDs to Sonnet (never silent Opus upgrade). Compaction pinned to Haiku 4.5.
+* **[2026-06-29] v8.3 Wave 2 — Agents/skills:** `.claude/agents/*.md` (8 roles) became the authoritative runtime agent definitions; root `agents.md` demoted to a pointer. New `add-cascade-edit` skill; refreshed build-wave/test skills.
+* **[2026-06-29] v8.3 Wave 3 — In-IDE multi-region agent edits:** Read-only cascade upgraded to editable multi-region `ProposedEdit` proposals. New `orchestrator.ts` (`proposeCascadeEdits()`, fingerprint anchoring), `api/structured` `propose_edit` tool replacing regex `parseSuggestedEdit`, `proposedChangePlugin.ts` read-line-aware decorations, and `applyProposedEdits.ts` validate-or-abort descending single-transaction apply (fixes stale-position bug). Audit writes now record `auditFailed` on `.catch()`. 194 tests passing (+42), typecheck and build clean. Project is now a git repo on `main`; private push pending key rotation.

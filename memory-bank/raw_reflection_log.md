@@ -6,6 +6,33 @@ This file contains detailed, timestamped, and task-referenced raw entries from t
 
 ---
 
+Date: 2026-06-29
+TaskRef: "v8.3 — Model/API Refresh + In-IDE Multi-Region Agent Edits (Waves 1-3)"
+Learnings:
+- **The model bump's real failure was sampling params, not the model IDs:** Newer Claude models (opus-4-7, opus-4-8, fable-5, mythos) return HTTP 400 when sent sampling params like `temperature`. The agent calls were failing not because of wrong model names but because every route unconditionally attached `temperature`. Centralizing this in `modelRejectsSampling()` (`modelCapabilities.ts`) and omitting the param across `/api/resolve`, `/api/classify`, and `/api/generate` was the actual fix. Lesson: when an API starts 400ing after a model swap, suspect request-shape/param compatibility before suspecting the model identifier.
+- **Migrate stale persisted model IDs down to a safe default, never up:** `normalizeClaudeModel()` maps unknown/legacy localStorage model IDs to Sonnet 4.6 rather than silently upgrading users to Opus. Silent upgrades to a more expensive multi-call model would be a cost surprise; migrating to the safe default is the conservative choice. The cost/diversity notices in ApiKeyModal make the Opus/Fable trade-off explicit instead of hidden.
+- **Pin auxiliary calls to a cheap model regardless of selection:** Context compaction is pinned to Haiku 4.5 even when the user picks Opus. Background/utility LLM work should not inherit the user's premium model choice.
+- **Replace regex extraction with provider-agnostic tool-calling when the output is structured:** The old `parseSuggestedEdit` regex was brittle. A `propose_edit` tool on `api/structured` lets the model emit structured edit proposals directly, which is both more reliable and provider-neutral. This is the backbone that turns the read-only cascade into editable multi-region proposals.
+- **Anchor agent-proposed edits to live positions by fingerprint, and drop what you cannot anchor:** `proposeCascadeEdits()` matches each proposal's `targetText` against current document text and discards unanchorable or overlapping proposals. This is safer than trusting stale offsets — a disappeared proposal is correct behavior when the doc drifted.
+- **Apply must validate against live text, not cached store positions:** The latent stale-position bug came from apply reading Zustand anchor positions captured at resolution time. `applyProposedEdits.ts` re-validates by fingerprint and applies all regions in a single descending transaction (descending so earlier edits don't shift later offsets). This is the same "read fresh from the document, not from closure/store" lesson that bit the Regenerate button in Phase 14, now applied to positions.
+- **Audit writes must record their own failure:** `logResolutionAudit` was fire-and-forget; a rejected promise silently dropped an EU AI Act record. Adding `.catch()` that sets `resolution.auditFailed` makes the compliance gap visible. For regulated logging, a dropped write is worse than a thrown error.
+- **`.claude/agents/*.md` as authoritative runtime definitions, root `agents.md` as a pointer:** Keeping a single source of truth for agent roles (the `.claude/agents/` directory the harness actually loads) and demoting the root summary prevents drift between documented and runtime agent behavior.
+Difficulties:
+- **Worktree isolation was unavailable because git was initialized mid-session:** The project was not a git repo when the work started, so isolating the change on a separate worktree/branch was not an option — the work landed directly and the repo was initialized afterward (`main`, two commits). Future multi-wave work should initialize git first so isolation and rollback are available from the start.
+- **Read-line-aware decoration positioning required mapping through `tr.mapping`:** `proposedChangePlugin.ts` decorations must survive document edits between proposal and apply, so positions are re-mapped on every transaction rather than stored as fixed offsets.
+Successes:
+- The newer-model agent-call failures are fully resolved; the gate is centralized and reusable.
+- The cascade is now genuinely editable multi-region instead of read-only.
+- `npm run typecheck` (0 errors), `npm run test` (194 passing, +42 new for modelCapabilities + settings migration), and `npm run build` (clean) all pass.
+- The repo is now under version control on `main`.
+Improvements_Identified_For_Consolidation:
+- Any new Claude API route must consult `modelRejectsSampling()` before attaching sampling params — this should become a documented convention, not tribal knowledge.
+- The "read fresh from live state, not cached positions/closures" rule now spans Regenerate (Phase 14) and apply (v8.3). It belongs in consolidated_learnings as a general anti-pattern.
+- Initialize git at project start so worktree isolation and clean rollback are always available.
+- Rotate-then-push: secrets that reach git history block remote push and require key rotation + history scrub. `.gitignore` for `.env` must precede the first commit.
+- Optional Wave 3 follow-ups (inline per-edit Accept/Reject, multi-diff SemanticCommitModal, navigable cascade list) are the natural next UI layer on top of the now-editable proposals.
+---
+
 Date: 2026-03-16
 TaskRef: "Phase 14 — Bug Fixes and UX Hardening"
 Learnings:

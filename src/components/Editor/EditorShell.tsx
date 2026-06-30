@@ -12,6 +12,7 @@ import { setChangeCallback } from '@/lib/prosemirror/plugins/changeTrackingPlugi
 import { useChangesStore } from '@/stores/changesStore'
 import { ConflictTooltip } from './ConflictTooltip'
 import { UncertaintyTooltip } from './UncertaintyTooltip'
+import { ProposedEditControl } from './ProposedEditControl'
 import { FormattingToolbar } from './FormattingToolbar'
 
 const AUTOSAVE_DELAY = 5000 // 5 seconds idle
@@ -154,6 +155,7 @@ export function EditorShell() {
       <div ref={editorRef} className="prosemirror-mount" />
       <ConflictTooltip />
       <UncertaintyTooltip />
+      <ProposedEditControl />
     </div>
   )
 }

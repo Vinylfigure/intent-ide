@@ -229,3 +229,48 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
     *   `DocumentHubSidebar.tsx`, `AnnotationPanel.tsx`, `AnnotationCard.tsx`, `ChangesPanel.tsx`, `ChangeEntry.tsx`, `AuditLogViewer.tsx`, and `StatusBar.tsx` were restyled for clearer scanning and stronger contrast.
     *   The palette remains warm/light and consistent with the existing product direction; this was not a full rebrand.
 *   **Approval:** Human verified.
+
+**[2026-06-29 00:00:00 UTC] - DEPENDENCY_CHANGE / API_COMPATIBILITY**
+*   **Action:** Model/API refresh for newer Claude models (v8.3 Wave 1).
+*   **Agent:** Architect / DevOps / Claude Code.
+*   **Context:** Agent calls were failing after a model bump. Root cause: newer Claude models (opus-4-7, opus-4-8, fable-5, mythos) return HTTP 400 when sent sampling params such as `temperature`. Routes were unconditionally attaching `temperature`.
+*   **Decisions Logged:**
+    *   New `src/lib/ai/modelCapabilities.ts` with `modelRejectsSampling(model)` as the single source of truth for the sampling-param gate.
+    *   Claude branch of `/api/resolve`, `/api/classify`, and `/api/generate` now omits `temperature` for sampling-rejecting models.
+    *   `settingsStore.ts` model list refreshed to Opus 4.8 / Fable 5 / Sonnet 4.6 / Haiku 4.5 (+ legacy Opus 4.6). Default remains Sonnet 4.6.
+    *   `normalizeClaudeModel()` migrates stale localStorage model IDs to Sonnet 4.6 (never silent-upgrades to Opus) via `onRehydrateStorage` — a cost-safety decision.
+    *   Context compaction pinned to Haiku 4.5 regardless of the selected model. ApiKeyModal surfaces cost (multi-call) and diversity-disabled notices for Opus/Fable.
+*   **Approval:** Human verified.
+
+**[2026-06-29 00:00:00 UTC] - ARCHITECTURE_CHANGE**
+*   **Action:** Promoted `.claude/agents/*.md` to authoritative runtime agent definitions (v8.3 Wave 2).
+*   **Agent:** Code Librarian / Claude Code.
+*   **Context:** Agent role definitions existed in both the root `agents.md` and the `.claude/agents/` directory the harness actually loads, risking drift between documented and runtime behavior.
+*   **Decisions Logged:**
+    *   The 8 `.claude/agents/*.md` files (orchestrator, architect, troublemaker, judge, qa, code-librarian, ui-ux, devops) are now the authoritative runtime agent definitions.
+    *   Root `agents.md` demoted to a summary that points at them.
+    *   New `.claude/skills/add-cascade-edit` skill added; `build-wave` and `test` skills refreshed.
+*   **Approval:** Human verified.
+
+**[2026-06-29 00:00:00 UTC] - ARCHITECTURE_CHANGE / COMPLIANCE**
+*   **Action:** Upgraded read-only cascade into editable in-IDE multi-region agent edits (v8.3 Wave 3; PRD Read-Line + Cascade, Sections 06-09).
+*   **Agent:** Architect / Troublemaker / Claude Code.
+*   **Context:** The cascade was read-only and the suggested-edit path relied on a brittle regex (`parseSuggestedEdit`). Apply also read stale Zustand anchor positions, risking misapplied edits. Audit writes were fire-and-forget and could drop EU AI Act records silently.
+*   **Decisions Logged:**
+    *   New `ProposedEdit` type (`{id, from, to, newText, reason, relation:'primary'|'cascade', status, targetText}`); `Resolution.edits?: ProposedEdit[]` and `Resolution.auditFailed?` added.
+    *   New `src/app/api/structured/route.ts` provider-agnostic tool-calling endpoint backing a `propose_edit` tool — replaces regex `parseSuggestedEdit`.
+    *   New `src/lib/ai/orchestrator.ts` `proposeCascadeEdits()` anchors proposals to live positions by fingerprint match; unanchorable or overlapping proposals are dropped. `resolver.ts` calls it on both MADS and single-agent paths.
+    *   New `src/lib/prosemirror/plugins/proposedChangePlugin.ts` renders read-line-aware "called out" decorations; positions re-mapped through `tr.mapping`.
+    *   New `src/lib/prosemirror/applyProposedEdits.ts` does fingerprint validate-or-abort + descending single-transaction apply — fixes the stale-position bug.
+    *   `logResolutionAudit` call sites now `.catch()` and set `resolution.auditFailed` so audit failures are surfaced, not swallowed (Article 12 durability).
+*   **Approval:** Human verified.
+
+**[2026-06-29 00:00:00 UTC] - SECURITY / VERSION_CONTROL**
+*   **Action:** Initialized git repository on `main`; flagged committed secret blocking remote push.
+*   **Agent:** DevOps / Claude Code.
+*   **Context:** The project was not previously under version control (which prevented worktree isolation during this session's work). It was initialized after the v8.3 work landed: two commits — "Initial commit: Intent IDE v8.2 + model/API refresh (Wave 1)" and "Waves 2-3: swarm agents, skills, and in-IDE multi-region agent edits".
+*   **Decisions Logged:**
+    *   A key was committed in `.env` before `.gitignore` covered it. The private GitHub push is BLOCKED until the user rotates the key and the history is scrubbed.
+    *   Convention going forward: initialize git and `.gitignore` (covering `.env`) at project start so isolation, rollback, and safe pushes are available from the beginning.
+    *   Verification at this milestone: `npm run typecheck` 0 errors, `npm run test` 194 passing (+42 new), `npm run build` clean.
+*   **Approval:** Human verified.
