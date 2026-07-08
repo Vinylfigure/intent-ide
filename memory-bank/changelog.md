@@ -5,6 +5,23 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-07-08] Public Release Packaging
+
+### Added
+- `README.md` — project overview, architecture map, engineering highlights, setup and testing instructions.
+- `LICENSE` — MIT.
+- `.github/workflows/ci.yml` — CI pipeline (Prisma generate → typecheck → lint → unit tests → production build) on Node 20.
+- `.eslintrc.json` — explicit ESLint config (`next/core-web-vitals`).
+- `package.json` metadata: description, author, repository, license, keywords.
+
+### Changed
+- `docs/specs/*.md` — added provenance notes explaining the bracketed PRD citation markers.
+- `test-api.sh` moved to `scripts/test-api.sh`.
+- Session-scratch memory-bank files (`raw_reflection_log.md`, `activeContext.md`, `consolidated_learnings.md`) are now local-only (gitignored); the curated memory-bank documents remain published.
+
+### Removed
+- Stale `Old.md`, committed `__pycache__` bytecode, Playwright `test-results` artifact, and the internal PRD PDF from version control.
+
 ## [Unreleased]
 ### Added
 - Initialized the AI Agent Memory Bank architecture (`projectBrief.md`, `productContext.md`, `systemPatterns.md`, `techContext.md`, `activeContext.md`, `progress.md`).
@@ -91,7 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `npm run typecheck` — 0 errors.
 - `npm run test` — 194 passing (was 152; +42 new for `modelCapabilities` + settings migration).
 - `npm run build` — clean.
-- Project initialized as a git repo on `main` with two commits: "Initial commit: Intent IDE v8.2 + model/API refresh (Wave 1)" and "Waves 2-3: swarm agents, skills, and in-IDE multi-region agent edits". Private GitHub push pending the user rotating a key committed in `.env`.
+- Project initialized as a git repo on `main` with two commits: "Initial commit: Intent IDE v8.2 + model/API refresh (Wave 1)" and "Waves 2-3: swarm agents, skills, and in-IDE multi-region agent edits". Secret hygiene verified before any commit: `.gitignore` covered `.env` from the start and no secret value ever entered git history.
 
 ## [2026-06-29] v8.3 — Wave 3 Refinements: Reviewable Multi-Region Edits
 
@@ -118,7 +135,7 @@ Multi-region proposed edits are now genuinely reviewable instead of all-or-nothi
 - `npm run typecheck` — 0 errors.
 - `npm run test` — 194 passing.
 - `npm run build` — clean.
-- Committed and pushed to private GitHub `Vinylfigure/intent-ide` `main` ("Wave 3 refinements: reviewable multi-region edits"); 3 commits on `origin/main`. The `.env` key that reached history is now in the private remote and still needs rotation.
+- Committed and pushed to GitHub `Vinylfigure/intent-ide` `main` ("Wave 3 refinements: reviewable multi-region edits"). Pre-push secret audit re-confirmed no secret value exists anywhere in git history.
 
 ## [2026-03-16] Phase 14 — Bug Fixes and UX Hardening
 

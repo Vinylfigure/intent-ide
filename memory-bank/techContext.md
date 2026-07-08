@@ -1,4 +1,4 @@
-# Tech Context: Intent IDE (v7.0)
+# Tech Context: Intent IDE (v8.3)
 
 ## 1. Frontend Ecosystem & Dependencies
 The frontend is built on Next.js 14+ (App Router) and React 18+. The UI architecture strictly relies on the "Open Code" philosophy. AI agents MUST NOT introduce monolithic third-party component libraries (like Material UI).
@@ -97,7 +97,7 @@ Estimation: Use standard multipliers for estimation (Code: 2.8 chars/token, Mark
 --------------------------------------------------------------------------------
 5. Development Constraints & Agent Directives
 When Claude Code, Cursor, or Windsurf operates on this repository, it MUST adhere strictly to these rules:
-Cursor Rules (.mdc files): All architectural rules must be codified in .cursor/rules/*.mdc files using YAML frontmatter (e.g., description: and globs: ["*.tsx"]) to dynamically trigger context during development.
+Codified agent rules: All architectural rules must be codified in the `.claude/agents/*.md` role definitions and `.claude/skills/*` recipes — the authoritative runtime definitions. Editor-specific mirrors (e.g., Cursor `.mdc` rule files) are kept local-only and untracked.
 Safe DOM Manipulation: NEVER use innerHTML or dangerouslySetInnerHTML. Rely entirely on @assistant-ui/react-streamdown to prevent XSS vulnerabilities.
 Human-in-the-loop (HITL) Enforcement: Do not write code that automatically overwrites the DocumentSource text. Every Resolution must be created with approvalStatus: "PENDING" and wait for the user to interact with the <Confirmation> component UI.
 Task Handoff: For complex feature implementations, the AI agent must break tasks into 15-30 minute subtasks. If the AI's internal context window degrades, it must summarize its progress and use a new_task or handoff tool to start a fresh session before continuing.

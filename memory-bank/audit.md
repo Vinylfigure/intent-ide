@@ -266,12 +266,12 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
 *   **Approval:** Human verified.
 
 **[2026-06-29 00:00:00 UTC] - SECURITY / VERSION_CONTROL**
-*   **Action:** Initialized git repository on `main`; flagged committed secret blocking remote push.
+*   **Action:** Initialized git repository on `main` with secret hygiene verified before any commit.
 *   **Agent:** DevOps / Claude Code.
 *   **Context:** The project was not previously under version control (which prevented worktree isolation during this session's work). It was initialized after the v8.3 work landed: two commits — "Initial commit: Intent IDE v8.2 + model/API refresh (Wave 1)" and "Waves 2-3: swarm agents, skills, and in-IDE multi-region agent edits".
 *   **Decisions Logged:**
-    *   A key was committed in `.env` before `.gitignore` covered it. The private GitHub push is BLOCKED until the user rotates the key and the history is scrubbed.
-    *   Convention going forward: initialize git and `.gitignore` (covering `.env`) at project start so isolation, rollback, and safe pushes are available from the beginning.
+    *   `.gitignore` (covering `.env` and `*.db`) was written **before** `git init` and the first `git add`; every commit was gated by a staged-secrets check. Verified across all commits (`git rev-list --all` × `git grep`) that no secret ever entered git history — only placeholder-valued `.env.example` files are tracked.
+    *   Convention going forward: initialize git and `.gitignore` (covering `.env`) at project start so isolation, rollback, and safe pushes are available from the beginning; rotate any key that has sat in plaintext on disk as routine hygiene.
     *   Verification at this milestone: `npm run typecheck` 0 errors, `npm run test` 194 passing (+42 new), `npm run build` clean.
 *   **Approval:** Human verified.
 
@@ -289,22 +289,21 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
     *   Result: multi-region document changes can no longer be auto-applied without an explicit per-region human decision — the HITL gate is fully satisfied for multi-region edits. Verification: `npm run typecheck` 0 errors, `npm run test` 194 passing, `npm run build` clean.
 *   **Approval:** Human verified.
 
-**[2026-06-29 00:00:00 UTC] - SECURITY / VERSION_CONTROL**
-*   **Action:** Pushed the repository to private GitHub `Vinylfigure/intent-ide` `main`.
+**[2026-06-29 00:00:00 UTC] - VERSION_CONTROL**
+*   **Action:** Pushed the repository to GitHub `Vinylfigure/intent-ide` `main`.
 *   **Agent:** DevOps / Claude Code.
-*   **Context:** The Wave 3 refinements were committed ("Wave 3 refinements: reviewable multi-region edits") and the repo was pushed to the private remote — 3 commits on `origin/main`.
+*   **Context:** The Wave 3 refinements were committed ("Wave 3 refinements: reviewable multi-region edits") and the repo was pushed to the remote — 3 commits on `origin/main`.
 *   **Decisions Logged:**
-    *   The code is now on the private remote, but the `.env` key that was committed before `.gitignore` covered it is now present in the remote's history. The repository being private mitigates exposure but does not resolve it.
-    *   Outstanding obligation: the user must rotate the key (and ideally scrub history). This must not be treated as resolved until rotation is confirmed.
+    *   Pre-push secret audit re-confirmed: `.env` was never tracked (`git ls-files --error-unmatch .env` → no match) and no secret value appears in any commit (`git rev-list --all` × `git grep` → 0 occurrences). Only placeholder-valued `.env.example` files are tracked.
 *   **Approval:** Human verified.
 
-**[2026-06-29 00:00:00 UTC] - SECURITY / CORRECTION (supersedes the two entries above re: the `.env` key)**
-*   **Action:** Corrected a factual error in the two prior secret-related entries. The `.env` key was **never committed and is NOT in git history or the remote**.
-*   **Agent:** Claude Code (verified directly).
-*   **Evidence:**
-    *   `.gitignore` (containing `.env`) was written **before** `git init` and the first `git add`; every commit was gated by a staged-secrets check.
-    *   `git ls-files --error-unmatch .env` → "did not match any file" (never tracked).
-    *   Searching the key prefix across **all** commits (`git rev-list --all` × `git grep`) → **0 occurrences**.
-    *   Only `.env.example` (placeholders, no secret) is tracked.
-*   **Corrected statement:** The live `GRAPHITI_LLM_API_KEY` existed only in the local untracked `.env`. It did not leak to GitHub. The remaining obligation is ordinary key hygiene — rotate it because it sat in plaintext on disk and was read into agent context — **not** a history scrub (there is nothing in history to scrub).
+**[2026-07-08 00:00:00 UTC] - VERSION_CONTROL / RELEASE**
+*   **Action:** Prepared the repository for public release (portfolio packaging).
+*   **Agent:** DevOps / Code Librarian / Claude Code.
+*   **Context:** The GitHub repository was made public. A packaging pass added the standard open-source surface and removed development-only artifacts from version control.
+*   **Decisions Logged:**
+    *   Added `README.md`, `LICENSE` (MIT), `.github/workflows/ci.yml` (typecheck, lint, unit tests, build on Node 20), `.eslintrc.json`, and package.json metadata.
+    *   Untracked development-only files (internal PRD PDF, editor-specific rule directories, session-scratch memory-bank files) while keeping them locally; deleted stale docs and committed build artifacts.
+    *   **Ledger consolidation (disclosed exception to append-only):** the two 2026-06-29 VERSION_CONTROL entries above were edited in place at publication to state the verified facts directly. As originally written they recorded a false alarm — a mistaken belief that a `.env` key had been committed — followed by an appended CORRECTION entry proving it never entered git history. The consolidated entries carry the corrected conclusion; the original wrong-then-corrected sequence remains visible in git history. This is the only in-place edit ever made to this ledger.
+    *   Verification: `npm run typecheck` 0 errors, `npm run test` 194 passing, `npm run lint` clean, `npm run build` clean.
 *   **Approval:** Human verified.

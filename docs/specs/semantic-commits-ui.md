@@ -1,5 +1,7 @@
 # Feature Spec: Semantic Commits & UI/UX
 
+> Bracketed citation markers (e.g. [1], [4, 5]) reference sections of the internal Intent IDE PRD from which this spec was distilled.
+
 ## 1. Core Philosophy: Impact Analysis First
 When updating an intent specification (e.g., project rules, memory, or document context), the UI must support "semantic conflict resolution" [1]. Research shows that users strongly prefer an "Impact Analysis" workflow—they want the AI to flag potential conflicts across the document *before* the AI generates any automated rewrites [2]. 
 

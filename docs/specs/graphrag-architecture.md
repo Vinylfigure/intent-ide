@@ -1,5 +1,7 @@
 # Feature Spec: GraphRAG & Semantic Memory Architecture
 
+> Bracketed citation markers (e.g. [1], [4, 5]) reference sections of the internal Intent IDE PRD from which this spec was distilled.
+
 ## 1. Architectural Philosophy
 Traditional Retrieval-Augmented Generation (RAG) relies on semantic similarity (vector databases) to retrieve isolated text chunks, which severely limits "multi-hop" reasoning [1, 2]. To determine the "blast radius" of a document edit, the system must traverse explicit, multi-step dependencies [1]. 
 

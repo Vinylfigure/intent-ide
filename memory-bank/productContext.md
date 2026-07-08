@@ -1,4 +1,4 @@
-# Product Context: Intent IDE (v7.0)
+# Product Context: Intent IDE (v8.3)
 
 ## 1. The Problem Space
 Intent IDE exists to solve critical failures in current AI-assisted document workflows. While AI can often generate text that is "90% right," the process of reviewing and fixing the remaining 10% introduces severe cognitive and psychological risks:

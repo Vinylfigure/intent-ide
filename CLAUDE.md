@@ -1,4 +1,4 @@
-# Intent IDE (v7.0) - AI Agent Instructions
+# Intent IDE (v8.3) - AI Agent Instructions
 
 You are Claude, an expert software engineer collaborating on the **Intent IDE** project. 
 
@@ -18,6 +18,8 @@ When you complete a task, reach a milestone, or are instructed to "update memory
 3. Log new insights, API quirks, or bug resolutions to `raw_reflection_log.md`.
 4. Add major version or architectural changes to `changelog.md` and `audit.md`.
 
+> Note: the session-scratch files (`activeContext.md`, `raw_reflection_log.md`, `consolidated_learnings.md`) are local-only (gitignored). On a fresh clone, create them on first session; the published memory-bank documents provide the durable context.
+
 ## 🏗️ 2. Project Context & Stack
 *   **Mission**: Build a cognitive, voice-first AI document review tool that replaces "full-document regeneration" with targeted "Semantic Commits".
 *   **Tech Stack**: Next.js 14+ (App Router), React 18, Tailwind CSS, Prisma (SQLite), `shadcn/ui`, and `@assistant-ui/react-streamdown`.
@@ -34,4 +36,6 @@ When you complete a task, reach a milestone, or are instructed to "update memory
 | :--- | :--- |
 | `npm run dev` | Start the Next.js frontend server (localhost:3000) |
 | `npx prisma studio` | Open the database UI to inspect the Audit/Version Control logs |
+| `npm run typecheck` | TypeScript check (`tsc --noEmit`) |
+| `npm run test` | Vitest unit tests |
 | `npm run lint` | Run ESLint |

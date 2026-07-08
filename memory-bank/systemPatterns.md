@@ -1,4 +1,4 @@
-# System Patterns: Intent IDE (v7.0)
+# System Patterns: Intent IDE (v8.3)
 
 ## 1. System Architecture Overview
 Intent IDE moves away from standard monolithic LLM calls (simple RAG) to a structured, agentic cognitive architecture. The system is divided into three primary layers:

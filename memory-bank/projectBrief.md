@@ -1,4 +1,4 @@
-# Project Brief: Intent IDE (v7.0)
+# Project Brief: Intent IDE (v8.3)
 
 ## 1. Project Identity & Core Thesis
 **Project Name:** Intent IDE  
