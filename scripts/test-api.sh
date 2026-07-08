@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # API smoke tests for Intent IDE
-# Usage: API_KEY=sk-ant-... bash test-api.sh
-# Or for Ollama: PROVIDER=ollama bash test-api.sh
+# Usage: API_KEY=sk-ant-... bash scripts/test-api.sh
+# Or for Ollama: PROVIDER=ollama bash scripts/test-api.sh
 
 API_KEY="${API_KEY:-}"
 PROVIDER="${PROVIDER:-claude}"

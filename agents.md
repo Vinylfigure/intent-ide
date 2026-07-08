@@ -33,7 +33,7 @@ Supporting Claude Code subagent types still available: `product-manager`, `refac
 - **No XSS:** never `innerHTML` / `dangerouslySetInnerHTML`; render AI/markdown via assistant-ui / Streamdown.
 - **HITL:** document/global changes never auto-apply — always gated through `SemanticCommitModal` / a `<Confirmation>` step.
 - **Append-only audit:** the Prisma v7 + SQLite ledger logs old/new values; never mutate or delete entries.
-- **Memory Bank:** read `memory-bank/activeContext.md` at session start; update after every completed task.
+- **Memory Bank:** read `memory-bank/activeContext.md` at session start (local-only/gitignored — create it on first session from a fresh clone); update after every completed task.
 - **GraphRAG MCP:** boot via `graphiti_mcp_server.py` in `/mcp_server` (not standard REST).
 
 ## Stack

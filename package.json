@@ -2,6 +2,24 @@
   "name": "intent-ide",
   "version": "0.1.0",
   "private": true,
+  "description": "Voice-first AI document review tool — semantic commits instead of full-document regeneration. ProseMirror + Next.js + multi-agent debate (MADS) + GraphRAG cascade analysis.",
+  "author": "Vinylfigure",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Vinylfigure/intent-ide.git"
+  },
+  "keywords": [
+    "ai",
+    "document-review",
+    "prosemirror",
+    "nextjs",
+    "llm",
+    "multi-agent",
+    "graphrag",
+    "voice",
+    "human-in-the-loop"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",

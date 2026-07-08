@@ -7,7 +7,7 @@ description: Build an entire implementation wave from the Intent IDE plan. Reads
 
 ## Steps
 
-1. Read the plan at `/Users/a/.claude/plans/iterative-conjuring-island.md`.
+1. Read the active implementation plan (the plan file referenced in the current session, or ask the user which plan to build from).
 
 2. Identify the wave number from user input (e.g., "build wave 3").
 

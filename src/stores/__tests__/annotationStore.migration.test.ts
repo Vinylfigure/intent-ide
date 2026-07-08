@@ -22,7 +22,6 @@ function migrateAnnotations(annotations: Annotation[]): Annotation[] {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeAnnotation(overrides: Record<string, any> & { type: string }): Annotation {
   return {
     id: 'test-id',

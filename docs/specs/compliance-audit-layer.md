@@ -1,5 +1,7 @@
 # Feature Spec: Compliance & Audit Infrastructure
 
+> Bracketed citation markers (e.g. [1], [4, 5]) reference sections of the internal Intent IDE PRD from which this spec was distilled.
+
 ## 1. Regulatory Context & ALCOA+ Principles
 This application operates in a high-risk environment governed by the EU AI Act and global data integrity standards. To comply, the system architecture must natively enforce the **ALCOA+ principles**: data must be Attributable, Legible, Contemporaneous, Original, Accurate, Complete, Consistent, Enduring, Available, and Traceable [4, 5]. 
 
