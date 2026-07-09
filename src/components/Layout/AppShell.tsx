@@ -11,6 +11,7 @@ import { ApiKeyModal } from '@/components/Settings/ApiKeyModal'
 import { AgentConfigPanel } from '@/components/Settings/AgentConfigPanel'
 import { DocumentHubSidebar } from '@/components/Layout/DocumentHubSidebar'
 import { AuditLogViewer } from '@/components/Annotations/AuditLogViewer'
+import { HistoryPanel } from '@/components/History/HistoryPanel'
 import { DocInputModal } from '@/components/DocInput/DocInputModal'
 import { ToastContainer } from '@/components/Layout/ToastContainer'
 import { FloatingIconBar } from '@/components/Editor/FloatingIconBar'
@@ -23,7 +24,7 @@ import { initHotkeyListener, registerHotkey } from '@/lib/utils/hotkeys'
 import { toggleVoiceCapture } from '@/lib/voice/pipeline'
 import { triggerFloatingBar } from '@/lib/prosemirror/plugins/contextMenuPlugin'
 
-type SidebarTab = 'annotations' | 'changes' | 'documents' | 'audit'
+type SidebarTab = 'annotations' | 'changes' | 'documents' | 'history' | 'audit'
 
 export function AppShell() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('annotations')
@@ -172,6 +173,16 @@ export function AppShell() {
               Documents
             </button>
             <button
+              onClick={() => setSidebarTab('history')}
+              className={`flex-1 px-4 py-3 text-[10px] font-mono uppercase tracking-[0.24em] transition-colors ${
+                sidebarTab === 'history'
+                  ? 'text-accent border-b-2 border-accent bg-white/80'
+                  : 'text-muted hover:text-ink hover:bg-white/40'
+              }`}
+            >
+              History
+            </button>
+            <button
               onClick={() => setSidebarTab('audit')}
               className={`flex-1 px-4 py-3 text-[10px] font-mono uppercase tracking-[0.24em] transition-colors ${
                 sidebarTab === 'audit'
@@ -196,6 +207,8 @@ export function AppShell() {
               <AnnotationPanel />
             ) : sidebarTab === 'changes' ? (
               <ChangesPanel />
+            ) : sidebarTab === 'history' ? (
+              <HistoryPanel />
             ) : sidebarTab === 'audit' ? (
               <AuditLogViewer />
             ) : (
