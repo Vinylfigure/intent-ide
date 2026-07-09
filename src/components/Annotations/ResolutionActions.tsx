@@ -13,7 +13,7 @@ import { runCascadeCheck } from '@/lib/graphrag/cascadeCheck'
 import { ingestAnnotationEpisode, ingestEditEpisode } from '@/lib/graphrag/episodeIngestion'
 import { recordHumanDecision, handlerToApprovalAction } from '@/lib/audit/approvalGate'
 import { applyUncertaintyFromLogprobs, applyUncertaintyFromFlags } from '@/lib/ai/uncertainty'
-import { getProposedAnchors } from '@/lib/prosemirror/plugins/proposedChangePlugin'
+import { getProposedAnchors, setProposedEditStatus } from '@/lib/prosemirror/plugins/proposedChangePlugin'
 import { applyProposedEdits } from '@/lib/prosemirror/applyProposedEdits'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { createCommit } from '@/lib/history/commits'
@@ -452,6 +452,12 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
       <SemanticCommitModal
         changes={commitChanges}
         initialRejected={commitInitialRejected}
+        onToggle={(id, status) => {
+          // Modal → plugin write-back: the plugin's status is the single
+          // pre-apply source of truth across all review surfaces. No-ops for
+          // ids the plugin doesn't track (single-edit fallback rows).
+          if (view) setProposedEditStatus(view, id, status)
+        }}
         onConfirm={(ids) => applyConfirmedEdit(ids)}
         onCancel={() => { setShowDiffModal(false); setPendingHandler(null) }}
         provocation={annotation.resolution?.provocation}

@@ -1,7 +1,10 @@
 import type { EditorView } from 'prosemirror-view'
-import type { Node as PMNode } from 'prosemirror-model'
 import { getProposedAnchors } from './plugins/proposedChangePlugin'
-import { blockTextRange } from './blockIds'
+import { blockTextRange, findTextInDoc } from './blockIds'
+
+// Compat re-export: findTextInDoc moved to blockIds.ts (the proposedChange
+// plugin needs it for re-anchoring, and importing it from here would cycle).
+export { findTextInDoc } from './blockIds'
 
 /**
  * Applies a set of accepted proposed edits in ONE transaction, safely.
@@ -27,24 +30,6 @@ export interface AppliedEdit {
 export type ApplyProposedResult =
   | { ok: true; applied: AppliedEdit[] }
   | { ok: false; reason: string }
-
-/** First single-text-node occurrence of `query`, as ProseMirror positions. */
-export function findTextInDoc(doc: PMNode, query: string): { from: number; to: number } | null {
-  if (!query) return null
-  let result: { from: number; to: number } | null = null
-  doc.descendants((node, pos) => {
-    if (result) return false
-    if (node.isText && node.text) {
-      const idx = node.text.indexOf(query)
-      if (idx !== -1) {
-        result = { from: pos + idx, to: pos + idx + query.length }
-        return false
-      }
-    }
-    return true
-  })
-  return result
-}
 
 export function applyProposedEdits(view: EditorView, acceptedIds: string[]): ApplyProposedResult {
   const anchors = getProposedAnchors(view.state)

@@ -32,6 +32,13 @@ interface SemanticCommitModalProps {
   isHighRisk?: boolean
   /** Change ids already rejected inline — pre-toggled off so the two surfaces agree. */
   initialRejected?: Record<string, boolean>
+  /**
+   * Called when the user flips a change's Accept/Reject toggle, so the caller
+   * can write the status back to the pre-apply source of truth (the
+   * proposedChange plugin) and keep the inline control, CascadeList, and this
+   * modal in agreement.
+   */
+  onToggle?: (id: string, status: 'accepted' | 'rejected') => void
 }
 
 /**
@@ -50,6 +57,7 @@ export function SemanticCommitModal({
   provocation,
   isHighRisk = false,
   initialRejected,
+  onToggle,
 }: SemanticCommitModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null)
   const [acknowledged, setAcknowledged] = useState(false)
@@ -75,8 +83,12 @@ export function SemanticCommitModal({
         ? `Apply ${acceptedIds.length} change${acceptedIds.length !== 1 ? 's' : ''}`
         : 'Apply All Changes'
 
-  const toggle = (id: string) =>
-    setRejected((r) => ({ ...r, [id]: !r[id] }))
+  // Flip a change and mirror the new status into the plugin (single pre-apply
+  // source of truth across inline control, CascadeList, and this modal).
+  const setChoice = (id: string, status: 'accepted' | 'rejected') => {
+    setRejected((r) => ({ ...r, [id]: status === 'rejected' }))
+    onToggle?.(id, status)
+  }
 
   return (
     <div
@@ -121,7 +133,9 @@ export function SemanticCommitModal({
                         </span>
                       )}
                       <button
-                        onClick={() => !isRejected || toggle(change.id)}
+                        onClick={() => {
+                          if (isRejected) setChoice(change.id, 'accepted')
+                        }}
                         className={`px-2 py-0.5 text-xs font-medium rounded border transition-colors ${
                           !isRejected
                             ? 'border-green-400 bg-green-50 text-green-700'
@@ -131,7 +145,9 @@ export function SemanticCommitModal({
                         Accept
                       </button>
                       <button
-                        onClick={() => isRejected || toggle(change.id)}
+                        onClick={() => {
+                          if (!isRejected) setChoice(change.id, 'rejected')
+                        }}
                         className={`px-2 py-0.5 text-xs font-medium rounded border transition-colors ${
                           isRejected
                             ? 'border-red-400 bg-red-50 text-red-700'

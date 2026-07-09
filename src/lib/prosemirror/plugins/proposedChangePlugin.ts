@@ -1,6 +1,7 @@
 import { Plugin, PluginKey, Transaction, EditorState } from 'prosemirror-state'
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
 import { readLinePluginKey } from './readLinePlugin'
+import { blockTextRange, findTextInDoc } from '../blockIds'
 import { useProposedEditUiStore } from '@/stores/proposedEditUiStore'
 import type {
   CascadeEvidence,
@@ -200,12 +201,48 @@ export function createProposedChangePlugin(): Plugin {
 
 // --- Helpers --------------------------------------------------------------
 
-/** Show a resolution's proposed edits as decorations. */
+/**
+ * Show a resolution's proposed edits as decorations.
+ *
+ * Drift fix: stored edit positions were captured at proposal time and the
+ * document may have changed since (typing, an earlier apply, a re-reveal).
+ * Each edit is re-anchored against the CURRENT doc before its anchor is
+ * stored: prefer the block-scoped match when the edit knows its blockId
+ * (disambiguating repeated phrases), fall back to a whole-doc fingerprint
+ * search, and DROP edits whose target text no longer resolves anywhere
+ * (a stale anchor decorating the wrong text is worse than no decoration).
+ * Insertions (empty targetText) can't be fingerprinted and pass through
+ * with their stored positions.
+ */
 export function setProposedEdits(view: EditorView, edits: ProposedEdit[]) {
+  const doc = view.state.doc
+  const reanchored: ProposedEdit[] = []
+  let dropped = 0
+  for (const e of edits) {
+    if (!e.targetText) {
+      reanchored.push(e)
+      continue
+    }
+    const range =
+      (e.blockId ? blockTextRange(doc, e.blockId, e.targetText) : null) ??
+      findTextInDoc(doc, e.targetText)
+    if (!range) {
+      dropped++
+      continue
+    }
+    reanchored.push(
+      range.from === e.from && range.to === e.to ? e : { ...e, from: range.from, to: range.to },
+    )
+  }
+  if (dropped > 0) {
+    console.warn(
+      `proposedChangePlugin: dropped ${dropped} proposed edit(s) whose target text no longer resolves in the document`,
+    )
+  }
   view.dispatch(
     view.state.tr.setMeta(proposedChangePluginKey, {
       action: 'setEdits',
-      edits,
+      edits: reanchored,
     } as ProposedChangeMeta),
   )
 }

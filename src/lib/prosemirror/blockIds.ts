@@ -114,6 +114,28 @@ export function computeBlockIdFixes(
 }
 
 /**
+ * First single-text-node occurrence of `query`, as ProseMirror positions.
+ * (Lives here — not in applyProposedEdits — so the proposedChange plugin can
+ * re-anchor without an import cycle; applyProposedEdits re-exports it.)
+ */
+export function findTextInDoc(doc: PMNode, query: string): { from: number; to: number } | null {
+  if (!query) return null
+  let result: { from: number; to: number } | null = null
+  doc.descendants((node, pos) => {
+    if (result) return false
+    if (node.isText && node.text) {
+      const idx = node.text.indexOf(query)
+      if (idx !== -1) {
+        result = { from: pos + idx, to: pos + idx + query.length }
+        return false
+      }
+    }
+    return true
+  })
+  return result
+}
+
+/**
  * Locate `query` inside the block with `blockId`, spanning marks (bold/italic split
  * text nodes but positions stay contiguous). Unlike `findTextInDoc`, this
  * disambiguates repeated phrases by block and can match across mark boundaries.
