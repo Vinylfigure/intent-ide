@@ -32,6 +32,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "bench:live": "BENCH_LIVE=1 vitest run src/lib/graphrag/__tests__/editPropBench.live.test.ts"
   },
   "dependencies": {

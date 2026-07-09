@@ -14,6 +14,7 @@ AI can one-shot a document that's 90% right. The unsolved problem is the last 10
 <!-- screenshot: main editor with annotations panel -->
 <!-- screenshot: multi-region cascade review with inline accept/reject -->
 <!-- screenshot: semantic commit modal with per-change diff toggles -->
+<!-- screenshot: history panel with version chain and restore confirmation -->
 
 ## How it works
 
@@ -38,7 +39,7 @@ AI can one-shot a document that's 90% right. The unsolved problem is the last 10
 
 ```
 src/app/              Next.js App Router pages + API routes
-  api/                classify | resolve | generate | structured | transcribe | audit
+  api/                classify | resolve | generate | structured | transcribe | audit | history
 src/components/       React components by feature
   Editor/             ProseMirror shell, commit modal, proposed-edit controls, toolbar
   Annotations/        cards, threads, cascade list, minimap, resolution actions
@@ -66,6 +67,39 @@ Engineering details a reviewer might care about:
 - **Validate-or-abort apply** — multi-region edits are fingerprint-validated against live document text and applied in a single descending transaction, so stale positions abort instead of corrupting
 - **Model capability gating** — `modelRejectsSampling()` centralizes per-model API quirks (newer Claude models reject `temperature`), so routes never hand-roll compatibility logic
 - **Hardened persistence** — persisted Zustand stores use `partialize` caps, quota-error handling with emergency pruning, and rehydration migrations for legacy data shapes
+
+### How the cascade works
+
+When an edit lands, other parts of the document can silently go stale — a figure quoted twice, a clause that depends on a definition you just changed. Instead of sending the whole document to a model and trusting whatever comes back, the cascade is a pipeline where the model only proposes and everything load-bearing is verified:
+
+```mermaid
+flowchart LR
+  A[Stable blockIds<br/>per textblock] --> B[Document dependency graph<br/>deterministic + LLM edges<br/>embedding pass planned]
+  B --> C[Graph-scoped proposals<br/>N-hop neighborhood only]
+  C --> D[Derived severity<br/>evidence-gated]
+  D --> E[Relevance judge<br/>on every 'must']
+  E --> F[HITL review<br/>decorations · list · commit modal]
+```
+
+1. **Stable block identity.** Every textblock carries a `blockId` attribute maintained by a ProseMirror plugin across splits, joins, and edits ([`src/lib/prosemirror/blockIds.ts`](src/lib/prosemirror/blockIds.ts)) — so graph edges and evidence citations keep pointing at the right text as the document changes.
+2. **Document dependency graph.** Blocks become nodes; typed edges (`defines`, `references`, `depends-on`, `contradicts`, `duplicates`, …) come from deterministic extractors (cross-references, defined terms, duplicated sentences) plus one cached LLM extraction pass, content-hash cached per document state ([`src/lib/graphrag/docGraph.ts`](src/lib/graphrag/docGraph.ts)). An embedding-similarity pass is the planned third edge source.
+3. **Graph-scoped proposals.** Only the primary edit's bounded N-hop neighborhood is sent to the model — never a truncated whole-document dump, so long documents cascade end to end. Returned `propose_edit` tool calls are anchored blockId-first with a fingerprint-search fallback, and anything landing outside the sent neighborhood is dropped ([`src/lib/ai/orchestrator.ts`](src/lib/ai/orchestrator.ts)).
+4. **Derived severity with evidence gating.** Severity is computed, never trusted from the model: a proposal with no locatable verbatim citation is `optional` (a lead); a cited proposal is `probably`; only a cited proposal whose target still verbatim-contains content the primary edit changed is `must`.
+5. **Relevance judge.** Every `must` candidate then gets a second, batched LLM cross-examination — matching strings are not matching meaning — and unconfirmed candidates are demoted with the judge's reason attached ([`src/lib/ai/relevanceJudge.ts`](src/lib/ai/relevanceJudge.ts)).
+6. **Human review, three surfaces, one source of truth.** Proposals render as read-line-aware inline decorations ([`src/lib/prosemirror/plugins/proposedChangePlugin.ts`](src/lib/prosemirror/plugins/proposedChangePlugin.ts)), a navigable cascade list with citations, and the semantic commit modal with per-change severity badges and accept/reject toggles ([`src/components/Editor/SemanticCommitModal.tsx`](src/components/Editor/SemanticCommitModal.tsx)). Accepted changes apply in one validated transaction.
+
+The whole pipeline (graph build, scoping, anchoring, severity, judge) runs unmodified under an EditPropBench-style regression eval — see [Evaluation](#evaluation).
+
+### Version history & compliance
+
+Document history follows the git model in accessible language ([`src/lib/history/`](src/lib/history), [`src/app/api/history/route.ts`](src/app/api/history/route.ts)):
+
+- **Two-level content addressing** — `contentHash` covers document content only (the "tree"); the primary-key `hash` also covers provenance (parent, kind, message, actor, annotation, audit links, model version), so versions with identical content but different provenance stay distinct records ([`src/lib/history/canonical.ts`](src/lib/history/canonical.ts)).
+- **Append-only, tamper-evident** — the API exposes no edit or delete operations, enforces one linear chain per document, and re-verifies both hashes server-side on every write.
+- **Captured at the moments that matter** — document creation (`import`), applied AI changes (`apply`, linked to the annotation and its audit records), edit-session saves (`direct`, content-deduped), and restores (`restore`).
+- **Restores never rewrite history** — restoring appends a new version linked to an EU AI Act Article 14 human-oversight record, written *before* the editor mutates; `apply` versions carry their Article 12 audit-record ids. The full compliance statement is in [docs/compliance.md](docs/compliance.md).
+
+The History tab ([`src/components/History/HistoryPanel.tsx`](src/components/History/HistoryPanel.tsx)) shows the chain with per-version diffs, two-version compare, and confirmation-gated restore.
 
 ## AI-augmented development
 
@@ -125,11 +159,13 @@ Known limits on Vercel: LLM/transcription routes cap at 60s (`maxDuration`), and
 ## Testing
 
 ```bash
-npm run test         # Vitest — 194 unit tests (prompts, stores, migrations, model gates)
+npm run test         # Vitest — 370 unit tests (cascade pipeline, history, stores, prompts, model gates)
 npm run typecheck    # tsc --noEmit
 npm run lint         # ESLint (next/core-web-vitals)
-npx playwright test  # optional e2e (needs dev server; graph tests skip without FalkorDB)
+npm run test:e2e     # Playwright e2e (starts its own dev server)
 ```
+
+The main e2e spec ([`tests/cascade-review.spec.ts`](tests/cascade-review.spec.ts)) drives the full loop — paste document → annotate → cascade proposal → per-change review → apply → version history — against the real UI and the real audit/history SQLite routes, with the LLM endpoints network-intercepted so it needs **no API keys**. The legacy ingestion spec additionally expects FalkorDB and skips its graph assertion without it.
 
 CI runs typecheck, lint, unit tests, and a production build on every push.
 
