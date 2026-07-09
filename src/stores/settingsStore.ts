@@ -85,11 +85,20 @@ interface SettingsState {
    * derived severities stand unverified.
    */
   judgeEnabled: boolean
+  /**
+   * Anonymous severity-calibration telemetry (default OFF — public repo,
+   * other users). When on, cascade accept/reject decisions send metadata-only
+   * events (severity × action, never document content or ids) to PostHog if
+   * one is wired. The local calibration aggregate records regardless — it
+   * never leaves the machine.
+   */
+  telemetryEnabled: boolean
   setLLMConfig: (config: Partial<LLMConfig>) => void
   setWhisperKey: (key: string) => void
   setShowApiKeyModal: (show: boolean) => void
   setEmbeddingsEnabled: (enabled: boolean) => void
   setJudgeEnabled: (enabled: boolean) => void
+  setTelemetryEnabled: (enabled: boolean) => void
   hasKeys: () => boolean
 }
 
@@ -106,12 +115,14 @@ export const useSettingsStore = create<SettingsState>()(
       showApiKeyModal: false,
       embeddingsEnabled: true,
       judgeEnabled: true,
+      telemetryEnabled: false,
       setLLMConfig: (config) =>
         set((s) => ({ llmConfig: { ...s.llmConfig, ...config } })),
       setWhisperKey: (key) => set({ whisperApiKey: key }),
       setShowApiKeyModal: (show) => set({ showApiKeyModal: show }),
       setEmbeddingsEnabled: (enabled) => set({ embeddingsEnabled: enabled }),
       setJudgeEnabled: (enabled) => set({ judgeEnabled: enabled }),
+      setTelemetryEnabled: (enabled) => set({ telemetryEnabled: enabled }),
       hasKeys: () => {
         const s = get()
         // Ollama runs locally — no API key needed
@@ -135,6 +146,11 @@ export const useSettingsStore = create<SettingsState>()(
         }
         if (state && typeof (state as { judgeEnabled?: unknown }).judgeEnabled !== 'boolean') {
           state.setJudgeEnabled(true)
+        }
+        // Privacy-sensitive: anything other than an explicit stored `true`
+        // resolves to OFF.
+        if (state && typeof (state as { telemetryEnabled?: unknown }).telemetryEnabled !== 'boolean') {
+          state.setTelemetryEnabled(false)
         }
       },
     }

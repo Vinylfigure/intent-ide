@@ -20,6 +20,10 @@ import {
   type CommitStatusSnapshot,
 } from '@/lib/annotations/commitStatusSnapshot'
 import { applyProposedEdits } from '@/lib/prosemirror/applyProposedEdits'
+import {
+  recordCascadeDecision,
+  recordCascadeStatusChange,
+} from '@/lib/telemetry/cascadeCalibration'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { createCommit } from '@/lib/history/commits'
 import { SemanticCommitModal } from '@/components/Editor/SemanticCommitModal'
@@ -151,6 +155,20 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         setShowDiffModal(false)
         setPendingHandler(null)
         return
+      }
+      // Calibration telemetry: each APPLIED cascade edit (metadata only;
+      // primary edits carry no calibration signal). 'applied' is a distinct
+      // action from the accepted/rejected status changes, so no status guard.
+      const appliedIds = new Set(ids)
+      for (const e of proposed) {
+        if (e.relation !== 'cascade' || !appliedIds.has(e.id)) continue
+        recordCascadeDecision({
+          severity: e.severity,
+          edgeType: e.evidence?.edgeType ?? null,
+          relation: 'cascade',
+          action: 'applied',
+          source: 'modal',
+        })
       }
       for (const ap of result.applied) {
         useChangesStore.getState().addEntry({
@@ -463,7 +481,13 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
           // Modal → plugin write-back: the plugin's status is the single
           // pre-apply source of truth across all review surfaces. No-ops for
           // ids the plugin doesn't track (single-edit fallback rows).
-          if (view) setProposedEditStatus(view, id, status)
+          if (view) {
+            // Calibration telemetry (metadata only): guarded against the
+            // CURRENT plugin status so echoed toggles never double-count.
+            const current = getProposedAnchors(view.state).get(id)
+            if (current) recordCascadeStatusChange(current, status, 'modal')
+            setProposedEditStatus(view, id, status)
+          }
         }}
         onConfirm={(ids) => {
           // Confirm: the live statuses stand — drop the snapshot, no restore.
