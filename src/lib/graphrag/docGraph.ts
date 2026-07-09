@@ -4,6 +4,7 @@ import type { LLMConfig } from '@/stores/settingsStore'
 import type { CascadeEdgeType } from '@/lib/annotations/types'
 import { collectTextblocks } from '@/lib/prosemirror/blockIds'
 import { fetchStructured, type CallStructuredFn } from '@/lib/ai/structuredClient'
+import { pickUtilityModel } from '@/lib/ai/modelCapabilities'
 
 /**
  * Document dependency graph — the retrieval index the cascade queries instead
@@ -354,7 +355,8 @@ export async function augmentWithLlmEdges(
         maxTokens: 2000,
         temperature: 0.1,
       },
-      config,
+      // Edge extraction is utility work — route it to the cheap model.
+      { ...config, model: pickUtilityModel(config) },
     )
     toolCalls = res.toolCalls
   } catch {

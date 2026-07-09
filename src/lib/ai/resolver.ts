@@ -9,6 +9,7 @@ import { getBlockText, getSectionText } from '@/lib/prosemirror/helpers'
 import { runMADS } from './mads'
 import { logResolutionAudit } from '@/lib/audit/auditLogger'
 import { primaryProposedEdit, proposeCascadeEdits } from './orchestrator'
+import { pickUtilityModel } from './modelCapabilities'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { getDefaultVerbosity } from '@/lib/annotations/types'
 import type { Annotation, ConversationMessage, Resolution, ResolutionAction, SuggestedEdit, Scope, Verbosity } from '@/lib/annotations/types'
@@ -679,8 +680,7 @@ async function maybeCompactContext(): Promise<void> {
 
   // Compaction is pure housekeeping — pin it to the cheapest capable model so it
   // never runs at Opus/Fable prices when the user has selected one of those.
-  const compactionModel =
-    config.provider === 'claude' ? 'claude-haiku-4-5' : config.model
+  const compactionModel = pickUtilityModel(config)
 
   try {
     const response = await fetch('/api/resolve', {

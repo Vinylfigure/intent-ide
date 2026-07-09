@@ -72,6 +72,29 @@ describe('judgeMustCandidates — batching and prompt shape', () => {
     expect(everything.toLowerCase()).not.toContain("'must'")
   })
 
+  it('routes the verdict call to the utility model (Haiku on Claude, unchanged elsewhere)', async () => {
+    const seen: string[] = []
+    const capturingCall: CallStructuredFn = async (_req, config) => {
+      seen.push(config.model)
+      return { toolCalls: [] }
+    }
+    await judgeMustCandidates(
+      [candidate()],
+      PRIMARY,
+      DOC,
+      { provider: 'claude', apiKey: 'k', model: 'claude-fable-5' },
+      capturingCall,
+    )
+    await judgeMustCandidates(
+      [candidate()],
+      PRIMARY,
+      DOC,
+      { provider: 'ollama', apiKey: '', model: 'llama3.2' },
+      capturingCall,
+    )
+    expect(seen).toEqual(['claude-haiku-4-5', 'llama3.2'])
+  })
+
   it('returns an empty map without calling the model when there are no candidates', async () => {
     let called = false
     const verdicts = await judgeMustCandidates([], PRIMARY, DOC, CONFIG, async () => {

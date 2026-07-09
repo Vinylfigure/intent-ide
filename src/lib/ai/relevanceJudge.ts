@@ -2,6 +2,7 @@ import type { Node as PMNode } from 'prosemirror-model'
 import type { ProposedEdit } from '@/lib/annotations/types'
 import type { LLMConfig } from '@/stores/settingsStore'
 import { fetchStructured, type CallStructuredFn } from '@/lib/ai/structuredClient'
+import { pickUtilityModel } from '@/lib/ai/modelCapabilities'
 
 /**
  * LLM relevance judge for 'must' cascade candidates.
@@ -118,7 +119,8 @@ export async function judgeMustCandidates(
       maxTokens: 1000,
       temperature: 0,
     },
-    config,
+    // Verdict checking is utility work — route it to the cheap model.
+    { ...config, model: pickUtilityModel(config) },
   )
 
   for (const tc of toolCalls) {

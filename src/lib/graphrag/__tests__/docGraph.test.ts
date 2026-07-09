@@ -231,6 +231,25 @@ describe('augmentWithLlmEdges', () => {
     expect(llmEdges[0].evidence).toBeUndefined()
   })
 
+  it('routes the extraction call to the utility model (Haiku on Claude, unchanged elsewhere)', async () => {
+    const seen: string[] = []
+    const capturingCall: CallStructuredFn = async (_req, config) => {
+      seen.push(config.model)
+      return { toolCalls: [] }
+    }
+    await augmentWithLlmEdges(
+      buildDeterministicGraph(doc),
+      { provider: 'claude', apiKey: 'k', model: 'claude-fable-5' },
+      capturingCall,
+    )
+    await augmentWithLlmEdges(
+      buildDeterministicGraph(doc),
+      { provider: 'ollama', apiKey: '', model: 'llama3.2' },
+      capturingCall,
+    )
+    expect(seen).toEqual(['claude-haiku-4-5', 'llama3.2'])
+  })
+
   it('leaves the deterministic graph intact when the call throws', async () => {
     const graph = buildDeterministicGraph(doc)
     const before = graph.edges.length
