@@ -2,7 +2,8 @@
 
 import { useEditorStore } from '@/stores/editorStore'
 import { getProposedAnchors, setProposedEditStatus } from '@/lib/prosemirror/plugins/proposedChangePlugin'
-import type { Annotation, ProposedEdit, ProposedEditStatus } from '@/lib/annotations/types'
+import type { Annotation, CascadeSeverity, ProposedEdit, ProposedEditStatus } from '@/lib/annotations/types'
+import { SEVERITY_LABELS, SEVERITY_ORDER } from '@/lib/annotations/types'
 
 interface CascadeListProps {
   annotation: Annotation
@@ -18,6 +19,12 @@ const STATUS_PILL_STYLES: Record<ProposedEditStatus, string> = {
   pending: 'bg-amber-100 text-amber-800',
   accepted: 'bg-emerald-100 text-emerald-800',
   rejected: 'bg-stone-200 text-stone-700',
+}
+
+const SEVERITY_PILL_STYLES: Record<CascadeSeverity, string> = {
+  must: 'bg-red-100 text-red-800',
+  probably: 'bg-amber-100 text-amber-800',
+  optional: 'bg-stone-200 text-stone-700',
 }
 
 function truncate(text: string, max = 80): string {
@@ -42,7 +49,11 @@ export function CascadeList({ annotation }: CascadeListProps) {
   const edits = annotation.resolution?.edits
   if (annotation.status !== 'resolved' || !edits || edits.length <= 1) return null
 
-  const cascades = edits.filter((e) => e.relation === 'cascade')
+  const cascades = edits
+    .filter((e) => e.relation === 'cascade')
+    .sort(
+      (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.from - b.from,
+    )
   if (cascades.length === 0) return null
 
   const count = cascades.length
@@ -106,12 +117,22 @@ export function CascadeList({ annotation }: CascadeListProps) {
                 className="w-full text-left flex items-start gap-2 cursor-pointer group"
               >
                 <span
+                  className={`px-1.5 py-0.5 rounded-full text-[9px] font-mono shrink-0 ${SEVERITY_PILL_STYLES[edit.severity]}`}
+                >
+                  {SEVERITY_LABELS[edit.severity]}
+                </span>
+                <span
                   className={`px-1.5 py-0.5 rounded-full text-[9px] font-mono shrink-0 ${STATUS_PILL_STYLES[status]}`}
                 >
                   {STATUS_PILL_LABELS[status]}
                 </span>
                 <span className="text-xs text-ink/80 leading-snug group-hover:text-ink">
                   {truncate(edit.reason || edit.targetText || 'Downstream change')}
+                  {edit.evidence && (
+                    <span className="text-ink/50">
+                      {' '}· cites &ldquo;{truncate(edit.evidence.quotedText, 40)}&rdquo;
+                    </span>
+                  )}
                 </span>
               </button>
 

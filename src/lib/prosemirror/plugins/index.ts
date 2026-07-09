@@ -11,6 +11,7 @@ import { createContextMenuPlugin } from './contextMenuPlugin'
 import { createConflictPlugin } from './conflictPlugin'
 import { createUncertaintyPlugin } from './uncertaintyPlugin'
 import { createProposedChangePlugin } from './proposedChangePlugin'
+import { createBlockIdPlugin } from './blockIdPlugin'
 
 export function createPlugins(): Plugin[] {
   return [
@@ -27,6 +28,7 @@ export function createPlugins(): Plugin[] {
     createUncertaintyPlugin(),
     createProposedChangePlugin(),
     createFocusInferencePlugin(),
+    createBlockIdPlugin(),
     createChangeTrackingPlugin(),
     createReadLinePlugin(),
     createContextMenuPlugin(),

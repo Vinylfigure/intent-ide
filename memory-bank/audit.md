@@ -307,3 +307,29 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
     *   **Ledger consolidation (disclosed exception to append-only):** the two 2026-06-29 VERSION_CONTROL entries above were edited in place at publication to state the verified facts directly. As originally written they recorded a false alarm — a mistaken belief that a `.env` key had been committed — followed by an appended CORRECTION entry proving it never entered git history. The consolidated entries carry the corrected conclusion; the original wrong-then-corrected sequence remains visible in git history. This is the only in-place edit ever made to this ledger.
     *   Verification: `npm run typecheck` 0 errors, `npm run test` 194 passing, `npm run lint` clean, `npm run build` clean.
 *   **Approval:** Human verified.
+
+**[2026-07-09 00:00:00 UTC] - ARCHITECTURE_CHANGE**
+*   **Action:** Rebuilt the cascade as a precision-first, block-keyed document dependency graph (v8.4 candidate; branch `claude/cascade-graph`, PR #4 — pending merge, `main` is branch-protected).
+*   **Agent:** Architect / Full swarm / Claude Code (Fable 5), from the local untracked brief `docs/fable5-cascade-brief.md`.
+*   **Context:** The two prior cascade mechanisms were both stubs: the editable path sent a whole doc truncated to 6000 chars in one LLM pass (pages 5+ invisible) and anchored by first-substring-match (wrong-occurrence risk on repeated phrases); the Graphiti path flagged every entity-name mention read-only. No stable block identity existed anywhere.
+*   **Decisions Logged:**
+    *   Stable `blockId` attrs on all block nodes (`schema.ts` `withBlockId` + `blockIdPlugin.ts`); `parseDOM` deliberately does NOT round-trip `data-block-id` so paste mints fresh ids; duplicate-id keeper is the first NON-EMPTY occurrence; initial-load stamping deferred (`queueMicrotask`, `addToHistory: false`). BlockId is now the anchor of record system-wide.
+    *   New `src/lib/graphrag/docGraph.ts`: deterministic extractors + ONE validated `link_blocks` LLM pass (≤200 textblocks), FNV-1a contentHash LRU-8 cache with inflight dedupe, `getNeighborhood` BFS. Background rebuilds are deterministic-only — document text never leaves the machine as a side effect of typing; the LLM pass runs lazily inside the user-initiated cascade (data-egress + cost decision).
+    *   `proposeCascadeEdits` rewritten graph-scoped: 2-hop neighborhood, ≤24 blocks (count capped, text never truncated), blockId-first anchoring, first-proposal-wins overlap gate. The `resolver.ts` `.slice(0, 6000)` truncation is DELETED.
+    *   Evidence-gated severity: every cascade proposal must cite `CascadeEvidence` verified verbatim against the live doc; severity (`must`/`probably`/`optional`) is DERIVED (`deriveSeverity`/`hasVerbatimConflict`), never trusted from the model; an uncited proposal can never be `must`. All three review surfaces render/sort severity; accept-all defaults to `must`+`probably` (HITL preserved — nothing auto-applies; validate-or-abort single-transaction apply unchanged).
+    *   New `src/lib/ai/structuredClient.ts` injectable `CallStructuredFn` seam; `fetchStructured` throws on `!res.ok` so provider failure can never be cached as "no dependencies" (cache-poisoning guard).
+    *   EditPropBench-grounded eval harness (`editPropBench.{fixtures,test}.ts`, 10 fixtures, labels per arXiv:2605.02083 — verified real; the "LEDGER agentic editing" citation is FABRICATED and banned) gates recall ≥ 0.9 / 0 FP violations / 100% citation validity as a pipeline regression gate.
+    *   Graphiti `cascadeCheck.ts` deliberately left as a separate read-only lane; `DocGraphEdge.source` reserves `'graphiti'` for a future bridge.
+    *   Verification: `npm run typecheck` 0 errors, `npm run lint` clean, `npm run test` 287 passing (was 194), `npm run build` clean.
+*   **Approval:** Human verified (PR #4 review pending merge).
+
+**[2026-07-09 00:00:00 UTC] - BUG_FIX**
+*   **Action:** Fixed swarm-review findings on the v8.4 cascade graph work before PR, including one ship-blocking crash (same branch/PR as the entry above).
+*   **Agent:** Troublemaker / QA / Claude Code.
+*   **Context:** All headless gates (typecheck, build, vitest) were green while the app could not mount — ProseMirror plugin `view()` hooks run inside the `EditorView` constructor, and no headless test ever constructs a view.
+*   **Decisions Logged:**
+    *   (1) CRITICAL editor mount crash: the blockId plugin's `view()` dispatched a transaction during `EditorView` construction, hitting the temporal dead zone on `const view` inside `EditorShell`'s `dispatchTransaction`. Fixed by `queueMicrotask` deferral. A jsdom editor-mount smoke suite (`src/lib/prosemirror/__tests__/editorMount.smoke.test.ts`, jsdom added as devDependency) is now a permanent CI-level gate.
+    *   (2) Undo-resurrection: doc-switch `replaceWith` now dispatches with `addToHistory: false` — previously Cmd-Z could restore the prior document's content and autosave it under the NEW document's id (silent data corruption across documents).
+    *   (3) `applyProposedEdits` drift recovery is blockId-scoped first, before any text search.
+    *   (4) `contentHash` separator sentinels (u0001/u0002) were raw invisible control bytes in the source literal; rewritten as visible backslash escapes (hex-dump before declaring string-literal bugs).
+*   **Approval:** Human verified.

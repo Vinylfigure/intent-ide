@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { mapLegacyType } from '@/lib/annotations/types'
-import type { Annotation, AnnotationType, Resolution } from '@/lib/annotations/types'
+import { mapLegacyType, normalizeProposedEdit } from '@/lib/annotations/types'
+import type { Annotation, AnnotationType, ProposedEdit, Resolution } from '@/lib/annotations/types'
 
 // migrateAnnotations is not exported from annotationStore — it is a private
 // function called during Zustand rehydration.  We test its behaviour by
@@ -229,5 +229,55 @@ describe('migrateAnnotations — edge cases', () => {
     migrateAnnotations(input)
     // The spread in migrateAnnotations creates new objects; original unchanged
     expect(input[0].type).toBe(originalType)
+  })
+})
+
+// ── ProposedEdit severity/evidence normalization (v8.4 cascade graph) ─────────
+
+describe('normalizeProposedEdit — legacy multi-region edits', () => {
+  function makeLegacyEdit(overrides: Record<string, unknown> = {}): ProposedEdit {
+    // Simulate a persisted pre-severity edit (fields absent in localStorage)
+    return {
+      id: 'pe_1',
+      from: 5,
+      to: 15,
+      newText: 'new',
+      reason: 'why',
+      relation: 'cascade',
+      status: 'pending',
+      targetText: 'old',
+      ...overrides,
+    } as ProposedEdit
+  }
+
+  it('legacy primary edits become must with null evidence', () => {
+    const edit = normalizeProposedEdit(makeLegacyEdit({ relation: 'primary' }))
+    expect(edit.severity).toBe('must')
+    expect(edit.evidence).toBeNull()
+  })
+
+  it('legacy cascade edits become probably with null evidence (uncited)', () => {
+    const edit = normalizeProposedEdit(makeLegacyEdit())
+    expect(edit.severity).toBe('probably')
+    expect(edit.evidence).toBeNull()
+  })
+
+  it('preserves already-set severity and evidence (idempotent)', () => {
+    const evidence = { sourceBlockId: 'b1', quotedText: 'q', edgeType: 'contradicts' as const }
+    const edit = normalizeProposedEdit(
+      makeLegacyEdit({ severity: 'must', evidence, blockId: 'b2' }),
+    )
+    expect(edit.severity).toBe('must')
+    expect(edit.evidence).toEqual(evidence)
+    expect(edit.blockId).toBe('b2')
+  })
+
+  it('preserves all pre-existing fields', () => {
+    const edit = normalizeProposedEdit(makeLegacyEdit({ status: 'accepted' }))
+    expect(edit.id).toBe('pe_1')
+    expect(edit.from).toBe(5)
+    expect(edit.to).toBe(15)
+    expect(edit.status).toBe('accepted')
+    expect(edit.targetText).toBe('old')
   })
 })

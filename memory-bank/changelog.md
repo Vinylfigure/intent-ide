@@ -5,6 +5,36 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-07-09] v8.4 (candidate) — Precision-First Cascade Graph
+
+Rebuild of the cascade around a block-keyed document dependency graph. Built from `docs/fable5-cascade-brief.md` (local, untracked). Shipped as 8 commits (`d7e1a23..bafccea`) on branch `claude/cascade-graph` — **PR #4 open, pending merge** (`main` is branch-protected).
+
+### Added
+- **Stable block IDs:** `schema.ts` `withBlockId` — persistent `blockId` attr on paragraph/heading/blockquote/code_block/list_item. `parseDOM` deliberately does NOT read `data-block-id`, so pasted content mints fresh ids. New `src/lib/prosemirror/blockIds.ts` (`collectBlocks`, `collectTextblocks`, `findBlockById`, `blockIdAtPos`, `computeBlockIdFixes`, `blockTextRange`) and `src/lib/prosemirror/plugins/blockIdPlugin.ts` (`appendTransaction` stamping; duplicate keeper = first NON-EMPTY occurrence; stamps ride the triggering history event; initial-load stamping deferred via `queueMicrotask` with `addToHistory: false`).
+- **`src/lib/graphrag/docGraph.ts`:** Block-keyed dependency graph. Deterministic extractors (cross-refs→headings, defined terms, duplicated sentences) + ONE validated `link_blocks` LLM pass (capped at 200 textblocks). FNV-1a `contentHash` LRU-8 cache with inflight dedupe. `getNeighborhood` BFS. `scheduleDocGraphRebuild` / `cancelScheduledDocGraphRebuild` (wired in `EditorShell`) run deterministic-only in the background — the LLM pass runs lazily inside the user-initiated cascade only.
+- **`src/lib/ai/structuredClient.ts`:** Injectable `CallStructuredFn` seam for testability; `fetchStructured` THROWS on `!res.ok` so empty-`toolCalls` ("no dependencies") is never conflated with provider-down (cache-poisoning guard).
+- **Severity/evidence types in `types.ts`:** `CascadeSeverity` (`'must' | 'probably' | 'optional'`), `CascadeEdgeType`, `CascadeEvidence` (`{sourceBlockId, quotedText, edgeType} | null`), `ProposedEdit.blockId?`, `SEVERITY_ORDER`/`SEVERITY_LABELS`, `normalizeProposedEdit()` (applied in `annotationStore` rehydration; legacy primaries → `must`, legacy cascades → `probably`).
+- **EditPropBench-grounded eval harness:** `src/lib/graphrag/__tests__/editPropBench.{fixtures,test}.ts` — 10 fixtures with direct-target / required-downstream / protected-unchanged labels (arXiv:2605.02083 — real, verified; the circulating "LEDGER agentic editing" citation is FABRICATED — do not cite). Gates recall ≥ 0.9 / 0 false-positive violations / 100% citation validity. Pipeline regression gate (scripted model), not a model benchmark.
+- **Editor mount smoke suite:** `src/lib/prosemirror/__tests__/editorMount.smoke.test.ts` (jsdom devDependency added) — permanent gate against constructor-time plugin crashes that headless tests cannot see.
+- **Severity UI:** severity badge + evidence line in `ProposedEditControl`; sorted severity pills in `CascadeList`; severity/relation on `SemanticChange` with badges in `SemanticCommitModal`; `globals.css` `proposed-severity-*` variants.
+
+### Changed
+- **`src/lib/ai/orchestrator.ts` `proposeCascadeEdits` rewritten graph-scoped:** 2-hop neighborhood, `maxBlocks` 24 (block COUNT capped — block text never truncated), blockId-first anchoring via `blockTextRange` with neighborhood-gated `findTextInDoc` fallback, first-proposal-wins overlap gate, evidence verified verbatim against the live doc, severity DERIVED (`deriveSeverity` / `hasVerbatimConflict` / `extractChangedTokens` with stopword filter + 2-char number floor) — never trusted from the model.
+- **`src/lib/ai/resolver.ts` `attachCascadeEdits`:** the `.slice(0, 6000)` whole-doc truncation is DELETED — the graph now bounds context; long documents cascade past page 4.
+- **`src/components/Annotations/ResolutionActions.tsx`:** rows sorted primary-first then severity; accept-all defaults to `must`+`probably` — `optional` edits are pre-toggled off unless accepted inline.
+- **`changeTrackingPlugin`:** skips transactions carrying `blockIdPluginKey` meta (id stamping is not a user change).
+
+### Fixed
+- **CRITICAL editor mount crash (swarm review):** the blockId plugin's `view()` dispatched during `EditorView` construction → TDZ ReferenceError on `const view` in `EditorShell` `dispatchTransaction`. Fixed by deferring the initial dispatch via `queueMicrotask`. Note: typecheck/build/vitest were all green while the app could not mount — hence the new jsdom mount smoke suite.
+- **Undo resurrecting a previous document:** doc-switch `replaceWith` is now `addToHistory: false` — Cmd-Z could previously restore the prior doc's content and autosave it under the NEW doc's id.
+- **Drift recovery:** `applyProposedEdits` re-resolution is blockId-scoped first before any text search.
+- **Invisible control bytes:** `contentHash` separator sentinels (u0001/u0002) were raw control characters embedded in the source literal; rewritten as visible backslash escapes.
+
+### Verification
+- `npm run typecheck` — 0 errors. `npm run lint` — clean. `npm run build` — clean.
+- `npm run test` — 287 passing (was 194; +93).
+- Landed as PR #4 (https://github.com/Vinylfigure/intent-ide/pull/4) — pending merge; not yet on `main`.
+
 ## [2026-07-08] Public Release Packaging
 
 ### Added

@@ -8,6 +8,7 @@ import {
   getProposedAnchors,
   setProposedEditStatus,
 } from '@/lib/prosemirror/plugins/proposedChangePlugin'
+import { SEVERITY_LABELS } from '@/lib/annotations/types'
 
 interface ControlPosition {
   top: number
@@ -94,8 +95,18 @@ export function ProposedEditControl() {
       }}
     >
       <div className="proposed-edit-control-card">
+        <div className="proposed-edit-control-header">
+          <span className={`proposed-edit-severity proposed-edit-severity-${anchor.severity}`}>
+            {SEVERITY_LABELS[anchor.severity]}
+          </span>
+        </div>
         {anchor.reason && (
           <p className="proposed-edit-control-reason">{anchor.reason}</p>
+        )}
+        {anchor.evidence && (
+          <p className="proposed-edit-control-evidence">
+            &ldquo;{anchor.evidence.quotedText}&rdquo; · {anchor.evidence.edgeType}
+          </p>
         )}
         <div className="proposed-edit-control-actions">
           <button
