@@ -5,9 +5,78 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2026-07-09] Cascade v2 Waves A + E (candidates) — Precision Judge + Git-Model Document History
+## [2026-07-09] Cascade v2 Complete (Waves B, C, D — PRs #9-#12)
 
-Two Cascade v2 waves, built in parallel git worktrees (`../IDE-wave-a`, `../IDE-wave-e`) off merged PR #4, each through a full implement → adversarial-review → fix cycle (both Troublemaker reviews returned NO-MERGE with HIGH findings; all fixed pre-PR). **Open as PR #5 (`claude/cascade-v2-a`, 7 commits) and PR #6 (`claude/cascade-v2-e`, 7 commits) — pending merge; not yet on `main`.** Waves B/C/D remain on the roadmap.
+The Cascade v2 roadmap is CLOSED. After Waves A + E (PRs #5/#6), the final three waves landed as **PR #9** (Wave D3+D4: e2e + README), **PR #10** (Wave B: scale/recall), **PR #11** (Wave C: trust/flow-state UX), and **PR #12** (Wave D1+D2 finale: Graphiti bridge, consolidation, telemetry). Process record: **five waves, five pre-PR adversarial Troublemaker reviews, five NO-MERGE verdicts — every HIGH finding fixed with regression tests before anything was pushed.** Worktrees ran A∥E then B∥D3+D4 in parallel; B∥C was deliberately serialized (`docGraph.ts` overlap).
+
+### Added
+- **[PR #9 / Wave D3] Playwright e2e `cascade-review.spec.ts`:** full annotate → cascade → review → apply → history flow through the real UI; LLM endpoints intercepted (deterministic), audit/history routes real.
+- **[PR #9 / Wave D4] README** architecture / compliance / evaluation sections.
+- **[PR #10 / Wave B] Per-block incremental docGraph:** changed-block re-extraction seeded from the PRIOR graph's adjacency (review caught monotonic LLM-edge decay in unseeded rebuilds); chunked LLM extraction only above a 150-block single-call threshold (review caught unconditional chunking silently regressing 41-200-block recall).
+- **[PR #10 / Wave B] Embeddings edge source:** `/api/embed` + `embedEdges.ts` with a transient-throw / permanent-null contract (transient failures are never cached); provider-keyed vector cache; 300-block cap; `headingPath` in payloads.
+- **[PR #11 / Wave C] "Why this proposal?" UI:** `docGraphStore` + `findEdgePath` edge-path explanation per proposal; StatusBar graph chip.
+- **[PR #11 / Wave C] "AI data & spend" settings panel:** `judgeEnabled` / `embeddingsEnabled` / `embedModel` + session spend estimate (known debt: excludes transcription).
+- **[PR #12 / Wave D1] `augmentWithGraphitiEdges`:** entities as the third docGraph edge source; ≤12 entities / ≤120 edges per build; abortable 1500ms MCP deadline (review found entity COUNT was the unbounded flooding axis).
+- **[PR #12 / Wave D2] `cascadeCalibration` telemetry:** closed-enum, metadata-only events; local aggregate always; PostHog capture opt-in **default FALSE**; modal decisions buffered and flushed on confirm; `applied` recorded only after a successful apply; miscalibration hint at n≥5.
+
+### Changed
+- **[PR #11 / Wave C] Flow-state buffering REDESIGNED:** reveal flags live INSIDE `proposedChangePlugin` — held cascades keep their anchors mapped; only decorations are suppressed until the reading breakpoint. (The first design withheld held edits from the plugin and hard-broke apply.)
+- **[PR #11 / Wave C] Re-anchoring is validate-stored-first:** stored range validated before any fingerprint search (fingerprint-first silently relocated valid blockId-less anchors). Modal cancel now snapshot/restores plugin status.
+- **[PR #12 / Wave D1] `getNeighborhood` is SOURCE_PRIORITY-aware:** returns `{hop, sourceRank}`; candidate ordering under the 24-block budget is source-quality-aware so graphiti co-mentions cannot evict LLM-attested dependents.
+- **[PR #12 / Wave D2] One cascade surface:** show-affected scroll/pulses to `CascadeList`, status-gated via `showAffectedMode`; no parallel cascade UI remains.
+
+### Fixed
+- **[PR #9, CRITICAL — found by writing the e2e] Streaming-path cascades never fired in production:** `streamResolveAnnotation`'s MADS branch never called `attachCascadeEdits`; the live app streams, so cascades were feature-dead while 500+ unit tests stayed green on the non-streaming path. Fixed with streaming/non-streaming parity + regression tests.
+
+### Verification
+- **579 unit tests passing + 10 skipped** on the finale branch (`main` matches post-merge); cascade e2e green; ingestion e2e requires local FalkorDB (pre-existing). Typecheck/lint/build clean.
+
+### Carry-forward debts
+- Insertions bypass fingerprint validation (documented in-code); spend estimate excludes transcription; graphiti augmentation is one-shot per content hash; inflight-dedupe can hand a deterministic-only graph to a concurrent cascade (pre-existing); ingestion e2e needs FalkorDB; the user's uncommitted Turso deployment changes sit in the main working tree (theirs).
+
+## [2026-07-09] Deployment LIVE — https://intent-ide.vercel.app (PR #8 MERGED)
+
+The public portfolio demo is deployed and live. **PR #8 MERGED to `main`; production deploy READY and aliased at https://intent-ide.vercel.app** (same day as the prep work below).
+
+### Deployed
+- **Turso DB `intent-ide-audit`** (`libsql://intent-ide-audit-vinylfigure.aws-us-west-2.turso.io`): all 3 migrations applied; schema verified **byte-identical** against a fresh local sqlite3 build of the migrations. (A partial apply mid-process left a stray `DocumentSource` table — `turso db shell` is non-transactional and stops at the first error; recovered by dropping the stray table + schema diff. New rule: always diff schemas after manual Turso migrations.)
+- **Vercel project `intent-ide`** (team `vinylfigures-projects`) linked; production env vars set: `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `AUDIT_ADMIN_TOKEN` (admin token in local gitignored `.env`); production redeployed.
+- **End-to-end production smoke test PASSED:** audit POST → row confirmed in Turso; visitor-scoped GET returns own record; other `userId` sees 0; unscoped GET without token 401 / with admin bearer 200; `/api/history` 403 (gate working); SSRF probes (`http://169.254.169.254`, `https://[::ffff:169.254.169.254]`) 400.
+
+### Known Issues
+- **PR #9 (`claude/cascade-v2-d`) preview deploys fail** with `Can't resolve '@/generated/prisma/client'` until the branch is rebased onto `main` to pick up PR #8's `prisma generate && next build` script.
+
+## [2026-07-09] Vercel + Turso Deployment Prep — Public-Exposure Hardening (PR #8)
+
+Deployment prep for the public portfolio demo: Vercel hosting with the audit DB on Turso (hosted libSQL), plus hardening of every publicly reachable API surface. Shipped as PR #8 (branch `claude/vercel-deploy`, https://github.com/Vinylfigure/intent-ide/pull/8) — **MERGED to `main` 2026-07-09; see the Deployment LIVE entry above.**
+
+**Decision:** Turso over Supabase — the existing `@prisma/adapter-libsql` + SQLite migrations work unchanged, and Turso's free tier doesn't auto-pause (Supabase free pauses after ~1 week idle, bad for an always-on demo). Supabase (Auth + Postgres) is deferred to a future commercialization phase (accounts + doc sync), not rejected.
+
+### Added
+- **`src/lib/server/validateBaseUrl.ts`:** Production-only SSRF blocklist on the client-supplied `x-base-url` header, wired into `/api/resolve`, `/api/classify`, `/api/generate`, `/api/structured` (400 on violation). Fails closed on WHATWG hex-group v4-mapped IPv6 (e.g. `[::ffff:a9fe:a9fe]`); handles FQDN trailing dots; blocks private IPv4/IPv6 ranges; https-only.
+- **`getVisitorId()` in `auditLogger.ts`:** Anonymous per-browser UUID used to scope `/api/audit` GETs via `?userId=`.
+- **README Deployment section:** Live-demo link (PLACEHOLDER `https://intent-ide.vercel.app` until the Vercel project exists), BYOK note, known limits, Turso migration procedure.
+- **92 new tests:** SSRF matrix, auditLogger, audit route, history gate.
+
+### Changed
+- **`src/lib/db.ts`:** `PrismaLibSql` now passes `DATABASE_AUTH_TOKEN`; local `file:dev.db` unchanged.
+- **`package.json`:** `build` = `prisma generate && next build`; `postinstall` runs `prisma generate`; `engines` >= 20.
+- **Guarded proxy fetches:** Now use `redirect:'manual'` — a validated public https URL could otherwise 3xx to a private address (redirect-to-private-IP SSRF vector).
+- **`/api/audit` hardened:** Real-body 16KB cap (not just content-length); oversize fields reject 400 — never truncate (truncation would corrupt JSON provenance fields); per-IP soft rate limit keyed on `x-real-ip`; GET scoped by `?userId=`; unscoped GET requires Bearer `AUDIT_ADMIN_TOKEN` and fails closed in production. Disclosed limitation: `userId` is client-supplied — a courtesy partition, not a security boundary.
+- **`/api/history` (from PR #6):** Gated OFF in production (403) unless `HISTORY_ENABLED=1` — it stores full unauthenticated document snapshots, which the shared public demo must not do.
+- **`maxDuration = 60`** on the 5 LLM/transcription routes.
+- **Turso schema procedure:** Prisma 7.5's config has NO driver-adapter hook for migrate, so the Turso schema is applied by piping `prisma/migrations/*/migration.sql` through `turso db shell` (documented in a `prisma.config.ts` comment + README).
+
+### Verification
+- 462 tests passing + 10 skipped (post PR #5/#6-merge baseline was 370 + 10; +92). `npm run typecheck` / `lint` / `build` clean.
+- Graphiti/FalkorDB confirmed local-dev-only (all call sites client-side with fallbacks) — the deployed demo has no graph-server dependency.
+
+### Operator steps
+- ALL COMPLETED same day — Turso DB + migrations, Vercel project + env vars, smoke test, merge. See the Deployment LIVE entry above. The README demo URL needed no fix (the Vercel project name matched the placeholder).
+
+## [2026-07-09] Cascade v2 Waves A + E — Precision Judge + Git-Model Document History
+
+Two Cascade v2 waves, built in parallel git worktrees (`../IDE-wave-a`, `../IDE-wave-e`) off merged PR #4, each through a full implement → adversarial-review → fix cycle (both Troublemaker reviews returned NO-MERGE with HIGH findings; all fixed pre-PR). **PR #5 (`claude/cascade-v2-a`, 7 commits) and PR #6 (`claude/cascade-v2-e`, 7 commits) — both MERGED to `main` (post-merge baseline 370 tests + 10 skipped).** Waves B/C/D remain on the roadmap.
 
 ### Added
 - **[Wave A] `src/lib/ai/relevanceJudge.ts`:** Batched LLM judge verifying that `must`-candidates' citations GENUINELY conflict (closes the `hasVerbatimConflict` existence-vs-relevance gap). Target block context included in judge input; the judge can only LOWER severity; the judge prompt contains no severity vocabulary. Robustness semantics: judge malfunction (thrown call OR zero valid verdicts) preserves derived severities — only real per-candidate verdicts demote; `maxTokens` scales with candidate count; deny-wins on duplicate verdict indexes.
