@@ -4,12 +4,16 @@ import type { LLMConfig } from '@/stores/settingsStore'
 import type { CascadeEdgeType } from '@/lib/annotations/types'
 import { collectTextblocks } from '@/lib/prosemirror/blockIds'
 import { fetchStructured, type CallStructuredFn } from '@/lib/ai/structuredClient'
+import { augmentWithEmbeddingEdges, type EmbedFn } from './embedEdges'
 
 /**
  * Document dependency graph — the retrieval index the cascade queries instead
  * of the raw document text. Nodes are textblocks keyed by stable blockId;
  * edges are typed relations from deterministic extractors (cross-references,
- * defined terms, duplicated sentences) plus one cached LLM extraction pass.
+ * defined terms, duplicated sentences) plus a cached, chunked LLM extraction
+ * pass that updates incrementally: per-block hashes diff each build against
+ * the closest prior graph so only changed blocks (and their neighbors) are
+ * re-extracted.
  *
  * Positions stored on nodes are build-time snapshots for ordering only — every
  * consumer re-resolves blocks against the live doc via findBlockById.
@@ -26,7 +30,7 @@ export interface DocGraphNode {
   definedTerms: string[]
 }
 
-export type DocGraphEdgeSource = 'deterministic' | 'llm' | 'graphiti'
+export type DocGraphEdgeSource = 'deterministic' | 'llm' | 'embedding' | 'graphiti'
 
 export interface DocGraphEdge {
   from: string
@@ -42,6 +46,24 @@ export interface DocGraph {
   builtAt: number
   /** True once the LLM extraction pass ran and its edges were merged. */
   llmApplied: boolean
+  /**
+   * True when the LLM pass could not cover every block (chunk cap hit, or an
+   * incomplete prior pass carried forward) — the graph is still usable, just
+   * with known-reduced recall. Never a silent truncation: setting this warns.
+   */
+  llmPartial: boolean
+  /**
+   * True once the embedding pass ran — including the silent no-op case where
+   * the provider has no embeddings API (fewer edges, no retry loop).
+   */
+  embeddingsApplied: boolean
+  /**
+   * True when the embedding pass could not cover every block (block cap hit)
+   * — mirror of llmPartial. Never a silent truncation: setting this warns.
+   */
+  embeddingsPartial: boolean
+  /** Per-textblock FNV-1a over blockId + text — the incremental-diff unit. */
+  blockHashes: Map<string, string>
   nodes: Map<string, DocGraphNode>
   edges: DocGraphEdge[]
   /** Undirected index: blockId → edges touching it. */
@@ -58,8 +80,19 @@ const EDGE_TYPES: ReadonlySet<string> = new Set([
   'duplicates',
 ])
 
-/** Skip the LLM pass beyond this many textblocks (deterministic edges only). */
-const LLM_PASS_MAX_BLOCKS = 200
+// LLM pass sizing. Docs up to LLM_SINGLE_CALL_MAX blocks (the core 5–20-page
+// use case) go to the model in ONE whole-doc call so every pair of blocks is
+// co-visible — chunking would make pairs more than ~LLM_CHUNK_SIZE blocks
+// apart structurally unlinkable. Only ABOVE 150 blocks does the pass fall
+// back to contiguous ≤40-block chunks with a 4-block overlap between
+// consecutive chunks (cheap cross-boundary stitching — validation already
+// drops edges citing ids outside the graph), capped at 8 calls per build.
+// Beyond the cap the graph is marked llmPartial and warns — never a silent
+// truncation.
+const LLM_SINGLE_CALL_MAX = 150
+const LLM_CHUNK_SIZE = 40
+const LLM_CHUNK_OVERLAP = 4
+const LLM_MAX_CHUNKS = 8
 
 const TERM_STOPWORDS = new Set([
   'the', 'this', 'that', 'these', 'those', 'with', 'from', 'have', 'been',
@@ -84,6 +117,21 @@ export function contentHash(doc: PMNode): string {
     update(b.node.textContent)
     update('\u0002')
   }
+  return h.toString(36)
+}
+
+/** FNV-1a over one block's id + text — the per-block incremental-diff unit. */
+export function blockHash(blockId: string, text: string): string {
+  let h = 0x811c9dc5
+  const update = (s: string) => {
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i)
+      h = Math.imul(h, 0x01000193) >>> 0
+    }
+  }
+  update(blockId)
+  update('\u0001')
+  update(text)
   return h.toString(36)
 }
 
@@ -166,10 +214,12 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
   const headingStack: Array<{ level: number; text: string }> = []
   const headingByNorm = new Map<string, string>()
   const headingsInOrder: Array<{ blockId: string; text: string }> = []
+  const blockHashes = new Map<string, string>()
 
   for (const b of blocks) {
     if (!b.blockId) continue
     const text = b.node.textContent
+    blockHashes.set(b.blockId, blockHash(b.blockId, text))
     if (b.node.type.name === 'heading') {
       const level = (b.node.attrs.level as number) ?? 1
       while (headingStack.length && headingStack[headingStack.length - 1].level >= level) {
@@ -264,6 +314,10 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
     contentHash: contentHash(doc),
     builtAt: Date.now(),
     llmApplied: false,
+    llmPartial: false,
+    embeddingsApplied: false,
+    embeddingsPartial: false,
+    blockHashes,
     nodes,
     edges,
     adjacency: buildAdjacency(edges),
@@ -324,46 +378,108 @@ function llmAvailable(config: LLMConfig): boolean {
 }
 
 /**
- * One extraction call per document. Mutates `graph` in place: validated LLM
- * edges are merged and `llmApplied` flips true. Failures leave the
- * deterministic graph intact and `llmApplied` false — never throws.
+ * Listings for the extraction pass. At or under LLM_SINGLE_CALL_MAX blocks:
+ * ONE whole-doc listing (every pair co-visible). Above it: contiguous
+ * ≤LLM_CHUNK_SIZE chunks, consecutive chunks sharing LLM_CHUNK_OVERLAP
+ * blocks, hard-capped at LLM_MAX_CHUNKS. `skipped` counts trailing blocks
+ * beyond the cap that no chunk covers.
+ */
+function chunkNodes(ordered: DocGraphNode[]): { chunks: DocGraphNode[][]; skipped: number } {
+  if (ordered.length <= LLM_SINGLE_CALL_MAX) {
+    return { chunks: [ordered], skipped: 0 }
+  }
+  const chunks: DocGraphNode[][] = []
+  const stride = LLM_CHUNK_SIZE - LLM_CHUNK_OVERLAP
+  let covered = 0
+  for (let start = 0; start < ordered.length && chunks.length < LLM_MAX_CHUNKS; start += stride) {
+    chunks.push(ordered.slice(start, start + LLM_CHUNK_SIZE))
+    covered = Math.min(ordered.length, start + LLM_CHUNK_SIZE)
+    if (covered >= ordered.length) break
+  }
+  return { chunks, skipped: ordered.length - covered }
+}
+
+/**
+ * Chunked extraction over the graph — or, when `targetIds` is given, only that
+ * changed-neighborhood subset (the incremental path). Mutates `graph` in
+ * place: validated LLM edges are merged and `llmApplied` flips true; blocks
+ * left uncovered by the chunk cap set `llmPartial` and warn — no silent
+ * truncation. Chunk calls run in parallel (fetchWithRetry inside the call fn
+ * already handles per-call retry); any chunk failure keeps the successful
+ * chunks' edges but leaves `llmApplied` false so the next build retries (the
+ * edge-key dedupe absorbs the re-reported edges) — never throws.
  */
 export async function augmentWithLlmEdges(
   graph: DocGraph,
   config: LLMConfig,
   call: CallStructuredFn = fetchStructured,
+  targetIds?: ReadonlySet<string>,
 ): Promise<void> {
   if (graph.llmApplied) return
-  if (graph.nodes.size === 0 || graph.nodes.size > LLM_PASS_MAX_BLOCKS) return
+  if (graph.nodes.size === 0) return
   if (!llmAvailable(config)) return
 
-  const listing = [...graph.nodes.values()]
+  const ordered = [...graph.nodes.values()]
+    .filter((n) => !targetIds || targetIds.has(n.blockId))
     .sort((a, b) => a.pos - b.pos)
-    .map((n) => `[${n.blockId}] ${n.text}`)
-    .join('\n')
-
-  let toolCalls
-  try {
-    const res = await call(
-      {
-        messages: [
-          { role: 'system', content: LINK_SYSTEM },
-          { role: 'user', content: `DOCUMENT BLOCKS:\n${listing}` },
-        ],
-        tools: [LINK_BLOCKS_TOOL],
-        maxTokens: 2000,
-        temperature: 0.1,
-      },
-      // Edge extraction is the cascade's RECALL mechanism — paraphrase
-      // dependencies only surface if this pass finds them, so it runs on the
-      // user's selected model, never a silent cheap-model downgrade.
-      config,
-    )
-    toolCalls = res.toolCalls
-  } catch {
+  if (ordered.length === 0) {
+    // Incremental build where every change was a deletion — nothing to extract.
+    graph.llmApplied = true
     return
   }
 
+  const { chunks, skipped } = chunkNodes(ordered)
+  if (skipped > 0) {
+    graph.llmPartial = true
+    console.warn(
+      `docGraph: LLM extraction chunk cap hit — ${skipped} of ${ordered.length} blocks ` +
+        `(from [${ordered[ordered.length - skipped].blockId}] onward) were not analyzed; ` +
+        'graph marked llmPartial',
+    )
+  }
+
+  // Chunk calls are independent listings — run them in parallel (the call fn
+  // handles per-call retry internally).
+  const results = await Promise.allSettled(
+    chunks.map((chunk) => {
+      const listing = chunk.map((n) => `[${n.blockId}] ${n.text}`).join('\n')
+      return call(
+        {
+          messages: [
+            { role: 'system', content: LINK_SYSTEM },
+            { role: 'user', content: `DOCUMENT BLOCKS:\n${listing}` },
+          ],
+          tools: [LINK_BLOCKS_TOOL],
+          maxTokens: 2000,
+          temperature: 0.1,
+        },
+        // Edge extraction is the cascade's RECALL mechanism — paraphrase
+        // dependencies only surface if this pass finds them, so it runs on the
+        // user's selected model, never a silent cheap-model downgrade.
+        config,
+      )
+    }),
+  )
+
+  const allToolCalls: { name: string; input: unknown }[] = []
+  let anyFailed = false
+  for (const res of results) {
+    if (res.status === 'fulfilled') allToolCalls.push(...res.value.toolCalls)
+    else anyFailed = true
+  }
+
+  // Merge what the successful chunks found; a failed chunk leaves llmApplied
+  // false so the next getDocGraph retries (the edge-key dedupe absorbs the
+  // re-reported edges).
+  mergeLlmToolCalls(graph, allToolCalls)
+  if (!anyFailed) graph.llmApplied = true
+}
+
+/** Validate + dedupe link_blocks calls into the graph, rebuilding adjacency. */
+function mergeLlmToolCalls(
+  graph: DocGraph,
+  toolCalls: { name: string; input: unknown }[],
+): void {
   const edgeKeys = new Set(graph.edges.map((e) => `${e.from}${e.to}${e.type}`))
   for (const tc of toolCalls) {
     if (tc.name !== 'link_blocks') continue
@@ -389,7 +505,6 @@ export async function augmentWithLlmEdges(
     })
   }
   graph.adjacency = buildAdjacency(graph.edges)
-  graph.llmApplied = true
 }
 
 // --- Cache + entry points ---------------------------------------------------
@@ -409,18 +524,125 @@ function cacheGraph(hash: string, graph: DocGraph): void {
 }
 
 /**
+ * Best prior graph for an incremental LLM pass: the cached, llm-applied graph
+ * sharing the most per-block hashes with `graph` — and more than half of its
+ * blocks, else the edit is too large to treat as incremental. There is no
+ * documentId to key on, so hash overlap IS the document-identity heuristic.
+ */
+function findBestPriorGraph(graph: DocGraph, excludeHash: string): DocGraph | null {
+  let best: DocGraph | null = null
+  let bestOverlap = graph.blockHashes.size / 2 // strict >50% threshold
+  for (const [hash, candidate] of graphCache) {
+    if (hash === excludeHash || !candidate.llmApplied) continue
+    let overlap = 0
+    for (const [id, h] of graph.blockHashes) {
+      if (candidate.blockHashes.get(id) === h) overlap++
+    }
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap
+      best = candidate
+    }
+  }
+  return best
+}
+
+/**
+ * Diff `graph` against a prior build: carries forward prior LLM edges whose
+ * BOTH endpoints are unchanged (edges touching changed blocks are dropped for
+ * re-extraction), inherits llmPartial, and returns the changed/new block ids.
+ */
+function carryForwardLlmEdges(graph: DocGraph, prior: DocGraph): Set<string> {
+  const changed = new Set<string>()
+  for (const [id, h] of graph.blockHashes) {
+    if (prior.blockHashes.get(id) !== h) changed.add(id)
+  }
+  const edgeKeys = new Set(graph.edges.map((e) => `${e.from}${e.to}${e.type}`))
+  for (const edge of prior.edges) {
+    if (edge.source !== 'llm') continue
+    if (changed.has(edge.from) || changed.has(edge.to)) continue
+    if (!graph.nodes.has(edge.from) || !graph.nodes.has(edge.to)) continue
+    const key = `${edge.from}${edge.to}${edge.type}`
+    if (edgeKeys.has(key)) continue
+    edgeKeys.add(key)
+    graph.edges.push({ ...edge })
+  }
+  graph.adjacency = buildAdjacency(graph.edges)
+  if (prior.llmPartial) graph.llmPartial = true
+  return changed
+}
+
+/**
+ * The seed blocks plus their 1-hop graph neighbors (union of the CURRENT
+ * graph's adjacency and, when given, the PRIOR graph's adjacency).
+ *
+ * The prior adjacency is load-bearing: carryForwardLlmEdges DROPS every LLM
+ * edge touching a changed block, and rebuilds the current adjacency after the
+ * drop — so a dropped edge's far endpoint is invisible to the current
+ * adjacency. Without seeding from the prior graph the far endpoint never
+ * re-enters the re-extraction listing, the model can never re-propose the
+ * link, and every incremental pass permanently destroys LLM edges touching
+ * edited blocks (monotonic graph decay compounding across a session).
+ */
+function expandOneHop(
+  graph: DocGraph,
+  seed: ReadonlySet<string>,
+  priorAdjacency?: Map<string, DocGraphEdge[]>,
+): Set<string> {
+  const out = new Set(seed)
+  const addFar = (id: string, edge: DocGraphEdge) => {
+    const far = edge.from === id ? edge.to : edge.from
+    if (graph.nodes.has(far)) out.add(far)
+  }
+  for (const id of seed) {
+    for (const edge of graph.adjacency.get(id) ?? []) addFar(id, edge)
+    for (const edge of priorAdjacency?.get(id) ?? []) addFar(id, edge)
+  }
+  return out
+}
+
+/** User toggle for the embedding pass (settings store, default true). */
+async function embeddingsEnabledFromStore(): Promise<boolean> {
+  try {
+    const { useSettingsStore } = await import('@/stores/settingsStore')
+    return useSettingsStore.getState().embeddingsEnabled
+  } catch {
+    return true
+  }
+}
+
+/**
  * The cascade's graph entry point: content-hash cached, concurrent builds
- * deduped. Deterministic build is sync-fast; the LLM pass is awaited once and
+ * deduped. Deterministic build is sync-fast and always global; the LLM pass is
+ * incremental — when a cached prior graph covers most of the same blocks, its
+ * edges between unchanged blocks are carried forward and only changed blocks
+ * plus their 1-hop neighbors are re-extracted. The embedding pass runs after
+ * the LLM pass (vector cache makes it incremental for free). Both passes are
  * silently skipped when no provider is callable (graph stays usable).
  */
 export async function getDocGraph(
   doc: PMNode,
   config: LLMConfig,
-  deps: { callStructured?: CallStructuredFn; skipLlm?: boolean } = {},
+  deps: {
+    callStructured?: CallStructuredFn
+    skipLlm?: boolean
+    /** Skip the embedding pass regardless of the user setting (background rebuilds). */
+    skipEmbeddings?: boolean
+    embed?: EmbedFn
+    /** Test/caller override for the settings-store embeddings toggle. */
+    embeddingsEnabled?: boolean
+  } = {},
 ): Promise<DocGraph> {
   const hash = contentHash(doc)
+  const embeddingsOn =
+    !deps.skipEmbeddings &&
+    llmAvailable(config) &&
+    (deps.embeddingsEnabled ?? (await embeddingsEnabledFromStore()))
   const cached = graphCache.get(hash)
-  if (cached && (cached.llmApplied || deps.skipLlm || !llmAvailable(config))) {
+  if (
+    cached &&
+    (cached.llmApplied || deps.skipLlm || !llmAvailable(config)) &&
+    (cached.embeddingsApplied || !embeddingsOn)
+  ) {
     return cached
   }
   const pending = inflight.get(hash)
@@ -428,8 +650,19 @@ export async function getDocGraph(
 
   const promise = (async () => {
     const graph = cached ?? buildDeterministicGraph(doc)
-    if (!deps.skipLlm) {
-      await augmentWithLlmEdges(graph, config, deps.callStructured ?? fetchStructured)
+    if (!deps.skipLlm && !graph.llmApplied) {
+      let targetIds: Set<string> | undefined
+      const prior = findBestPriorGraph(graph, hash)
+      if (prior) {
+        const changed = carryForwardLlmEdges(graph, prior)
+        // Union with the prior adjacency so far endpoints of DROPPED LLM
+        // edges re-enter the listing and can be re-proposed.
+        targetIds = expandOneHop(graph, changed, prior.adjacency)
+      }
+      await augmentWithLlmEdges(graph, config, deps.callStructured ?? fetchStructured, targetIds)
+    }
+    if (embeddingsOn && !graph.embeddingsApplied) {
+      await augmentWithEmbeddingEdges(graph, config, deps.embed)
     }
     cacheGraph(hash, graph)
     return graph
@@ -470,9 +703,10 @@ let rebuildTimer: ReturnType<typeof setTimeout> | null = null
 /**
  * Debounced background rebuild, wired into the editor's dispatchTransaction so
  * the cascade usually hits a warm deterministic graph. Deliberately
- * DETERMINISTIC-ONLY (`skipLlm`): document text must never leave the machine
- * as a side effect of typing — the LLM extraction pass runs lazily inside the
- * cascade, which the user explicitly initiated. All failures are swallowed.
+ * DETERMINISTIC-ONLY (`skipLlm` + `skipEmbeddings`): document text must never
+ * leave the machine as a side effect of typing — the LLM extraction and
+ * embedding passes run lazily inside the cascade, which the user explicitly
+ * initiated. All failures are swallowed.
  */
 export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void {
   if (rebuildTimer) clearTimeout(rebuildTimer)
@@ -483,6 +717,7 @@ export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void 
       const { useSettingsStore } = await import('@/stores/settingsStore')
       await getDocGraph(view.state.doc, useSettingsStore.getState().llmConfig, {
         skipLlm: true,
+        skipEmbeddings: true,
       })
     })().catch(() => {})
   }, delayMs)

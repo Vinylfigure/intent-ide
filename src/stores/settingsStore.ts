@@ -10,6 +10,12 @@ export interface LLMConfig {
   apiKey: string
   model: string
   baseUrl?: string
+  /**
+   * Embedding model for the doc-graph paraphrase pass (sent as x-embed-model
+   * to /api/embed). No UI yet — Wave C exposes it; unset uses the route's
+   * per-provider default.
+   */
+  embedModel?: string
 }
 
 export const PROVIDER_MODELS: Record<LLMProvider, { label: string; value: string }[]> = {
@@ -68,9 +74,16 @@ interface SettingsState {
   llmConfig: LLMConfig
   whisperApiKey: string
   showApiKeyModal: boolean
+  /**
+   * Embedding-based paraphrase edges in the doc graph (default on). Silently
+   * inert for providers without an embeddings API (Anthropic). UI toggle
+   * lands in Wave C — the persisted field ships first.
+   */
+  embeddingsEnabled: boolean
   setLLMConfig: (config: Partial<LLMConfig>) => void
   setWhisperKey: (key: string) => void
   setShowApiKeyModal: (show: boolean) => void
+  setEmbeddingsEnabled: (enabled: boolean) => void
   hasKeys: () => boolean
 }
 
@@ -85,10 +98,12 @@ export const useSettingsStore = create<SettingsState>()(
       },
       whisperApiKey: '',
       showApiKeyModal: false,
+      embeddingsEnabled: true,
       setLLMConfig: (config) =>
         set((s) => ({ llmConfig: { ...s.llmConfig, ...config } })),
       setWhisperKey: (key) => set({ whisperApiKey: key }),
       setShowApiKeyModal: (show) => set({ showApiKeyModal: show }),
+      setEmbeddingsEnabled: (enabled) => set({ embeddingsEnabled: enabled }),
       hasKeys: () => {
         const s = get()
         // Ollama runs locally — no API key needed

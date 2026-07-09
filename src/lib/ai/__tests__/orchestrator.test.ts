@@ -22,6 +22,10 @@ function p(blockId: string | null, text: string): PMNode {
   return schema.node('paragraph', { blockId }, [schema.text(text)])
 }
 
+function h(blockId: string, level: number, text: string): PMNode {
+  return schema.node('heading', { level, blockId }, [schema.text(text)])
+}
+
 function docOf(...blocks: PMNode[]): PMNode {
   return schema.node('doc', null, blocks)
 }
@@ -147,6 +151,26 @@ describe('proposeCascadeEdits — scoping', () => {
     expect(prompt).toContain('[b3]')
     expect(edits).toHaveLength(1)
     expect(edits[0].blockId).toBe('b3')
+  })
+
+  it('candidate lines carry (§ heading path) context; blocks outside any heading stay bare', async () => {
+    const doc = docOf(
+      p('b0', '"Launch Date" means March 1, 2026.'), // before any heading — empty path
+      h('hA', 1, 'Launch Plan'),
+      h('hB', 2, 'Timeline'),
+      p('b2', 'The beta program ends on March 1, 2026, just before the Launch Date.'),
+    )
+    const state = stateOf(doc)
+    const primary = primaryEditFor(doc, 'b0', 'March 1, 2026', 'June 1, 2026')
+    const captured: StructuredRequest[] = []
+    await proposeCascadeEdits(state, primary, CONFIG, {
+      graph: buildDeterministicGraph(doc),
+      callStructured: scripted([], captured),
+    })
+    const prompt = captured[0].messages.map((m) => m.content).join('\n')
+    expect(prompt).toContain('[b2] (§ Launch Plan › Timeline) The beta program ends')
+    expect(prompt).toContain('[b0] "Launch Date" means')
+    expect(prompt).not.toContain('[b0] (§')
   })
 
   it('returns [] without calling the model when the primary block is unstamped', async () => {
