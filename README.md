@@ -113,6 +113,20 @@ npx playwright test  # optional e2e (needs dev server; graph tests skip without 
 
 CI runs typecheck, lint, unit tests, and a production build on every push.
 
+### Evaluation
+
+The cascade pipeline ships with an EditPropBench-style eval. The scripted variant runs in `npm run test`; a live variant replays the same fixtures against a real model (opt-in, never CI):
+
+```bash
+# Terminal A — serve /api/structured
+npm run dev
+
+# Terminal B — run the live bench against it
+BENCH_PROVIDER=claude BENCH_MODEL=claude-sonnet-4-6 BENCH_API_KEY=sk-ant-... npm run bench:live
+```
+
+Recall/precision/citation metrics are printed as a table and written per-fixture to `bench-results/` (gitignored). `BENCH_BASE_URL` overrides the default `http://localhost:3000`.
+
 ## License
 
 [MIT](LICENSE)

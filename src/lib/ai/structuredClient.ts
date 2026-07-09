@@ -36,6 +36,16 @@ export type CallStructuredFn = (
   config: LLMConfig,
 ) => Promise<{ toolCalls: StructuredToolCall[] }>
 
+// Module-level base-URL override for out-of-browser callers (the live bench
+// runs under vitest/node, where relative URLs have no origin). Default '' keeps
+// the browser's relative '/api/structured'.
+let structuredBaseUrl = ''
+
+/** Point fetchStructured at an absolute origin (e.g. http://localhost:3000). */
+export function setStructuredBaseUrl(url: string): void {
+  structuredBaseUrl = url.replace(/\/$/, '')
+}
+
 export interface RetryOptions {
   /** Additional attempts after the first (default 2 → up to 3 requests total). */
   retries?: number
@@ -80,7 +90,7 @@ export async function fetchWithRetry(
 }
 
 export const fetchStructured: CallStructuredFn = async (req, config) => {
-  const res = await fetchWithRetry('/api/structured', {
+  const res = await fetchWithRetry(`${structuredBaseUrl}/api/structured`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

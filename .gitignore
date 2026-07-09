@@ -29,3 +29,6 @@ Intent-IDE-PRD-v6.pdf
 memory-bank/raw_reflection_log.md
 memory-bank/activeContext.md
 memory-bank/consolidated_learnings.md
+
+# Live bench output (opt-in, per-run JSON reports)
+bench-results/
