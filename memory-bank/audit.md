@@ -333,3 +333,30 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
     *   (3) `applyProposedEdits` drift recovery is blockId-scoped first, before any text search.
     *   (4) `contentHash` separator sentinels (u0001/u0002) were raw invisible control bytes in the source literal; rewritten as visible backslash escapes (hex-dump before declaring string-literal bugs).
 *   **Approval:** Human verified.
+
+**[2026-07-09 00:00:00 UTC] - ARCHITECTURE_CHANGE**
+*   **Action:** Added a git-model document history layer (Cascade v2 Wave E; branch `claude/cascade-v2-e`, PR #6 — pending merge). Passed adversarial (Troublemaker) review: initial verdict NO-MERGE with HIGH findings, all fixed before the PR was opened.
+*   **Agent:** Architect / Troublemaker / Claude Code (Fable 5), built in worktree `../IDE-wave-e` off merged PR #4.
+*   **Context:** The audit ledger recorded decisions but the document itself had no durable version history — no way to answer "what did the document look like when this AI edit was approved," which EU AI Act Art. 12 record-keeping and Art. 14 oversight both presuppose. The unused `DocumentSource` Prisma model was dead weight.
+*   **Decisions Logged:**
+    *   New `DocCommit` Prisma model (migration `20260709205301_add_doc_commit_history`); unused `DocumentSource` model REMOVED in the same migration, verified against a populated pre-existing DB.
+    *   **Two-level content addressing (git tree+commit):** `contentHash` = sha256(canonical docJson); commit `hash` covers documentId + parentHash + contentHash + kind + message + actor + annotationId + auditIds + modelVersion. Attribution lives INSIDE the address — the HIGH review finding showed content-only hashing let a racing 'direct' autosave silently absorb an 'apply' commit's AI provenance.
+    *   **Append-only, server-verified commit DAG:** `/api/history` is POST create-only; the server recomputes both hashes (400 on mismatch); 409 stale-head enforces linearity with client rebase-retry-once; duplicates are idempotent; no update/delete paths exist.
+    *   **Art. 12/14 integration:** 'apply' commits carry `blockIdsTouched`, `auditIds`, actor `ai+human`, `modelVersion`, and `ChangeSet.commitHash` linkage. `restoreCommit` is TRANSACTIONAL and ordered durable-first: flush pending edits → HUMAN_RESTORE audit event (id embedded in the restore commit's `auditIds`) → commit → only then the editor `replaceWith` (`addToHistory: false`). Restore is Confirmation-gated in `HistoryPanel.tsx` (HITL preserved).
+    *   `changeTrackingPlugin` skips `addToHistory: false` transactions (no phantom "Direct edit" entries on restore/doc-switch).
+    *   `docs/compliance.md` states the honest posture: application-enforced append-only, tamper-EVIDENT not immutable, client-supplied attribution, and the `auditFailed` → zero-audit-links case disclosed.
+    *   CI now runs `prisma migrate deploy`.
+*   **Approval:** Human verified (PR #6 review pending merge).
+
+**[2026-07-09 00:00:00 UTC] - ARCHITECTURE_CHANGE**
+*   **Action:** Added relevance-judge severity gating + utility-model routing to the cascade (Cascade v2 Wave A; branch `claude/cascade-v2-a`, PR #5 — pending merge). Passed adversarial (Troublemaker) review: initial verdict NO-MERGE with HIGH findings, all fixed before the PR was opened.
+*   **Agent:** Architect / Troublemaker / Claude Code (Fable 5), built in worktree `../IDE-wave-a` off merged PR #4.
+*   **Context:** `hasVerbatimConflict` verified that a citation EXISTS verbatim, not that it is RELEVANT — an existent-but-irrelevant quote could still yield a `must`. Judge/compaction calls were also running on the user's (potentially Opus-class) model, and structured calls had no transport resilience.
+*   **Decisions Logged:**
+    *   New `src/lib/ai/relevanceJudge.ts`: batched LLM judge verifying that `must`-candidates' citations GENUINELY conflict, with target block context in the input. Trust boundary: the judge can only LOWER severity, never raise it; its prompt contains no severity vocabulary.
+    *   **Malfunction-preserves semantics (HIGH review finding):** a thrown judge call OR a response with zero valid verdicts is a protocol malfunction and preserves the derived severities — only real per-candidate verdicts demote. "Failed to answer" is never read as "denied." `maxTokens` scales with candidate count (fixed limits silently truncate the batch tail); deny-wins on duplicate verdict indexes.
+    *   `pickUtilityModel` in `modelCapabilities.ts` pins the judge + context compaction to `claude-haiku-4-5` (claude provider only). Graph extraction deliberately stays on the user's model — it is a recall mechanism, not housekeeping.
+    *   `fetchWithRetry` in `structuredClient.ts` (429/5xx, 2 retries, jittered backoff).
+    *   Opt-in live bench (`editPropBench.live.test.ts`, `npm run bench:live`, `BENCH_LIVE=1`): preflight fail-fast, asserts non-empty measurement, results to gitignored `bench-results/`.
+    *   **REVERTED in-branch:** a prompt-caching commit, after review proved it a cost regression (zero shared prefix cascade→judge; in-process cache already absorbs identical rebuilds; 2000-char trigger below Anthropic's 1024/2048-token cacheable minimum — 1.25x write surcharge, zero possible hits).
+*   **Approval:** Human verified (PR #5 review pending merge).
