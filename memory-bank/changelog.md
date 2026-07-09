@@ -5,9 +5,45 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2026-07-09] v8.4 (candidate) — Precision-First Cascade Graph
+## [2026-07-09] Cascade v2 Waves A + E (candidates) — Precision Judge + Git-Model Document History
 
-Rebuild of the cascade around a block-keyed document dependency graph. Built from `docs/fable5-cascade-brief.md` (local, untracked). Shipped as 8 commits (`d7e1a23..bafccea`) on branch `claude/cascade-graph` — **PR #4 open, pending merge** (`main` is branch-protected).
+Two Cascade v2 waves, built in parallel git worktrees (`../IDE-wave-a`, `../IDE-wave-e`) off merged PR #4, each through a full implement → adversarial-review → fix cycle (both Troublemaker reviews returned NO-MERGE with HIGH findings; all fixed pre-PR). **Open as PR #5 (`claude/cascade-v2-a`, 7 commits) and PR #6 (`claude/cascade-v2-e`, 7 commits) — pending merge; not yet on `main`.** Waves B/C/D remain on the roadmap.
+
+### Added
+- **[Wave A] `src/lib/ai/relevanceJudge.ts`:** Batched LLM judge verifying that `must`-candidates' citations GENUINELY conflict (closes the `hasVerbatimConflict` existence-vs-relevance gap). Target block context included in judge input; the judge can only LOWER severity; the judge prompt contains no severity vocabulary. Robustness semantics: judge malfunction (thrown call OR zero valid verdicts) preserves derived severities — only real per-candidate verdicts demote; `maxTokens` scales with candidate count; deny-wins on duplicate verdict indexes.
+- **[Wave A] `pickUtilityModel` in `src/lib/ai/modelCapabilities.ts`:** Pins the relevance judge + context compaction to `claude-haiku-4-5` (claude provider only). Graph extraction deliberately stays on the user's selected model (recall mechanism, not housekeeping).
+- **[Wave A] `fetchWithRetry` in `src/lib/ai/structuredClient.ts`:** Retries 429/5xx, 2 retries, jittered backoff.
+- **[Wave A] Opt-in live bench:** `editPropBench.live.test.ts` + `npm run bench:live` (`BENCH_LIVE=1`, needs the dev server, preflight fail-fast, asserts non-empty measurement, dumps to gitignored `bench-results/`).
+- **[Wave E] `DocCommit` Prisma model:** Migration `20260709205301_add_doc_commit_history`. Two-level content addressing like git's tree+commit: `contentHash` = sha256(canonical docJson); commit `hash` covers documentId + parentHash + contentHash + kind + message + actor + annotationId + auditIds + modelVersion — attribution is INSIDE the address.
+- **[Wave E] Append-only `/api/history`:** POST create-only; server recomputes both hashes (400 on mismatch); 409 stale-head enforcing linearity with client rebase-retry-once; idempotent duplicates; no update/delete.
+- **[Wave E] `src/lib/history/`:** `canonical.ts`; `commits.ts` — `createCommit` (contentHash-dedupe, kind-aware), `blameBlock`, `restoreCommit` TRANSACTIONAL (flush pending edits → HUMAN_RESTORE audit event with id embedded in the restore commit's `auditIds` → commit → only then dispatch `replaceWith` with `addToHistory: false`).
+- **[Wave E] Capture points:** 'import' root commit; 'apply' commits with `blockIdsTouched` + `auditIds` + actor `ai+human` + `modelVersion` and `ChangeSet.commitHash` linkage; 'direct' commits on autosave/doc-switch/unmount flushes.
+- **[Wave E] `HistoryPanel.tsx` + AppShell History tab:** Accessible language (Version / Compare / Restore / "Last changed by"); pagination past 200; Confirmation-gated restore (HITL).
+- **[Wave E] `docs/compliance.md`:** HONEST framing — application-enforced append-only, tamper-EVIDENT not immutable, client-supplied attribution, `auditFailed` → zero-audit-links disclosed.
+
+### Changed
+- **[Wave E] CI:** Now runs `prisma migrate deploy` (PR #6's CI run exercises it for the first time).
+- **[Wave E] `changeTrackingPlugin`:** Skips `addToHistory: false` transactions.
+
+### Fixed
+- **[Wave A, Troublemaker] Judge malfunction misread as denial:** Zero-valid-verdict responses are protocol malfunctions and no longer demote candidates.
+- **[Wave E, Troublemaker] Provenance absorption:** Content-only hashing let a racing 'direct' autosave silently absorb an 'apply' commit's AI provenance; fixed by putting attribution inside the commit hash.
+- **[Wave E] Phantom full-doc "Direct edit" entries on restore/doc-switch:** Eliminated via the `changeTrackingPlugin` `addToHistory: false` skip.
+
+### Removed
+- **[Wave E] Unused `DocumentSource` Prisma model:** Dropped in the same migration; migration verified against a populated pre-existing DB.
+
+### Reverted
+- **[Wave A] Prompt-caching commit:** Added then REVERTED in-branch after review proved it a cost regression — zero shared prefix cascade→judge, in-process cache absorbs identical rebuilds, and the 2000-char trigger is below Anthropic's 1024/2048-token cacheable minimum (1.25x write surcharge, zero possible hits).
+
+### Verification
+- `main` (post-PR #4 merge) — 287 tests passing.
+- PR #5 branch — 322 tests passing + 10 skipped (opt-in live bench).
+- PR #6 branch — 335 tests passing.
+
+## [2026-07-09] v8.4 — Precision-First Cascade Graph
+
+Rebuild of the cascade around a block-keyed document dependency graph. Built from `docs/fable5-cascade-brief.md` (local, untracked). Shipped as 8 commits (`d7e1a23..bafccea`) on branch `claude/cascade-graph` via **PR #4 — MERGED to `main` 2026-07-09** (`main` is branch-protected).
 
 ### Added
 - **Stable block IDs:** `schema.ts` `withBlockId` — persistent `blockId` attr on paragraph/heading/blockquote/code_block/list_item. `parseDOM` deliberately does NOT read `data-block-id`, so pasted content mints fresh ids. New `src/lib/prosemirror/blockIds.ts` (`collectBlocks`, `collectTextblocks`, `findBlockById`, `blockIdAtPos`, `computeBlockIdFixes`, `blockTextRange`) and `src/lib/prosemirror/plugins/blockIdPlugin.ts` (`appendTransaction` stamping; duplicate keeper = first NON-EMPTY occurrence; stamps ride the triggering history event; initial-load stamping deferred via `queueMicrotask` with `addToHistory: false`).
@@ -33,7 +69,7 @@ Rebuild of the cascade around a block-keyed document dependency graph. Built fro
 ### Verification
 - `npm run typecheck` — 0 errors. `npm run lint` — clean. `npm run build` — clean.
 - `npm run test` — 287 passing (was 194; +93).
-- Landed as PR #4 (https://github.com/Vinylfigure/intent-ide/pull/4) — pending merge; not yet on `main`.
+- Landed as PR #4 (https://github.com/Vinylfigure/intent-ide/pull/4) — MERGED to `main` 2026-07-09.
 
 ## [2026-07-08] Public Release Packaging
 
