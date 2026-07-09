@@ -573,11 +573,12 @@ describe('proposeCascadeEdits — relevance judge gating must', () => {
     expect(judgeCalled).toBe(false)
   })
 
-  it('default judge runs over callStructured and applies the skeptical missing-verdict default', async () => {
+  it('default judge: ZERO verdicts is a malfunction — derived severities are preserved', async () => {
     const state = stateOf(FIXTURE_DOC)
     const requests: StructuredRequest[] = []
     // One scripted transport answering BOTH stages: cascade → the must proposal,
-    // judge → no verdicts at all (model went silent).
+    // judge → no verdicts at all (prose reply / truncation / model confusion).
+    // The judge prompt allows no silent path, so silence must NOT demote.
     const transport: CallStructuredFn = async (req) => {
       requests.push(req)
       if (req.tools.some((t) => t.name === 'propose_edit')) {
@@ -591,8 +592,68 @@ describe('proposeCascadeEdits — relevance judge gating must', () => {
     })
     expect(requests.map((r) => r.tools[0].name)).toEqual(['propose_edit', 'verdict'])
     expect(edits).toHaveLength(1)
-    expect(edits[0].severity).toBe('probably')
-    expect(edits[0].reason).toContain('(auto-review: no verdict returned)')
+    expect(edits[0].severity).toBe('must')
+    expect(edits[0].reason).toBe('stale date')
+  })
+
+  it('default judge: PARTIAL verdicts demote only the missing indexes (skeptical default)', async () => {
+    // Two blocks that both derive 'must'; the judge confirms candidate [1]
+    // (b2) and goes silent on candidate [2] (b3) — only b3 may demote.
+    const doc = docOf(
+      p('b1', '"Launch Date" means March 1, 2026.'),
+      p('b2', 'The beta program ends on March 1, 2026, just before the Launch Date.'),
+      p('b3', 'Printed banners show March 1, 2026 as the Launch Date.'),
+    )
+    const state = stateOf(doc)
+    const transport: CallStructuredFn = async (req) => {
+      if (req.tools.some((t) => t.name === 'propose_edit')) {
+        return {
+          toolCalls: [
+            MUST_PROPOSAL,
+            {
+              name: 'propose_edit',
+              input: {
+                block_id: 'b3',
+                target_text: 'March 1, 2026 as the Launch Date',
+                new_text: 'June 1, 2026 as the Launch Date',
+                reason: 'stale banner date',
+                source_block_id: 'b1',
+                quoted_text: 'March 1, 2026',
+                edge_type: 'contradicts',
+              },
+            },
+          ],
+        }
+      }
+      return {
+        toolCalls: [
+          { name: 'verdict', input: { index: 1, genuinely_conflicts: true, reason: 'confirmed' } },
+        ],
+      }
+    }
+    const edits = await proposeCascadeEdits(state, primaryOf(doc), CONFIG, {
+      graph: buildDeterministicGraph(doc),
+      callStructured: transport,
+    })
+    expect(edits).toHaveLength(2)
+    expect(edits.map((e) => [e.blockId, e.severity])).toEqual([
+      ['b2', 'must'],
+      ['b3', 'probably'],
+    ])
+    expect(edits[0].reason).toBe('stale date')
+    expect(edits[1].reason).toContain('(auto-review: no verdict returned)')
+  })
+
+  it('a custom judge returning an empty verdict map preserves derived severities', async () => {
+    const state = stateOf(FIXTURE_DOC)
+    const edits = await proposeCascadeEdits(state, primaryOf(FIXTURE_DOC), CONFIG, {
+      graph: buildDeterministicGraph(FIXTURE_DOC),
+      callStructured: scripted([MUST_PROPOSAL]),
+      judge: async () => new Map(),
+    })
+    expect(edits).toHaveLength(1)
+    expect(edits[0].severity).toBe('must')
+    expect(edits[0].reason).toBe('stale date')
   })
 
   it('re-sorts after demotion so confirmed musts stay ahead of demoted ones', async () => {

@@ -239,6 +239,10 @@ async function applyRelevanceJudge(
   } catch {
     return false // judge down — keep derived severities
   }
+  // Zero verdicts for a non-empty candidate set is a judge malfunction, not
+  // an all-deny (the judge contract yields one verdict per candidate or
+  // throws). Treat it like a failed call: keep derived severities.
+  if (verdicts.size === 0) return false
 
   let demoted = false
   musts.forEach((edit, i) => {

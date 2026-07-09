@@ -426,11 +426,17 @@ export const CASCADE_FIXTURES: CascadeFixture[] = [
         reason: 'the $50,000 in this block is a 2019 renovation cost, not the Total Budget',
       }),
     ],
-    extraAssertions: (edits) => {
+    extraAssertions: (edits, captured) => {
       expect(edits).toHaveLength(1)
       expect(edits[0].severity).toBe('probably')
       expect(edits[0].reason).toContain('(auto-review:')
       expect(edits[0].evidence).not.toBeNull() // citation kept, confidence lowered
+      // The judge could only make this call because it SAW the target block's
+      // surrounding text — the candidate line must carry b2's context.
+      const judgeReq = captured.find((r) => r.tools.some((t) => t.name === 'verdict'))
+      expect(judgeReq).toBeDefined()
+      const judgePrompt = judgeReq!.messages.map((m) => m.content).join('\n')
+      expect(judgePrompt).toContain('CONTEXT: "Historical note: the 2019 office renovation')
     },
   },
 

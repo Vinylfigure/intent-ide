@@ -59,9 +59,10 @@ const confirmAllJudge: JudgeFn = async (candidates) =>
 /** Scripted judge: the real judgeMustCandidates parsing over scripted verdicts. */
 function scriptedJudge(
   calls: Array<{ name: string; input: Record<string, unknown> }>,
+  capture: StructuredRequest[],
 ): JudgeFn {
   return (candidates, primary, doc, config) =>
-    judgeMustCandidates(candidates, primary, doc, config, scripted(calls, []))
+    judgeMustCandidates(candidates, primary, doc, config, scripted(calls, capture))
 }
 
 async function runFixture(fixture: CascadeFixture): Promise<{
@@ -78,11 +79,15 @@ async function runFixture(fixture: CascadeFixture): Promise<{
     await augmentWithLlmEdges(graph, CONFIG, scripted(fixture.scriptedGraphCalls, []))
   }
 
+  // Cascade AND judge requests share one capture list, so fixtures can
+  // assert what the judge was actually shown (e.g. target-block context).
   const captured: StructuredRequest[] = []
   const edits = await proposeCascadeEdits(state, primary, CONFIG, {
     graph,
     callStructured: scripted(fixture.scriptedCascadeCalls, captured, fixture.throwOnCascade),
-    judge: fixture.scriptedJudgeCalls ? scriptedJudge(fixture.scriptedJudgeCalls) : confirmAllJudge,
+    judge: fixture.scriptedJudgeCalls
+      ? scriptedJudge(fixture.scriptedJudgeCalls, captured)
+      : confirmAllJudge,
   })
   return { edits, captured, doc }
 }

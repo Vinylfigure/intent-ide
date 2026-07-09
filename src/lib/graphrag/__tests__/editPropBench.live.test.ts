@@ -101,8 +101,18 @@ function computeLiveMetrics(
 }
 
 describe.skipIf(!LIVE)('EditPropBench LIVE (real model via /api/structured)', () => {
-  beforeAll(() => {
-    setStructuredBaseUrl(process.env.BENCH_BASE_URL || 'http://localhost:3000')
+  beforeAll(async () => {
+    const baseUrl = process.env.BENCH_BASE_URL || 'http://localhost:3000'
+    // Preflight: fail fast on a dead transport instead of burning the full
+    // retry backoff once per fixture and reporting all-zero "results".
+    try {
+      await fetch(baseUrl)
+    } catch {
+      throw new Error(
+        `bench:live — ${baseUrl} is unreachable. Start the app first (npm run dev) or point BENCH_BASE_URL at a running instance.`,
+      )
+    }
+    setStructuredBaseUrl(baseUrl)
     fs.mkdirSync(RESULTS_DIR, { recursive: true })
     const config = benchConfig()
     if (config.provider !== 'ollama' && !config.apiKey) {
@@ -158,6 +168,9 @@ describe.skipIf(!LIVE)('EditPropBench LIVE (real model via /api/structured)', ()
   }
 
   afterAll(() => {
+    // Leave no cross-suite residue: later suites must see the default
+    // relative '/api/structured' again.
+    setStructuredBaseUrl('')
     if (collected.length === 0) return
     // eslint-disable-next-line no-console
     console.table(
@@ -171,5 +184,13 @@ describe.skipIf(!LIVE)('EditPropBench LIVE (real model via /api/structured)', ()
         'ms': m.durationMs,
       })),
     )
+    // A run where NO fixture produced a single proposal is a dead or broken
+    // transport wearing green, not a model opinion — every fixture here has
+    // at least one genuinely stale downstream block. Fail loudly rather than
+    // greenwash it.
+    expect(
+      collected.some((m) => m.proposals > 0),
+      'bench:live — zero proposals across ALL fixtures; the transport or provider is almost certainly broken (check the dev server logs and BENCH_API_KEY)',
+    ).toBe(true)
   })
 })

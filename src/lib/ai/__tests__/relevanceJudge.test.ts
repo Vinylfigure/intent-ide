@@ -64,9 +64,58 @@ describe('judgeMustCandidates — batching and prompt shape', () => {
     expect(captured[0].tools.map((t) => t.name)).toEqual(['verdict'])
   })
 
+  it("includes the target block's live text as CONTEXT when the blockId resolves", async () => {
+    const captured: StructuredRequest[] = []
+    await judgeMustCandidates(
+      [candidate({ blockId: 'b1', targetText: '$50,000' })],
+      PRIMARY,
+      DOC,
+      CONFIG,
+      scripted([verdict(1, true)], captured),
+    )
+    const user = captured[0].messages.find((m) => m.role === 'user')!.content
+    // The judge sees the whole surrounding block, not just the target span.
+    expect(user).toContain('CONTEXT: ""Total Budget" means $50,000."')
+  })
+
+  it('falls back to targetText as CONTEXT when the block no longer resolves', async () => {
+    const captured: StructuredRequest[] = []
+    await judgeMustCandidates(
+      [candidate({ blockId: 'vanished-block' })],
+      PRIMARY,
+      DOC,
+      CONFIG,
+      scripted([verdict(1, true)], captured),
+    )
+    const user = captured[0].messages.find((m) => m.role === 'user')!.content
+    expect(user).toContain('CONTEXT: "Total Budget of $50,000"')
+  })
+
+  it('scales maxTokens with candidate count and caps at 8000', async () => {
+    const captured: StructuredRequest[] = []
+    await judgeMustCandidates(
+      [candidate(), candidate({ blockId: 'b3' }), candidate({ blockId: 'b4' })],
+      PRIMARY,
+      DOC,
+      CONFIG,
+      scripted([verdict(1, true)], captured),
+    )
+    expect(captured[0].maxTokens).toBe(400 + 200 * 3)
+
+    const many = Array.from({ length: 50 }, (_, i) => candidate({ blockId: `m${i}` }))
+    await judgeMustCandidates(many, PRIMARY, DOC, CONFIG, scripted([verdict(1, true)], captured))
+    expect(captured[1].maxTokens).toBe(8000)
+  })
+
   it('never leaks a severity field to the model', async () => {
     const captured: StructuredRequest[] = []
-    await judgeMustCandidates([candidate()], PRIMARY, DOC, CONFIG, scripted([], captured))
+    await judgeMustCandidates(
+      [candidate()],
+      PRIMARY,
+      DOC,
+      CONFIG,
+      scripted([verdict(1, true)], captured),
+    )
     const everything = captured[0].messages.map((m) => m.content).join('\n')
     expect(everything.toLowerCase()).not.toContain('severity')
     expect(everything.toLowerCase()).not.toContain("'must'")
@@ -76,7 +125,7 @@ describe('judgeMustCandidates — batching and prompt shape', () => {
     const seen: string[] = []
     const capturingCall: CallStructuredFn = async (_req, config) => {
       seen.push(config.model)
-      return { toolCalls: [] }
+      return { toolCalls: [verdict(1, true)] }
     }
     await judgeMustCandidates(
       [candidate()],
@@ -119,7 +168,7 @@ describe('judgeMustCandidates — verdict parsing', () => {
     expect(verdicts.get(1)).toEqual({ genuinelyConflicts: false, reason: 'coincidental figure' })
   })
 
-  it('a missing verdict for an index defaults to NOT confirmed (skeptical default)', async () => {
+  it('a PARTIALLY missing verdict defaults the skipped index to NOT confirmed (skeptical default)', async () => {
     const verdicts = await judgeMustCandidates(
       [candidate(), candidate({ blockId: 'b3' })],
       PRIMARY,
@@ -134,9 +183,32 @@ describe('judgeMustCandidates — verdict parsing', () => {
     expect(verdicts.get(1)?.genuinelyConflicts).toBe(true)
   })
 
-  it('ignores out-of-range, non-numeric, and non-verdict tool calls', async () => {
+  it('ZERO verdicts on a successful call throws (protocol malfunction, not an all-deny)', async () => {
+    await expect(
+      judgeMustCandidates([candidate(), candidate({ blockId: 'b3' })], PRIMARY, DOC, CONFIG, scripted([])),
+    ).rejects.toThrow('zero valid verdicts')
+  })
+
+  it('all-garbage tool calls count as zero verdicts and throw', async () => {
+    await expect(
+      judgeMustCandidates(
+        [candidate()],
+        PRIMARY,
+        DOC,
+        CONFIG,
+        scripted([
+          verdict(0, true), // below range
+          verdict(7, true), // above range
+          { name: 'verdict', input: { index: 'one', genuinely_conflicts: true, reason: 'x' } },
+          { name: 'propose_edit', input: { index: 1, genuinely_conflicts: true } },
+        ]),
+      ),
+    ).rejects.toThrow('zero valid verdicts')
+  })
+
+  it('ignores out-of-range, non-numeric, and non-verdict tool calls around a valid one', async () => {
     const verdicts = await judgeMustCandidates(
-      [candidate()],
+      [candidate(), candidate({ blockId: 'b3' })],
       PRIMARY,
       DOC,
       CONFIG,
@@ -145,12 +217,47 @@ describe('judgeMustCandidates — verdict parsing', () => {
         verdict(7, true), // above range
         { name: 'verdict', input: { index: 'one', genuinely_conflicts: true, reason: 'x' } },
         { name: 'propose_edit', input: { index: 1, genuinely_conflicts: true } },
+        verdict(1, true, 'the only valid verdict'),
       ]),
     )
-    expect(verdicts.get(0)).toEqual({
+    expect(verdicts.get(0)).toEqual({ genuinelyConflicts: true, reason: 'the only valid verdict' })
+    // The judge engaged, so the individually skipped index gets the skeptical default.
+    expect(verdicts.get(1)).toEqual({
       genuinelyConflicts: false,
       reason: 'no verdict returned',
     })
+  })
+
+  it('duplicate indexes: first write wins, but a deny always sticks', async () => {
+    // deny first → later confirm cannot launder it
+    const denyFirst = await judgeMustCandidates(
+      [candidate()],
+      PRIMARY,
+      DOC,
+      CONFIG,
+      scripted([verdict(1, false, 'denied'), verdict(1, true, 'laundered confirm')]),
+    )
+    expect(denyFirst.get(0)).toEqual({ genuinelyConflicts: false, reason: 'denied' })
+
+    // confirm first → later deny overrides it
+    const denyLater = await judgeMustCandidates(
+      [candidate()],
+      PRIMARY,
+      DOC,
+      CONFIG,
+      scripted([verdict(1, true, 'early confirm'), verdict(1, false, 'second thoughts')]),
+    )
+    expect(denyLater.get(0)).toEqual({ genuinelyConflicts: false, reason: 'second thoughts' })
+
+    // confirm twice → first reason wins
+    const confirmTwice = await judgeMustCandidates(
+      [candidate()],
+      PRIMARY,
+      DOC,
+      CONFIG,
+      scripted([verdict(1, true, 'first'), verdict(1, true, 'second')]),
+    )
+    expect(confirmTwice.get(0)).toEqual({ genuinelyConflicts: true, reason: 'first' })
   })
 
   it('treats a non-boolean genuinely_conflicts as a denial and fills blank reasons', async () => {

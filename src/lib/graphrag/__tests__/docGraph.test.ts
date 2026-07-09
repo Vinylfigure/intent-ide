@@ -231,7 +231,9 @@ describe('augmentWithLlmEdges', () => {
     expect(llmEdges[0].evidence).toBeUndefined()
   })
 
-  it('routes the extraction call to the utility model (Haiku on Claude, unchanged elsewhere)', async () => {
+  it("extraction runs on the USER's selected model — never a silent cheap-model downgrade", async () => {
+    // Edge extraction is the cascade's recall mechanism for paraphrase
+    // dependencies; downgrading it would be unmeasured recall loss.
     const seen: string[] = []
     const capturingCall: CallStructuredFn = async (_req, config) => {
       seen.push(config.model)
@@ -247,7 +249,7 @@ describe('augmentWithLlmEdges', () => {
       { provider: 'ollama', apiKey: '', model: 'llama3.2' },
       capturingCall,
     )
-    expect(seen).toEqual(['claude-haiku-4-5', 'llama3.2'])
+    expect(seen).toEqual(['claude-fable-5', 'llama3.2'])
   })
 
   it('leaves the deterministic graph intact when the call throws', async () => {

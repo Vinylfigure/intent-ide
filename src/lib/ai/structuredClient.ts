@@ -62,6 +62,8 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * failure throws. HTTP failure must THROW, not masquerade as an empty
  * tool-call response: callers distinguish "the model chose to call nothing"
  * (valid, cacheable) from "the provider is down" (must not poison caches).
+ * NOTE: retry assumes `init.body` is a reusable string — a stream body would
+ * be consumed on attempt 1 and replay empty.
  */
 export async function fetchWithRetry(
   url: string,
