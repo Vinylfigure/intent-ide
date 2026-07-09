@@ -600,6 +600,23 @@ function expandOneHop(
   return out
 }
 
+/**
+ * Publish build lifecycle to the UI store (StatusBar chip, edge-path
+ * affordances). Browser-only via lazy import — node tests and server code
+ * never touch the store (same precedent as scheduleDocGraphRebuild's lazy
+ * settings-store import). Failures are swallowed: publishing is cosmetic.
+ */
+function publishDocGraph(status: 'building' | 'ready', graph?: DocGraph): void {
+  if (typeof window === 'undefined') return
+  void import('@/stores/docGraphStore')
+    .then(({ useDocGraphStore }) => {
+      const store = useDocGraphStore.getState()
+      if (graph) store.setGraph(graph)
+      store.setStatus(status)
+    })
+    .catch(() => {})
+}
+
 /** User toggle for the embedding pass (settings store, default true). */
 async function embeddingsEnabledFromStore(): Promise<boolean> {
   try {
@@ -643,11 +660,15 @@ export async function getDocGraph(
     (cached.llmApplied || deps.skipLlm || !llmAvailable(config)) &&
     (cached.embeddingsApplied || !embeddingsOn)
   ) {
+    // Cache hits publish too — a fresh page with a warm cache still needs the
+    // UI store filled before the chip / edge paths can render.
+    publishDocGraph('ready', cached)
     return cached
   }
   const pending = inflight.get(hash)
   if (pending) return pending
 
+  publishDocGraph('building')
   const promise = (async () => {
     const graph = cached ?? buildDeterministicGraph(doc)
     if (!deps.skipLlm && !graph.llmApplied) {
@@ -665,6 +686,7 @@ export async function getDocGraph(
       await augmentWithEmbeddingEdges(graph, config, deps.embed)
     }
     cacheGraph(hash, graph)
+    publishDocGraph('ready', graph)
     return graph
   })().finally(() => inflight.delete(hash))
 
@@ -696,6 +718,70 @@ export function getNeighborhood(
     frontier = next
   }
   return dist
+}
+
+/**
+ * BFS shortest path over the undirected adjacency, as the ordered edge list
+ * walked from `fromBlockId` to `toBlockId`. Returns [] when the endpoints are
+ * the same block, null when either endpoint is unknown or no path exists.
+ * Pure — powers the "why this proposal?" affordance.
+ */
+export function findEdgePath(
+  graph: DocGraph,
+  fromBlockId: string,
+  toBlockId: string,
+): DocGraphEdge[] | null {
+  if (!graph.nodes.has(fromBlockId) || !graph.nodes.has(toBlockId)) return null
+  if (fromBlockId === toBlockId) return []
+
+  const cameFrom = new Map<string, { via: DocGraphEdge; prev: string }>()
+  const visited = new Set([fromBlockId])
+  let frontier = [fromBlockId]
+  while (frontier.length) {
+    const next: string[] = []
+    for (const id of frontier) {
+      for (const edge of graph.adjacency.get(id) ?? []) {
+        const far = edge.from === id ? edge.to : edge.from
+        if (visited.has(far)) continue
+        visited.add(far)
+        cameFrom.set(far, { via: edge, prev: id })
+        if (far === toBlockId) {
+          const path: DocGraphEdge[] = []
+          let cursor = toBlockId
+          while (cursor !== fromBlockId) {
+            const step = cameFrom.get(cursor)!
+            path.unshift(step.via)
+            cursor = step.prev
+          }
+          return path
+        }
+        next.push(far)
+      }
+    }
+    frontier = next
+  }
+  return null
+}
+
+const EDGE_EVIDENCE_MAX_CHARS = 24
+
+/**
+ * Human-readable rendering of an edge path for the "why this proposal?" line,
+ * e.g. `references ("Total Budget") → contradicts`. Plain text only — callers
+ * must never inject it as HTML. Evidence terms are truncated to keep the line
+ * compact.
+ */
+export function formatEdgePath(path: DocGraphEdge[]): string {
+  return path
+    .map((edge) => {
+      if (!edge.evidence) return edge.type
+      const term =
+        edge.evidence.length > EDGE_EVIDENCE_MAX_CHARS
+          ? edge.evidence.slice(0, EDGE_EVIDENCE_MAX_CHARS).trimEnd() + '…'
+          : edge.evidence
+      return `${edge.type} ("${term}")`
+    })
+    .join(' → ')
 }
 
 let rebuildTimer: ReturnType<typeof setTimeout> | null = null

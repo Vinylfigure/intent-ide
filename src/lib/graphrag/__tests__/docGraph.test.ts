@@ -8,8 +8,11 @@ import {
   augmentWithLlmEdges,
   getDocGraph,
   getNeighborhood,
+  findEdgePath,
+  formatEdgePath,
   contentHash,
   invalidateDocGraphCache,
+  type DocGraphEdge,
 } from '../docGraph'
 
 const CONFIG: LLMConfig = { provider: 'claude', apiKey: 'test-key', model: 'test-model' }
@@ -586,5 +589,78 @@ describe('getDocGraph cache', () => {
     expect(called).toBe(false)
     expect(g.llmApplied).toBe(false)
     expect(g.nodes.has('b1')).toBe(true)
+  })
+})
+
+describe('findEdgePath', () => {
+  it('returns the direct edge between adjacent blocks', () => {
+    const graph = buildDeterministicGraph(
+      docOf(
+        p('def', '"Total Budget" means the fifty thousand dollar pool.'),
+        p('use', 'Marketing may spend part of the Total Budget each quarter.'),
+      ),
+    )
+    const path = findEdgePath(graph, 'use', 'def')
+    expect(path).not.toBeNull()
+    expect(path!.length).toBe(1)
+    expect(path![0].type).toBe('references')
+    expect(path![0].evidence).toBe('Total Budget')
+  })
+
+  it('is direction-agnostic (undirected adjacency)', () => {
+    const graph = buildDeterministicGraph(
+      docOf(
+        p('def', '"Total Budget" means the fifty thousand dollar pool.'),
+        p('use', 'Marketing may spend part of the Total Budget each quarter.'),
+      ),
+    )
+    const path = findEdgePath(graph, 'def', 'use')
+    expect(path).not.toBeNull()
+    expect(path!.length).toBe(1)
+  })
+
+  it('finds the shortest multi-hop path in walk order', () => {
+    const graph = buildDeterministicGraph(docOf(p('a', 'x'), p('b', 'y'), p('c', 'z')))
+    const ab: DocGraphEdge = { from: 'a', to: 'b', type: 'references', source: 'llm', evidence: 'alpha' }
+    const bc: DocGraphEdge = { from: 'c', to: 'b', type: 'contradicts', source: 'llm' }
+    graph.edges.push(ab, bc)
+    graph.adjacency.set('a', [ab])
+    graph.adjacency.set('b', [ab, bc])
+    graph.adjacency.set('c', [bc])
+    const path = findEdgePath(graph, 'a', 'c')
+    expect(path).toEqual([ab, bc])
+  })
+
+  it('returns null for unknown blocks and disconnected pairs, [] for the same block', () => {
+    const graph = buildDeterministicGraph(docOf(p('a', 'one'), p('b', 'unrelated')))
+    expect(findEdgePath(graph, 'a', 'missing')).toBeNull()
+    expect(findEdgePath(graph, 'missing', 'a')).toBeNull()
+    expect(findEdgePath(graph, 'a', 'b')).toBeNull()
+    expect(findEdgePath(graph, 'a', 'a')).toEqual([])
+  })
+})
+
+describe('formatEdgePath', () => {
+  it('renders type plus quoted evidence, joined by arrows', () => {
+    const path: DocGraphEdge[] = [
+      { from: 'a', to: 'b', type: 'references', source: 'deterministic', evidence: 'Total Budget' },
+      { from: 'b', to: 'c', type: 'contradicts', source: 'llm' },
+    ]
+    expect(formatEdgePath(path)).toBe('references ("Total Budget") → contradicts')
+  })
+
+  it('truncates long evidence terms to keep the line compact', () => {
+    const path: DocGraphEdge[] = [
+      {
+        from: 'a',
+        to: 'b',
+        type: 'duplicates',
+        source: 'deterministic',
+        evidence: 'This is a very long duplicated sentence that keeps going.',
+      },
+    ]
+    const out = formatEdgePath(path)
+    expect(out).toContain('…')
+    expect(out.length).toBeLessThan(45)
   })
 })
