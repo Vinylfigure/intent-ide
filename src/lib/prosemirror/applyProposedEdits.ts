@@ -21,6 +21,7 @@ export interface AppliedEdit {
   to: number
   newText: string
   targetText: string
+  blockId?: string | null
 }
 
 export type ApplyProposedResult =
@@ -59,7 +60,7 @@ export function applyProposedEdits(view: EditorView, acceptedIds: string[]): App
     const current = safeFrom <= safeTo ? doc.textBetween(safeFrom, safeTo) : ''
 
     if (current === a.targetText) {
-      resolved.push({ from: safeFrom, to: safeTo, newText: a.newText, targetText: a.targetText })
+      resolved.push({ from: safeFrom, to: safeTo, newText: a.newText, targetText: a.targetText, blockId: a.blockId ?? null })
       continue
     }
 
@@ -75,7 +76,7 @@ export function applyProposedEdits(view: EditorView, acceptedIds: string[]): App
         reason: `Could not safely place an edit — the text "${a.targetText.slice(0, 40)}…" has changed. Re-run the annotation.`,
       }
     }
-    resolved.push({ from: found.from, to: found.to, newText: a.newText, targetText: a.targetText })
+    resolved.push({ from: found.from, to: found.to, newText: a.newText, targetText: a.targetText, blockId: a.blockId ?? null })
   }
 
   // Apply descending by `from` so each replace leaves earlier positions valid.

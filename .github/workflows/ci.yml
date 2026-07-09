@@ -25,6 +25,11 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
+      # Exercise the actual migration SQL against a fresh database — a broken
+      # migration fails CI here, not on the next dev machine.
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+
       - name: Typecheck
         run: npm run typecheck
 

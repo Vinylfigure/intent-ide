@@ -7,19 +7,8 @@ datasource db {
   provider = "sqlite"
 }
 
-model DocumentSource {
-  id          String       @id @default(cuid())
-  content     String
-  version     Int          @default(1)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  annotations Annotation[]
-}
-
 model Annotation {
   id          String        @id @default(cuid())
-  sourceId    String
-  source      DocumentSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
   transcript  String
   intentType  String
   scopeStart  Int
@@ -63,4 +52,31 @@ model AuditLog {
   graphNodesUsed      String     @default("[]")
   overrideOf          String?
   overrideReason      String?
+}
+
+/// Git-model document history — two-level content-addressed snapshots in an
+/// append-only linear chain (parent pointers). `contentHash` covers the
+/// document content only ("tree"); `hash` (the id) additionally covers
+/// attribution — parent, kind, message, actor, annotationId, auditIds,
+/// modelVersion ("commit") — so same-content versions with different
+/// provenance are distinct records. Restore creates a NEW commit; history is
+/// never rewritten. EU AI Act Article 12 record-keeping surface.
+/// Append-only: no update/delete operations permitted on history records.
+model DocCommit {
+  hash            String   @id
+  contentHash     String
+  documentId      String
+  parentHash      String?
+  kind            String   // 'import' | 'apply' | 'direct' | 'restore'
+  message         String
+  docJson         String
+  blockIdsTouched String   @default("[]")
+  annotationId    String?
+  auditIds        String   @default("[]")
+  actor           String   @default("human")
+  modelVersion    String   @default("")
+  createdAt       DateTime @default(now())
+
+  @@index([documentId, createdAt])
+  @@index([documentId, parentHash])
 }
