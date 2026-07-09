@@ -311,3 +311,32 @@ describe('GET /api/history', () => {
     expect((await res.json()).commits).toHaveLength(2)
   })
 })
+
+// ── Production gate ───────────────────────────────────────────────────────────
+// History stores full document snapshots server-side with no auth, so the
+// public deployment keeps it off unless the operator opts in (HISTORY_ENABLED).
+
+describe('/api/history — production gate', () => {
+  it('returns 403 for GET and POST in production without HISTORY_ENABLED', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    try {
+      expect((await GET(getRequest('documentId=doc-1'))).status).toBe(403)
+      expect((await POST(postRequest({ action: 'commit' }))).status).toBe(403)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('stays enabled in production when HISTORY_ENABLED=1', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('HISTORY_ENABLED', '1')
+    try {
+      await seedRoot()
+      const res = await GET(getRequest('documentId=doc-1'))
+      expect(res.status).toBe(200)
+      expect((await res.json()).commits).toHaveLength(1)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})

@@ -120,7 +120,7 @@ To deploy your own:
 | `DATABASE_AUTH_TOKEN` | `turso db tokens create <db>` |
 | `AUDIT_ADMIN_TOKEN` | random secret; gates unscoped `GET /api/audit` reads |
 
-Known limits on Vercel: LLM/transcription routes cap at 60s (`maxDuration`), and voice uploads are limited to ~4.5 MB — very long recordings may fail to transcribe. In production, custom OpenAI-compatible base URLs must be public `https` endpoints (private/loopback addresses are rejected), and each visitor's audit trail is scoped to an anonymous per-browser ID.
+Known limits on Vercel: LLM/transcription routes cap at 60s (`maxDuration`), and voice uploads are limited to ~4.5 MB — very long recordings may fail to transcribe. In production, custom OpenAI-compatible base URLs must be public `https` endpoints (private/loopback addresses are rejected), and each visitor's audit trail is scoped to an anonymous per-browser ID. Server-side version history (`/api/history`) is **disabled in production** by default — it stores full document snapshots, which the shared public demo must not do; private self-hosts can opt in with `HISTORY_ENABLED=1`.
 
 ## Testing
 
