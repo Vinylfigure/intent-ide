@@ -4,6 +4,7 @@ import type { LLMConfig } from '@/stores/settingsStore'
 import type { CascadeEdgeType } from '@/lib/annotations/types'
 import { collectTextblocks } from '@/lib/prosemirror/blockIds'
 import { fetchStructured, type CallStructuredFn } from '@/lib/ai/structuredClient'
+import { augmentWithEmbeddingEdges, type EmbedFn } from './embedEdges'
 
 /**
  * Document dependency graph — the retrieval index the cascade queries instead
@@ -29,7 +30,7 @@ export interface DocGraphNode {
   definedTerms: string[]
 }
 
-export type DocGraphEdgeSource = 'deterministic' | 'llm' | 'graphiti'
+export type DocGraphEdgeSource = 'deterministic' | 'llm' | 'embedding' | 'graphiti'
 
 export interface DocGraphEdge {
   from: string
@@ -51,6 +52,11 @@ export interface DocGraph {
    * with known-reduced recall. Never a silent truncation: setting this warns.
    */
   llmPartial: boolean
+  /**
+   * True once the embedding pass ran — including the silent no-op case where
+   * the provider has no embeddings API (fewer edges, no retry loop).
+   */
+  embeddingsApplied: boolean
   /** Per-textblock FNV-1a over blockId + text — the incremental-diff unit. */
   blockHashes: Map<string, string>
   nodes: Map<string, DocGraphNode>
@@ -299,6 +305,7 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
     builtAt: Date.now(),
     llmApplied: false,
     llmPartial: false,
+    embeddingsApplied: false,
     blockHashes,
     nodes,
     edges,
@@ -552,22 +559,49 @@ function expandOneHop(graph: DocGraph, seed: ReadonlySet<string>): Set<string> {
   return out
 }
 
+/** User toggle for the embedding pass (settings store, default true). */
+async function embeddingsEnabledFromStore(): Promise<boolean> {
+  try {
+    const { useSettingsStore } = await import('@/stores/settingsStore')
+    return useSettingsStore.getState().embeddingsEnabled
+  } catch {
+    return true
+  }
+}
+
 /**
  * The cascade's graph entry point: content-hash cached, concurrent builds
  * deduped. Deterministic build is sync-fast and always global; the LLM pass is
  * incremental — when a cached prior graph covers most of the same blocks, its
  * edges between unchanged blocks are carried forward and only changed blocks
- * plus their 1-hop neighbors are re-extracted. Silently skipped when no
- * provider is callable (graph stays usable).
+ * plus their 1-hop neighbors are re-extracted. The embedding pass runs after
+ * the LLM pass (vector cache makes it incremental for free). Both passes are
+ * silently skipped when no provider is callable (graph stays usable).
  */
 export async function getDocGraph(
   doc: PMNode,
   config: LLMConfig,
-  deps: { callStructured?: CallStructuredFn; skipLlm?: boolean } = {},
+  deps: {
+    callStructured?: CallStructuredFn
+    skipLlm?: boolean
+    /** Skip the embedding pass regardless of the user setting (background rebuilds). */
+    skipEmbeddings?: boolean
+    embed?: EmbedFn
+    /** Test/caller override for the settings-store embeddings toggle. */
+    embeddingsEnabled?: boolean
+  } = {},
 ): Promise<DocGraph> {
   const hash = contentHash(doc)
+  const embeddingsOn =
+    !deps.skipEmbeddings &&
+    llmAvailable(config) &&
+    (deps.embeddingsEnabled ?? (await embeddingsEnabledFromStore()))
   const cached = graphCache.get(hash)
-  if (cached && (cached.llmApplied || deps.skipLlm || !llmAvailable(config))) {
+  if (
+    cached &&
+    (cached.llmApplied || deps.skipLlm || !llmAvailable(config)) &&
+    (cached.embeddingsApplied || !embeddingsOn)
+  ) {
     return cached
   }
   const pending = inflight.get(hash)
@@ -583,6 +617,9 @@ export async function getDocGraph(
         targetIds = expandOneHop(graph, changed)
       }
       await augmentWithLlmEdges(graph, config, deps.callStructured ?? fetchStructured, targetIds)
+    }
+    if (embeddingsOn && !graph.embeddingsApplied) {
+      await augmentWithEmbeddingEdges(graph, config, deps.embed)
     }
     cacheGraph(hash, graph)
     return graph
@@ -623,9 +660,10 @@ let rebuildTimer: ReturnType<typeof setTimeout> | null = null
 /**
  * Debounced background rebuild, wired into the editor's dispatchTransaction so
  * the cascade usually hits a warm deterministic graph. Deliberately
- * DETERMINISTIC-ONLY (`skipLlm`): document text must never leave the machine
- * as a side effect of typing — the LLM extraction pass runs lazily inside the
- * cascade, which the user explicitly initiated. All failures are swallowed.
+ * DETERMINISTIC-ONLY (`skipLlm` + `skipEmbeddings`): document text must never
+ * leave the machine as a side effect of typing — the LLM extraction and
+ * embedding passes run lazily inside the cascade, which the user explicitly
+ * initiated. All failures are swallowed.
  */
 export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void {
   if (rebuildTimer) clearTimeout(rebuildTimer)
@@ -636,6 +674,7 @@ export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void 
       const { useSettingsStore } = await import('@/stores/settingsStore')
       await getDocGraph(view.state.doc, useSettingsStore.getState().llmConfig, {
         skipLlm: true,
+        skipEmbeddings: true,
       })
     })().catch(() => {})
   }, delayMs)
