@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { modelRejectsSampling } from '@/lib/ai/modelCapabilities'
+import { modelRejectsSampling, pickUtilityModel } from '@/lib/ai/modelCapabilities'
 
 // modelRejectsSampling(model) is true when the (case-insensitive) id contains
 // one of the sampling-rejecting frontier families: opus-4-7, opus-4-8, fable-5,
@@ -108,5 +108,26 @@ describe('modelRejectsSampling — empty and garbage input', () => {
     expect(modelRejectsSampling('fable')).toBe(false)
     expect(modelRejectsSampling('4-8')).toBe(false)
     expect(modelRejectsSampling('   ')).toBe(false)
+  })
+})
+
+// ── pickUtilityModel ──────────────────────────────────────────────────────────
+
+describe('pickUtilityModel', () => {
+  it('pins Claude utility calls to Haiku regardless of the selected model', () => {
+    expect(pickUtilityModel({ provider: 'claude', model: 'claude-fable-5' })).toBe(
+      'claude-haiku-4-5',
+    )
+    expect(pickUtilityModel({ provider: 'claude', model: 'claude-opus-4-8' })).toBe(
+      'claude-haiku-4-5',
+    )
+    expect(pickUtilityModel({ provider: 'claude', model: 'claude-haiku-4-5' })).toBe(
+      'claude-haiku-4-5',
+    )
+  })
+
+  it('keeps the selected model for non-Claude providers (no cheaper sibling assumed)', () => {
+    expect(pickUtilityModel({ provider: 'openai', model: 'gpt-4o' })).toBe('gpt-4o')
+    expect(pickUtilityModel({ provider: 'ollama', model: 'llama3.2' })).toBe('llama3.2')
   })
 })

@@ -354,6 +354,9 @@ export async function augmentWithLlmEdges(
         maxTokens: 2000,
         temperature: 0.1,
       },
+      // Edge extraction is the cascade's RECALL mechanism — paraphrase
+      // dependencies only surface if this pass finds them, so it runs on the
+      // user's selected model, never a silent cheap-model downgrade.
       config,
     )
     toolCalls = res.toolCalls

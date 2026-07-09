@@ -28,6 +28,11 @@ export interface CascadeFixture {
   scriptedCascadeCalls: Array<{ name: string; input: Record<string, unknown> }>
   /** When present, an LLM graph-extraction pass is replayed before the cascade. */
   scriptedGraphCalls?: Array<{ name: string; input: Record<string, unknown> }>
+  /**
+   * Scripted relevance-judge verdicts for 'must' candidates. When absent the
+   * runner uses a confirm-all judge so derived musts stay musts.
+   */
+  scriptedJudgeCalls?: Array<{ name: string; input: Record<string, unknown> }>
   /** Simulate a dead provider: the cascade structured call throws. */
   throwOnCascade?: boolean
   /** Fixture-specific assertions beyond the shared metric checks. */
@@ -52,6 +57,10 @@ function propose(input: Record<string, unknown>) {
 
 function link(input: Record<string, unknown>) {
   return { name: 'link_blocks', input }
+}
+
+function verdict(input: Record<string, unknown>) {
+  return { name: 'verdict', input }
 }
 
 /** ~15+ pages: 70 paragraphs, ≫ the old 6000-char truncation window. */
@@ -380,6 +389,54 @@ export const CASCADE_FIXTURES: CascadeFixture[] = [
     extraAssertions: (edits) => {
       expect(edits).toHaveLength(1)
       expect(edits[0].severity).toBe('optional')
+    },
+  },
+
+  {
+    name: 'judge demotes irrelevant citation — string-match must is not meaning-match must',
+    buildDoc: () =>
+      docOf(
+        p('b1', '"Total Budget" means $50,000 for the pilot program, as noted in the appendix.'),
+        p('b2', 'Historical note: the 2019 office renovation also cost $50,000, unrelated to the Total Budget.'),
+      ),
+    primaryEdit: { blockId: 'b1', targetText: '$50,000', newText: '$75,000' },
+    labels: {
+      directTargets: ['b1'],
+      requiredDownstream: [],
+      protectedUnchanged: [],
+    },
+    scriptedCascadeCalls: [
+      propose({
+        block_id: 'b2',
+        target_text: 'also cost $50,000',
+        new_text: 'also cost $75,000',
+        reason: 'Stale figure',
+        // Real text from b1 — verifies verbatim — but says nothing about b2's figure.
+        source_block_id: 'b1',
+        quoted_text: 'as noted in the appendix',
+        edge_type: 'references',
+      }),
+    ],
+    // hasVerbatimConflict sees the shared "$50,000" and derives 'must'; the
+    // judge recognizes the renovation cost is a coincidental figure and denies.
+    scriptedJudgeCalls: [
+      verdict({
+        index: 1,
+        genuinely_conflicts: false,
+        reason: 'the $50,000 in this block is a 2019 renovation cost, not the Total Budget',
+      }),
+    ],
+    extraAssertions: (edits, captured) => {
+      expect(edits).toHaveLength(1)
+      expect(edits[0].severity).toBe('probably')
+      expect(edits[0].reason).toContain('(auto-review:')
+      expect(edits[0].evidence).not.toBeNull() // citation kept, confidence lowered
+      // The judge could only make this call because it SAW the target block's
+      // surrounding text — the candidate line must carry b2's context.
+      const judgeReq = captured.find((r) => r.tools.some((t) => t.name === 'verdict'))
+      expect(judgeReq).toBeDefined()
+      const judgePrompt = judgeReq!.messages.map((m) => m.content).join('\n')
+      expect(judgePrompt).toContain('CONTEXT: "Historical note: the 2019 office renovation')
     },
   },
 

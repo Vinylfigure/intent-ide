@@ -231,6 +231,27 @@ describe('augmentWithLlmEdges', () => {
     expect(llmEdges[0].evidence).toBeUndefined()
   })
 
+  it("extraction runs on the USER's selected model — never a silent cheap-model downgrade", async () => {
+    // Edge extraction is the cascade's recall mechanism for paraphrase
+    // dependencies; downgrading it would be unmeasured recall loss.
+    const seen: string[] = []
+    const capturingCall: CallStructuredFn = async (_req, config) => {
+      seen.push(config.model)
+      return { toolCalls: [] }
+    }
+    await augmentWithLlmEdges(
+      buildDeterministicGraph(doc),
+      { provider: 'claude', apiKey: 'k', model: 'claude-fable-5' },
+      capturingCall,
+    )
+    await augmentWithLlmEdges(
+      buildDeterministicGraph(doc),
+      { provider: 'ollama', apiKey: '', model: 'llama3.2' },
+      capturingCall,
+    )
+    expect(seen).toEqual(['claude-fable-5', 'llama3.2'])
+  })
+
   it('leaves the deterministic graph intact when the call throws', async () => {
     const graph = buildDeterministicGraph(doc)
     const before = graph.edges.length

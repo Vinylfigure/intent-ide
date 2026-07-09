@@ -19,3 +19,14 @@ export function modelRejectsSampling(model: string): boolean {
     m.includes('mythos')
   )
 }
+
+/**
+ * The model to use for utility calls (context compaction, graph extraction,
+ * relevance judging) — housekeeping that should never run at Opus/Fable
+ * prices. On the Claude provider this pins the cheapest capable model; other
+ * providers (OpenAI/Ollama) keep the user's selected model since we can't
+ * assume a cheaper sibling exists.
+ */
+export function pickUtilityModel(config: { provider: string; model: string }): string {
+  return config.provider === 'claude' ? 'claude-haiku-4-5' : config.model
+}

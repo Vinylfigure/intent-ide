@@ -12,6 +12,7 @@ import { findTextInDoc } from '@/lib/prosemirror/applyProposedEdits'
 import { blockIdAtPos, blockTextRange, findBlockById } from '@/lib/prosemirror/blockIds'
 import { containsTerm, getDocGraph, getNeighborhood, type DocGraph } from '@/lib/graphrag/docGraph'
 import { fetchStructured, type CallStructuredFn } from '@/lib/ai/structuredClient'
+import { judgeMustCandidates, type JudgeFn } from '@/lib/ai/relevanceJudge'
 
 /**
  * Graph-scoped cascade: instead of one whole-doc LLM pass (previously
@@ -206,6 +207,52 @@ export interface CascadeOptions {
   hops?: number
   /** Cap on candidate blocks sent to the model (block COUNT — text is never truncated). */
   maxBlocks?: number
+  /** Relevance judge for 'must' candidates; defaults to judgeMustCandidates over callStructured. */
+  judge?: JudgeFn
+}
+
+/**
+ * Second-pass gate on 'must': a batched judge call re-examines each cited
+ * conflict and demotes candidates it cannot confirm to 'probably', appending
+ * the judge's reason. Runs only when at least one must exists. Best-effort —
+ * a judge failure keeps the derived severities unchanged, never blocks.
+ * Mutates the edits in place; returns true when any severity changed.
+ */
+async function applyRelevanceJudge(
+  edits: ProposedEdit[],
+  primary: { before: string; newText: string },
+  doc: EditorState['doc'],
+  config: LLMConfig,
+  opts: CascadeOptions,
+): Promise<boolean> {
+  const musts = edits.filter((e) => e.severity === 'must' && e.evidence !== null)
+  if (musts.length === 0) return false
+
+  const judge: JudgeFn =
+    opts.judge ??
+    ((candidates, prim, d, cfg) =>
+      judgeMustCandidates(candidates, prim, d, cfg, opts.callStructured ?? fetchStructured))
+
+  let verdicts: Awaited<ReturnType<JudgeFn>>
+  try {
+    verdicts = await judge(musts, primary, doc, config)
+  } catch {
+    return false // judge down — keep derived severities
+  }
+  // Zero verdicts for a non-empty candidate set is a judge malfunction, not
+  // an all-deny (the judge contract yields one verdict per candidate or
+  // throws). Treat it like a failed call: keep derived severities.
+  if (verdicts.size === 0) return false
+
+  let demoted = false
+  musts.forEach((edit, i) => {
+    const verdict = verdicts.get(i)
+    if (verdict?.genuinelyConflicts) return
+    edit.severity = 'probably'
+    edit.reason = `${edit.reason} (auto-review: ${verdict?.reason ?? 'no verdict returned'})`
+    demoted = true
+  })
+  return demoted
 }
 
 /**
@@ -336,6 +383,17 @@ export async function proposeCascadeEdits(
   }
 
   edits.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.from - b.from)
+
+  const demoted = await applyRelevanceJudge(
+    edits,
+    { before: primaryBefore, newText: primary.newText },
+    doc,
+    config,
+    opts,
+  )
+  if (demoted) {
+    edits.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.from - b.from)
+  }
   return edits
 }
 
