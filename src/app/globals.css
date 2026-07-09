@@ -262,6 +262,42 @@
   opacity: 0.8;
 }
 
+/* Severity variants — border intensity signals how strongly the edit is warranted */
+.proposed-edit.proposed-severity-must.proposed-below {
+  border-bottom-color: rgba(196, 75, 43, 0.7);
+}
+.proposed-edit.proposed-severity-optional.proposed-below {
+  border-bottom-style: dotted;
+  border-bottom-color: rgba(43, 95, 196, 0.3);
+}
+
+/* Severity badge shared by the inline control */
+.proposed-edit-control-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.proposed-edit-severity {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.proposed-edit-severity-must { background: #fee2e2; color: #991b1b; }
+.proposed-edit-severity-probably { background: #fef3c7; color: #92400e; }
+.proposed-edit-severity-optional { background: #e7e5e4; color: #44403c; }
+.proposed-edit-control-evidence {
+  font-size: 11px;
+  line-height: 1.4;
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+  margin-bottom: 6px;
+}
+
 /* Inline Accept/Reject control for proposed edits */
 .proposed-edit-control {
   pointer-events: auto;

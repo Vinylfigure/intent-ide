@@ -3,12 +3,22 @@
 import { useRef, useState } from 'react'
 import { DiffViewer } from './DiffViewer'
 import { Confirmation } from '@/components/ui/Confirmation'
+import type { CascadeSeverity, ProposedEditRelation } from '@/lib/annotations/types'
+import { SEVERITY_LABELS } from '@/lib/annotations/types'
 
 interface SemanticChange {
   id: string
   label: string
   before: string
   after: string
+  severity?: CascadeSeverity
+  relation?: ProposedEditRelation
+}
+
+const SEVERITY_BADGE_STYLES: Record<CascadeSeverity, string> = {
+  must: 'bg-red-100 text-red-800',
+  probably: 'bg-amber-100 text-amber-800',
+  optional: 'bg-stone-200 text-stone-700',
 }
 
 interface SemanticCommitModalProps {
@@ -96,6 +106,20 @@ export function SemanticCommitModal({
                 >
                   {multi && (
                     <div className="flex items-center justify-end gap-1.5 mb-1">
+                      {change.severity && (
+                        <span
+                          className={`mr-auto px-1.5 py-0.5 rounded-full text-[9px] font-mono uppercase tracking-wide ${SEVERITY_BADGE_STYLES[change.severity]}`}
+                          title={
+                            change.severity === 'must'
+                              ? 'Cited hard contradiction — will disagree with the primary edit if skipped'
+                              : change.severity === 'probably'
+                                ? 'Cited dependency — likely needs to change'
+                                : 'Uncited or stylistic — review before accepting'
+                          }
+                        >
+                          {SEVERITY_LABELS[change.severity]}
+                        </span>
+                      )}
                       <button
                         onClick={() => !isRejected || toggle(change.id)}
                         className={`px-2 py-0.5 text-xs font-medium rounded border transition-colors ${

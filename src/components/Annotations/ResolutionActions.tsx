@@ -16,6 +16,7 @@ import { getProposedAnchors } from '@/lib/prosemirror/plugins/proposedChangePlug
 import { applyProposedEdits } from '@/lib/prosemirror/applyProposedEdits'
 import { SemanticCommitModal } from '@/components/Editor/SemanticCommitModal'
 import type { Annotation, ConversationMessage } from '@/lib/annotations/types'
+import { SEVERITY_ORDER } from '@/lib/annotations/types'
 
 interface ResolutionActionsProps {
   annotation: Annotation
@@ -351,17 +352,27 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   }
 
   // Build the commit-modal diffs from the multi-region edits when present,
-  // else from the single suggested edit. Pre-toggle anything rejected inline so
-  // the modal and the inline control agree (one source of truth = plugin status).
+  // else from the single suggested edit. Rows are ordered primary-first, then
+  // by derived severity. Pre-toggle anything rejected inline so the modal and
+  // the inline control agree (one source of truth = plugin status).
   const resolutionEdits = annotation.resolution?.edits
   const commitChanges =
     resolutionEdits && resolutionEdits.length > 0
-      ? resolutionEdits.map((e) => ({
-          id: e.id,
-          label: `${e.relation === 'primary' ? annotation.type : 'cascade'}: ${e.reason.slice(0, 60)}`,
-          before: e.targetText,
-          after: e.newText,
-        }))
+      ? [...resolutionEdits]
+          .sort(
+            (a, b) =>
+              Number(b.relation === 'primary') - Number(a.relation === 'primary') ||
+              SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] ||
+              a.from - b.from,
+          )
+          .map((e) => ({
+            id: e.id,
+            label: `${e.relation === 'primary' ? annotation.type : 'cascade'}: ${e.reason.slice(0, 60)}`,
+            before: e.targetText,
+            after: e.newText,
+            severity: e.severity,
+            relation: e.relation,
+          }))
       : annotation.resolution?.suggestedEdit
         ? [{
             id: annotation.id,
@@ -371,10 +382,17 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
           }]
         : []
   const commitInitialRejected: Record<string, boolean> = {}
-  if (view) {
-    const anchors = getProposedAnchors(view.state)
+  {
+    const anchors = view ? getProposedAnchors(view.state) : null
     for (const c of commitChanges) {
-      if (anchors.get(c.id)?.status === 'rejected') commitInitialRejected[c.id] = true
+      if (anchors?.get(c.id)?.status === 'rejected') commitInitialRejected[c.id] = true
+    }
+    // Accept-all defaults to must + probably: uncited/stylistic cascades start
+    // toggled off unless the user explicitly accepted them inline.
+    for (const e of resolutionEdits ?? []) {
+      if (e.relation === 'cascade' && e.severity === 'optional') {
+        if (anchors?.get(e.id)?.status !== 'accepted') commitInitialRejected[e.id] = true
+      }
     }
   }
 
