@@ -3,7 +3,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Annotation, ConversationMessage } from '@/lib/annotations/types'
-import { mapLegacyType } from '@/lib/annotations/types'
+import { mapLegacyType, normalizeProposedEdit } from '@/lib/annotations/types'
 import { useDocumentStore } from '@/stores/documentStore'
 
 /** Migrate annotations from the old 6-type system to the new 4-type system on hydration */
@@ -14,7 +14,13 @@ function migrateAnnotations(annotations: Annotation[]): Annotation[] {
     documentId: a.documentId ?? activeDocumentId,
     locationGroupKey: a.locationGroupKey ?? `${a.documentId ?? activeDocumentId}:${a.anchor.from}:${a.anchor.to}`,
     type: mapLegacyType(a.type),
-    resolution: a.resolution ? { ...a.resolution, type: mapLegacyType(a.resolution.type) } : null,
+    resolution: a.resolution
+      ? {
+          ...a.resolution,
+          type: mapLegacyType(a.resolution.type),
+          edits: a.resolution.edits?.map(normalizeProposedEdit),
+        }
+      : null,
   }))
 }
 

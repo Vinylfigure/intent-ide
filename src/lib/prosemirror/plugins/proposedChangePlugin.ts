@@ -2,7 +2,13 @@ import { Plugin, PluginKey, Transaction, EditorState } from 'prosemirror-state'
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
 import { readLinePluginKey } from './readLinePlugin'
 import { useProposedEditUiStore } from '@/stores/proposedEditUiStore'
-import type { ProposedEdit, ProposedEditRelation, ProposedEditStatus } from '@/lib/annotations/types'
+import type {
+  CascadeEvidence,
+  CascadeSeverity,
+  ProposedEdit,
+  ProposedEditRelation,
+  ProposedEditStatus,
+} from '@/lib/annotations/types'
 
 /**
  * Renders multi-region agent proposals as "called out" inline decorations
@@ -24,6 +30,9 @@ export interface ProposedAnchor {
   targetText: string
   newText: string
   reason: string
+  severity: CascadeSeverity
+  evidence: CascadeEvidence | null
+  blockId?: string
 }
 
 interface ProposedChangeState {
@@ -59,7 +68,7 @@ function buildDecorations(state: EditorState, anchors: Map<string, ProposedAncho
         a.from,
         a.to,
         {
-          class: `proposed-edit proposed-edit-${a.relation} ${above ? 'proposed-above' : 'proposed-below'}${accepted ? ' proposed-accepted' : ''}`,
+          class: `proposed-edit proposed-edit-${a.relation} proposed-severity-${a.severity} ${above ? 'proposed-above' : 'proposed-below'}${accepted ? ' proposed-accepted' : ''}`,
           'data-proposed-edit-id': id,
           title: above
             ? 'Something you already read was modified'
@@ -126,6 +135,9 @@ export function createProposedChangePlugin(): Plugin {
                 targetText: e.targetText,
                 newText: e.newText,
                 reason: e.reason,
+                severity: e.severity ?? (e.relation === 'primary' ? 'must' : 'probably'),
+                evidence: e.evidence ?? null,
+                blockId: e.blockId,
               })
             }
           } else if (meta.action === 'setStatus' && meta.id && meta.status) {

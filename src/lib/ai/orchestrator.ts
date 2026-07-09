@@ -45,7 +45,11 @@ function newId(): string {
 }
 
 /** Build the primary ProposedEdit from the resolving agent's suggested edit. */
-export function primaryProposedEdit(edit: SuggestedEdit, targetText: string): ProposedEdit {
+export function primaryProposedEdit(
+  edit: SuggestedEdit,
+  targetText: string,
+  blockId?: string,
+): ProposedEdit {
   return {
     id: newId(),
     from: edit.from,
@@ -55,6 +59,10 @@ export function primaryProposedEdit(edit: SuggestedEdit, targetText: string): Pr
     relation: 'primary',
     status: 'pending',
     targetText,
+    ...(blockId ? { blockId } : {}),
+    // The primary edit is the user's own intent — always 'must', self-evidencing.
+    severity: 'must',
+    evidence: null,
   }
 }
 
@@ -137,6 +145,10 @@ export async function proposeCascadeEdits(
       relation: 'cascade',
       status: 'pending',
       targetText,
+      // Placeholder until graph-scoped severity derivation lands: whole-doc
+      // cascade proposals are uncited, so they can never be 'must'.
+      severity: 'probably',
+      evidence: null,
     })
   }
   return edits
