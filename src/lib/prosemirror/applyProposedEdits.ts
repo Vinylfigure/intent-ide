@@ -1,7 +1,10 @@
 import type { EditorView } from 'prosemirror-view'
-import type { Node as PMNode } from 'prosemirror-model'
 import { getProposedAnchors } from './plugins/proposedChangePlugin'
-import { blockTextRange } from './blockIds'
+import { blockTextRange, findTextInDoc } from './blockIds'
+
+// Compat re-export: findTextInDoc moved to blockIds.ts (the proposedChange
+// plugin needs it for re-anchoring, and importing it from here would cycle).
+export { findTextInDoc } from './blockIds'
 
 /**
  * Applies a set of accepted proposed edits in ONE transaction, safely.
@@ -28,30 +31,16 @@ export type ApplyProposedResult =
   | { ok: true; applied: AppliedEdit[] }
   | { ok: false; reason: string }
 
-/** First single-text-node occurrence of `query`, as ProseMirror positions. */
-export function findTextInDoc(doc: PMNode, query: string): { from: number; to: number } | null {
-  if (!query) return null
-  let result: { from: number; to: number } | null = null
-  doc.descendants((node, pos) => {
-    if (result) return false
-    if (node.isText && node.text) {
-      const idx = node.text.indexOf(query)
-      if (idx !== -1) {
-        result = { from: pos + idx, to: pos + idx + query.length }
-        return false
-      }
-    }
-    return true
-  })
-  return result
-}
-
 export function applyProposedEdits(view: EditorView, acceptedIds: string[]): ApplyProposedResult {
   const anchors = getProposedAnchors(view.state)
   const doc = view.state.doc
   const resolved: AppliedEdit[] = []
 
   for (const id of acceptedIds) {
+    // NOTE: the plugin always holds the FULL edit set (flow-state holds are a
+    // revealed:false flag, never a missing anchor), so an accepted id whose
+    // anchor is still unrevealed is perfectly valid to apply — the commit
+    // modal shows every edit, so accepting one there is a conscious decision.
     const a = anchors.get(id)
     if (!a) return { ok: false, reason: `Proposed edit ${id} no longer exists.` }
 
@@ -59,6 +48,9 @@ export function applyProposedEdits(view: EditorView, acceptedIds: string[]): App
     const safeTo = Math.min(a.to, doc.content.size)
     const current = safeFrom <= safeTo ? doc.textBetween(safeFrom, safeTo) : ''
 
+    // Insertions (targetText:'' ⇒ from === to) trivially pass this check —
+    // they bypass fingerprint validation entirely (and render no decoration).
+    // Known limitation; do not rely on validation for insertion placement.
     if (current === a.targetText) {
       resolved.push({ from: safeFrom, to: safeTo, newText: a.newText, targetText: a.targetText, blockId: a.blockId ?? null })
       continue

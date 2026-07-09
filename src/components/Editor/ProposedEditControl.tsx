@@ -8,6 +8,8 @@ import {
   getProposedAnchors,
   setProposedEditStatus,
 } from '@/lib/prosemirror/plugins/proposedChangePlugin'
+import { useDocGraphStore } from '@/stores/docGraphStore'
+import { findEdgePath, formatEdgePath } from '@/lib/graphrag/docGraph'
 import { SEVERITY_LABELS } from '@/lib/annotations/types'
 
 interface ControlPosition {
@@ -24,9 +26,28 @@ interface ControlPosition {
 export function ProposedEditControl() {
   const activeId = useProposedEditUiStore((s) => s.activeId)
   const view = useEditorStore((s) => s.view)
+  const graph = useDocGraphStore((s) => s.graph)
   const [position, setPosition] = useState<ControlPosition | null>(null)
 
   const anchor = activeId && view ? getProposedAnchors(view.state).get(activeId) : undefined
+
+  // "Why this proposal?" — graph path from the primary edit's block to this
+  // cascade's block. Null (renders nothing) whenever the graph or block ids
+  // are unavailable — never blocks the card.
+  let whyLine: string | null = null
+  if (graph && view && anchor && anchor.relation === 'cascade' && anchor.blockId) {
+    const primary = [...getProposedAnchors(view.state).values()].find(
+      (a) => a.relation === 'primary',
+    )
+    if (primary?.blockId) {
+      try {
+        const path = findEdgePath(graph, primary.blockId, anchor.blockId)
+        if (path && path.length > 0) whyLine = `linked via ${formatEdgePath(path)}`
+      } catch {
+        whyLine = null
+      }
+    }
+  }
 
   useEffect(() => {
     if (!anchor || !view) {
@@ -106,6 +127,11 @@ export function ProposedEditControl() {
         {anchor.evidence && (
           <p className="proposed-edit-control-evidence">
             &ldquo;{anchor.evidence.quotedText}&rdquo; · {anchor.evidence.edgeType}
+          </p>
+        )}
+        {whyLine && (
+          <p className="proposed-edit-control-evidence" title={whyLine}>
+            {whyLine}
           </p>
         )}
         <div className="proposed-edit-control-actions">

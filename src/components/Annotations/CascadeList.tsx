@@ -1,7 +1,9 @@
 'use client'
 
 import { useEditorStore } from '@/stores/editorStore'
+import { useDocGraphStore } from '@/stores/docGraphStore'
 import { getProposedAnchors, setProposedEditStatus } from '@/lib/prosemirror/plugins/proposedChangePlugin'
+import { findEdgePath, formatEdgePath } from '@/lib/graphrag/docGraph'
 import type { Annotation, CascadeSeverity, ProposedEdit, ProposedEditStatus } from '@/lib/annotations/types'
 import { SEVERITY_LABELS, SEVERITY_ORDER } from '@/lib/annotations/types'
 
@@ -42,6 +44,7 @@ function truncate(text: string, max = 80): string {
  */
 export function CascadeList({ annotation }: CascadeListProps) {
   const view = useEditorStore((s) => s.view)
+  const graph = useDocGraphStore((s) => s.graph)
 
   // Only show while the resolution is under review. Once applied/dismissed the
   // plugin anchors are cleared, so live status would be unreadable and the
@@ -57,6 +60,24 @@ export function CascadeList({ annotation }: CascadeListProps) {
   if (cascades.length === 0) return null
 
   const count = cascades.length
+  const primaryBlockId = edits.find((e) => e.relation === 'primary')?.blockId ?? null
+
+  /**
+   * "Why this proposal?" — the graph path linking the primary edit's block to
+   * this cascade's block, e.g. `linked via references ("Total Budget")`.
+   * Returns null (renders nothing) whenever the graph, block ids, or a path
+   * are unavailable — never blocks the row.
+   */
+  const whyLine = (edit: ProposedEdit): string | null => {
+    if (!graph || !primaryBlockId || !edit.blockId) return null
+    try {
+      const path = findEdgePath(graph, primaryBlockId, edit.blockId)
+      if (!path || path.length === 0) return null
+      return `linked via ${formatEdgePath(path)}`
+    } catch {
+      return null
+    }
+  }
 
   /** Read the live (transaction-mapped) status for an edit, else its stored status. */
   const liveStatus = (edit: ProposedEdit): ProposedEditStatus => {
@@ -106,6 +127,7 @@ export function CascadeList({ annotation }: CascadeListProps) {
       <div className="flex flex-col gap-1.5">
         {cascades.map((edit) => {
           const status = liveStatus(edit)
+          const why = whyLine(edit)
           return (
             <div
               key={edit.id}
@@ -135,6 +157,13 @@ export function CascadeList({ annotation }: CascadeListProps) {
                   )}
                 </span>
               </button>
+
+              {/* "Why this proposal?" — graph path from the primary edit's block */}
+              {why && (
+                <p className="mt-0.5 pl-1 text-[10px] font-mono text-ink/50 truncate" title={why}>
+                  {why}
+                </p>
+              )}
 
               {/* Accept / Reject status toggles */}
               <div className="mt-1 flex items-center gap-1 pl-1">

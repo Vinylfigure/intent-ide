@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   useSettingsStore,
   type LLMProvider,
@@ -9,6 +9,7 @@ import {
   PROVIDER_BASE_URLS,
 } from '@/stores/settingsStore'
 import { modelRejectsSampling } from '@/lib/ai/modelCapabilities'
+import { getSessionEstimate } from '@/lib/ai/spendEstimate'
 
 export function ApiKeyModal() {
   const llmConfig = useSettingsStore((s) => s.llmConfig)
@@ -16,6 +17,10 @@ export function ApiKeyModal() {
   const setLLMConfig = useSettingsStore((s) => s.setLLMConfig)
   const setWhisperKey = useSettingsStore((s) => s.setWhisperKey)
   const setShow = useSettingsStore((s) => s.setShowApiKeyModal)
+  const judgeEnabled = useSettingsStore((s) => s.judgeEnabled)
+  const setJudgeEnabled = useSettingsStore((s) => s.setJudgeEnabled)
+  const embeddingsEnabled = useSettingsStore((s) => s.embeddingsEnabled)
+  const setEmbeddingsEnabled = useSettingsStore((s) => s.setEmbeddingsEnabled)
 
   const [provider, setProvider] = useState<LLMProvider>(llmConfig.provider)
   const [apiKey, setApiKey] = useState(llmConfig.apiKey)
@@ -23,6 +28,13 @@ export function ApiKeyModal() {
   const [customModel, setCustomModel] = useState('')
   const [baseUrl, setBaseUrl] = useState(llmConfig.baseUrl ?? PROVIDER_BASE_URLS[llmConfig.provider] ?? '')
   const [wKey, setWKey] = useState(whisperKey)
+  // Spend estimate is module state, not reactive — poll it while the modal is
+  // open so long-lived sessions see the line move without reopening.
+  const [sessionTokens, setSessionTokens] = useState(() => getSessionEstimate())
+  useEffect(() => {
+    const timer = setInterval(() => setSessionTokens(getSessionEstimate()), 2000)
+    return () => clearInterval(timer)
+  }, [])
 
   const handleProviderChange = (p: LLMProvider) => {
     setProvider(p)
@@ -56,7 +68,7 @@ export function ApiKeyModal() {
           <button onClick={() => setShow(false)} className="text-muted hover:text-ink text-xl leading-none">&times;</button>
         </div>
 
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
           {/* Provider */}
           <div>
             <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">Provider</label>
@@ -169,6 +181,65 @@ export function ApiKeyModal() {
               <p className="mt-1 text-xs text-muted">Whisper requires an OpenAI API key regardless of your LLM provider.</p>
             </div>
           )}
+
+          {/* AI data & spend */}
+          <div className="pt-4 border-t border-border space-y-3">
+            <h3 className="text-xs font-mono uppercase tracking-wider text-muted">AI data &amp; spend</h3>
+
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={judgeEnabled}
+                onChange={(e) => setJudgeEnabled(e.target.checked)}
+                className="mt-0.5 accent-ink"
+              />
+              <span className="text-sm text-ink leading-snug">
+                Verify must-severity citations
+                <span className="block text-xs text-muted">
+                  Extra small model call that double-checks each cited conflict before it is
+                  marked &ldquo;must change&rdquo;.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={embeddingsEnabled}
+                onChange={(e) => setEmbeddingsEnabled(e.target.checked)}
+                className="mt-0.5 accent-ink"
+              />
+              <span className="text-sm text-ink leading-snug">
+                Semantic similarity edges (embeddings)
+                <span className="block text-xs text-muted">
+                  Finds paraphrased duplicates across sections. Requires a provider with an
+                  embeddings API (OpenAI or Ollama).
+                </span>
+              </span>
+            </label>
+
+            <div>
+              <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
+                Embedding model <span className="normal-case font-sans text-muted/70">(optional override)</span>
+              </label>
+              <input
+                value={llmConfig.embedModel ?? ''}
+                onChange={(e) => setLLMConfig({ embedModel: e.target.value || undefined })}
+                placeholder="Default: text-embedding-3-small (OpenAI) / nomic-embed-text (Ollama)"
+                className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
+              />
+            </div>
+
+            <p className="text-xs text-muted leading-relaxed">
+              Document text leaves this machine only when you act: on annotation resolution,
+              cascade analysis, citation verification, and semantic-similarity indexing — never
+              while typing. All calls go only to your configured provider.
+            </p>
+
+            <p className="text-xs font-mono text-muted">
+              This session: ~{sessionTokens.toLocaleString()} tokens sent (rough estimate; excludes transcription)
+            </p>
+          </div>
 
           <button
             onClick={handleSave}
