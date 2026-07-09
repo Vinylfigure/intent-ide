@@ -360,3 +360,86 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
     *   Opt-in live bench (`editPropBench.live.test.ts`, `npm run bench:live`, `BENCH_LIVE=1`): preflight fail-fast, asserts non-empty measurement, results to gitignored `bench-results/`.
     *   **REVERTED in-branch:** a prompt-caching commit, after review proved it a cost regression (zero shared prefix cascade→judge; in-process cache already absorbs identical rebuilds; 2000-char trigger below Anthropic's 1024/2048-token cacheable minimum — 1.25x write surcharge, zero possible hits).
 *   **Approval:** Human verified (PR #5 review pending merge).
+
+**[2026-07-09 00:00:00 UTC] - ARCHITECTURE_CHANGE / DEPLOYMENT**
+*   **Action:** Selected Vercel + Turso (hosted libSQL) as the public-demo deployment target and wired the app for it (branch `claude/vercel-deploy`, PR #8 — open, awaiting operator steps + merge). PRs #5 and #6 merged to `main` prior to this work (post-merge baseline 370 tests + 10 skipped).
+*   **Agent:** DevOps / Architect / Claude Code (Fable 5).
+*   **Context:** The public portfolio repo needed a live demo. The append-only audit ledger (Prisma v7 + libSQL) requires a durable hosted DB; Vercel filesystems are ephemeral, so local SQLite cannot ship.
+*   **Decisions Logged:**
+    *   **Turso over Supabase:** the existing `@prisma/adapter-libsql` + SQLite migrations work UNCHANGED, and Turso's free tier does not auto-pause (Supabase free pauses after ~1 week idle — unacceptable for an always-on demo). Supabase (Auth + Postgres) is DEFERRED to a future commercialization phase (accounts + doc sync), not rejected.
+    *   `src/lib/db.ts` `PrismaLibSql` now passes `DATABASE_AUTH_TOKEN`; local `file:dev.db` unchanged. `package.json`: `build` = `prisma generate && next build`, `postinstall` runs `prisma generate`, engines >= 20. `maxDuration=60` on the 5 LLM/transcription routes.
+    *   **Prisma 7.5 limitation recorded:** `prisma.config.ts`'s Datasource type is `{url, shadowDatabaseUrl}` only — no driver-adapter hook for migrate — so `prisma migrate` cannot target Turso. Schema is applied by piping `prisma/migrations/*/migration.sql` through `turso db shell` (documented in a prisma.config.ts comment + README).
+    *   Graphiti/FalkorDB confirmed local-dev-only (all call sites client-side with fallbacks); the deployed demo has no graph-server dependency.
+    *   Operator steps pending (user): `turso auth login` + DB creation + migrations; Vercel project (Node 22) with `DATABASE_URL`/`DATABASE_AUTH_TOKEN`/`AUDIT_ADMIN_TOKEN`; preview smoke test; merge PR #8; fix the README live-demo placeholder (`https://intent-ide.vercel.app`) if the project name differs.
+*   **Approval:** Human verified (PR #8 open, merge pending operator smoke test).
+
+**[2026-07-09 00:00:00 UTC] - SECURITY**
+*   **Action:** Public-exposure hardening of all publicly reachable API surfaces ahead of the Vercel deploy (same branch/PR #8 as the entry above).
+*   **Agent:** DevOps / QA / Troublemaker / Claude Code.
+*   **Context:** A shared public demo exposes routes designed for a single local user: the LLM proxy routes accept a client-supplied `x-base-url` header (SSRF surface), `/api/audit` accepted unbounded unauthenticated reads/writes, and `/api/history` (PR #6) stores full unauthenticated document snapshots.
+*   **Decisions Logged:**
+    *   **SSRF guard — new `src/lib/server/validateBaseUrl.ts`** (production-only) on `x-base-url`, wired into resolve/classify/generate/structured (400 on violation): https-only; private IPv4/IPv6 ranges blocked; FQDN trailing dots handled; WHATWG hex-group v4-mapped IPv6 (e.g. `[::ffff:a9fe:a9fe]`) FAILS CLOSED — QA finding: `new URL('https://[::ffff:127.0.0.1]').hostname === '[::ffff:7f00:1]'`, so dotted-quad-only blocklists are bypassable; the hex spelling is decoded before matching.
+    *   **Redirect vector closed (Troublemaker finding):** guarded proxy fetches use `redirect:'manual'` — a validated public https URL can otherwise 3xx to a private address and default `fetch` follows it.
+    *   **`/api/audit` hardened:** real-body 16KB cap (not just content-length); oversize fields reject 400 — NEVER truncate, because truncating JSON provenance fields would corrupt an Article 12 ledger; per-IP soft rate limit keyed on `x-real-ip`; GET scoped by `?userId=` (anonymous per-browser UUID from new `getVisitorId()` in `auditLogger.ts`); unscoped GET requires Bearer `AUDIT_ADMIN_TOKEN` and FAILS CLOSED in production — the original draft failed open when the token was unset (fixed; rule: absence of a configured credential means DENY). Disclosed limitation: `userId` is client-supplied — a courtesy partition, not a security boundary; real auth is the deferred Supabase phase.
+    *   **`/api/history` gated OFF in production** (403) unless `HISTORY_ENABLED=1` — the shared public demo must not store full unauthenticated document snapshots. The flag must NOT be set on the demo deployment.
+    *   **Process incident recorded:** the checkout was switched from `claude/vercel-deploy` back to `main` mid-session (concurrent agents in one repo); a commit landed on local `main` while the pushed branch lacked it. Recovered via reset + rebase onto the moved `origin/main`. Countermeasure: re-check `git branch --show-current` immediately before every commit, or isolate parallel agents in worktrees.
+    *   Verification: 92 new tests (SSRF matrix, auditLogger, audit route, history gate) → 462 passing + 10 skipped; `npm run typecheck` / `lint` / `build` clean.
+*   **Approval:** Human verified (PR #8 open, merge pending operator smoke test).
+
+**[2026-07-09 00:00:00 UTC] - DEPLOYMENT**
+*   **Action:** PR #8 MERGED to `main`; production deployed, aliased, and LIVE at **https://intent-ide.vercel.app**.
+*   **Agent:** Operator (user) + DevOps / Claude Code (Fable 5).
+*   **Context:** All operator steps from the two preceding entries executed the same day.
+*   **Decisions Logged:**
+    *   Turso DB `intent-ide-audit` created (`libsql://intent-ide-audit-vinylfigure.aws-us-west-2.turso.io`); all 3 migrations applied; remote schema verified BYTE-IDENTICAL against a fresh local sqlite3 build of the migrations.
+    *   **Incident:** `turso db shell < migration.sql` is NON-TRANSACTIONAL and stops mid-file at the first error — a partial apply plus an incautious re-run of migration 1 left a stray `DocumentSource` table (migration 3 drops it). Recovered by dropping the stray table and schema-diffing. New standing rule: after any manual Turso migration, diff `sqlite_master` against a fresh local build.
+    *   Vercel project `intent-ide` (team `vinylfigures-projects`) linked; production env vars `DATABASE_URL` / `DATABASE_AUTH_TOKEN` / `AUDIT_ADMIN_TOKEN` set (admin token stored only in local gitignored `.env`); production redeployed.
+    *   **End-to-end production smoke test PASSED:** audit POST → row confirmed in Turso via `turso db shell`; visitor-scoped GET returns own record; other `userId` sees 0; unscoped GET without token 401, with admin bearer 200; `/api/history` 403 (production gate); SSRF probes `http://169.254.169.254` and `https://[::ffff:169.254.169.254]` both 400.
+    *   Known issue: PR #9 (`claude/cascade-v2-d`) preview deploys fail (`Can't resolve '@/generated/prisma/client'`) until rebased onto `main` for PR #8's `prisma generate && next build` script.
+*   **Approval:** Human verified (operator executed the deploy; smoke test passed before merge).
+
+**[2026-07-09 00:00:00 UTC] - ARCHITECTURE_CHANGE**
+*   **Action:** Scaled the document dependency graph and made candidate selection source-quality-aware; Graphiti entities became a real docGraph edge source; the cascade consolidated onto ONE review surface (Cascade v2 Waves B + D1/D2; PRs #10, #12 — the Wave D1+D2 finale closes the roadmap).
+*   **Agent:** Architect / Troublemaker / Claude Code (Fable 5).
+*   **Context:** The docGraph rebuilt from scratch on every change (LLM edges decayed), skipped the LLM pass entirely on large docs, had no semantic-similarity signal, and the long-reserved `'graphiti'` edge source was still a stub. Show-affected also had its own parallel cascade presentation.
+*   **Decisions Logged:**
+    *   **[PR #10] Incremental rebuilds seed re-extraction from the PRIOR graph's adjacency** — adversarial review caught that unseeded re-extraction monotonically decays LLM edges (each rebuild forgets a little). Incremental caches must seed re-work from prior structure.
+    *   **[PR #10] Chunked LLM extraction only above a 150-block single-call threshold** — review caught unconditional chunking silently regressing recall in the 41-200-block band the old single-call path handled. Check the band between old and new limits when replacing a bounded mechanism.
+    *   **[PR #10] Embeddings edge source:** `/api/embed` + `embedEdges.ts` with a transient-throw / permanent-null contract (transient failure is non-cacheable by construction — same discipline as `fetchStructured`); provider-keyed vector cache; 300-block cap; `headingPath` in payloads.
+    *   **[PR #12] `augmentWithGraphitiEdges`:** entity co-mentions feed the docGraph as the third edge source, capped ≤12 entities / ≤120 edges per build with an abortable 1500ms MCP deadline — review found entity COUNT (not per-entity fan-out) was the unbounded flooding axis; bounding a firehose means finding the unbounded axis.
+    *   **[PR #12] SOURCE_PRIORITY-aware selection:** `getNeighborhood` returns `{hop, sourceRank}` and candidate ordering under the 24-block budget ranks by source quality, so low-precision graphiti co-mentions cannot evict LLM-attested dependents from the neighborhood.
+    *   **[PR #12] One cascade surface:** show-affected scroll/pulses to `CascadeList`, status-gated via `showAffectedMode`. Also: `cascadeCalibration` telemetry — closed-enum metadata-only events, local aggregate always, PostHog capture opt-in DEFAULT FALSE, modal decisions buffered flush-on-confirm, `applied` recorded only post-successful-apply, miscalibration hint at n≥5. No document content ever leaves the machine via telemetry.
+    *   Carry-forward debts disclosed: graphiti augmentation is one-shot per content hash; inflight-dedupe can hand a deterministic-only graph to a concurrent cascade (pre-existing); spend estimate excludes transcription.
+*   **Approval:** Human verified (pre-PR Troublemaker review: NO-MERGE verdicts on both waves; all HIGH findings fixed with regression tests before push).
+
+**[2026-07-09 00:00:00 UTC] - ARCHITECTURE_CHANGE**
+*   **Action:** Redesigned flow-state cascade buffering as in-plugin reveal flags and made re-anchoring validate-stored-first (Cascade v2 Wave C; PR #11).
+*   **Agent:** Architect / UI-UX / Troublemaker / Claude Code (Fable 5).
+*   **Context:** The PRD's Event Segmentation requirement (buffer cascade flags until reading breakpoints) was first implemented by withholding held edits from `proposedChangePlugin` entirely — which hard-broke apply, because withheld edits' anchors were never mapped through intervening transactions.
+*   **Decisions Logged:**
+    *   **Reveal flags live INSIDE the plugin:** held cascades stay in plugin state with anchors position-mapped through every transaction; only their DECORATIONS are suppressed until the reading breakpoint. Rule recorded: flow-state holds suppress PRESENTATION, never EXISTENCE — the apply-time source of truth must always contain every edit.
+    *   **Validate-stored-first re-anchoring:** review caught fingerprint-first re-anchoring silently RELOCATING valid blockId-less anchors to lookalike text. The stored range is validated first; fingerprint search is recovery for a failed stored range, not truth.
+    *   **Modal cancel snapshot/restore:** `SemanticCommitModal` cancel restores the plugin status snapshot taken at open — a cancelled review no longer strands diverged accept/reject state.
+    *   **Explainability + spend transparency:** `docGraphStore` + `findEdgePath` power a "why this proposal?" edge-path UI; StatusBar graph chip; "AI data & spend" settings panel (`judgeEnabled` / `embeddingsEnabled` / `embedModel` + session spend estimate, transcription excluded — disclosed).
+*   **Approval:** Human verified (pre-PR Troublemaker review: NO-MERGE with HIGH findings — the apply breakage and the anchor relocation — both fixed with regression tests before push).
+
+**[2026-07-09 00:00:00 UTC] - BUG_FIX**
+*   **Action:** Fixed streaming-path cascade parity — cascades never fired in the live app (Cascade v2 Wave D3; PR #9). Found by WRITING the Playwright e2e, not by any unit suite.
+*   **Agent:** QA / DevOps / Claude Code (Fable 5).
+*   **Context:** `streamResolveAnnotation`'s MADS branch never called `attachCascadeEdits`. The production UI streams; only the non-streaming path attached cascade edits — so the product's differentiating feature was dead in production while three waves of unit suites (500+ tests) stayed green, because every unit test exercised the non-streaming path.
+*   **Decisions Logged:**
+    *   New `cascade-review.spec.ts` drives the full annotate → cascade → review → apply → history flow through the REAL UI: LLM endpoints intercepted with deterministic responses; audit and history routes REAL (the Article 12 write path is exercised end-to-end).
+    *   Fix: streaming/non-streaming parity for `attachCascadeEdits` + regression tests pinning both paths.
+    *   Standing rule: any feature reachable via both streaming and non-streaming resolution paths must be tested on BOTH; the e2e through the real UI path is the permanent gate for the cascade flow.
+*   **Approval:** Human verified.
+
+**[2026-07-09 00:00:00 UTC] - PROCESS**
+*   **Action:** Recorded the Cascade v2 adversarial-review track record at roadmap close (PRs #5, #6, #9-#12).
+*   **Agent:** Code Librarian / Full swarm.
+*   **Context:** Cascade v2 ran five waves, each through implement → pre-PR adversarial Troublemaker review → fix, before anything was pushed.
+*   **Decisions Logged:**
+    *   **Five waves, five pre-PR adversarial reviews, five NO-MERGE verdicts, every HIGH finding fixed with regression tests BEFORE push.** Findings prevented from shipping: judge-malfunction-as-denial (A), content-hash provenance absorption (E), monotonic LLM-edge decay + mid-band recall regression (B), flow-state apply breakage + anchor relocation (C), entity-count flooding (D). The pre-PR adversarial gate is load-bearing — keep it.
+    *   Separately, the PR #9 e2e caught a production-dead feature (streaming cascades) that all five green unit suites missed — unit coverage of a path is not coverage of THE path.
+    *   Worktree discipline confirmed: A∥E and B∥D3+D4 ran safely in parallel worktrees; B∥C was deliberately SERIALIZED because both touch `docGraph.ts` — parallelize by file-overlap analysis, not by wave count.
+    *   Final verification at close: 579 unit tests + 10 skipped on the finale branch (`main` matches post-merge); cascade e2e green; ingestion e2e requires local FalkorDB (pre-existing).
+*   **Approval:** Human verified.
