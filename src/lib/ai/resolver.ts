@@ -334,6 +334,11 @@ export async function streamResolveAnnotation(
         madsResult.resolution.uncertaintyFlags = madsResult.uncertaintyFlags
       }
       onChunk(madsResult.resolution.content)
+      // Attach multi-region cascade edits (best-effort) — parity with the
+      // non-streaming MADS path above; without this, edit annotations (which
+      // always route through MADS) never cascaded on the streaming path the
+      // UI actually uses.
+      await attachCascadeEdits(madsResult.resolution, editorState, config, annotation.anchor.text)
       return madsResult.resolution
     }
   } catch {
