@@ -76,6 +76,69 @@ describe('proposeCascadeEdits — scoping', () => {
     expect(prompt).not.toContain('[far]')
   })
 
+  it('maxBlocks cap: a block sliced out of the sent set is scope-gated even when cited by real id', async () => {
+    const state = stateOf(FIXTURE_DOC)
+    const primary = primaryEditFor(FIXTURE_DOC, 'b1', 'March 1, 2026', 'June 1, 2026')
+    const captured: StructuredRequest[] = []
+    // Neighborhood is {b1:0, b2:1, b3:1}; maxBlocks=2 keeps b1 + b2 (hop, then pos).
+    const edits = await proposeCascadeEdits(state, primary, CONFIG, {
+      graph: buildDeterministicGraph(FIXTURE_DOC),
+      maxBlocks: 2,
+      callStructured: scripted(
+        [
+          {
+            name: 'propose_edit',
+            input: {
+              block_id: 'b3', // exists in doc + graph, but was NOT sent
+              target_text: 'Marketing emails go out',
+              new_text: 'Marketing emails will go out',
+              reason: 'test',
+            },
+          },
+        ],
+        captured,
+      ),
+    })
+    const prompt = captured[0].messages.map((m) => m.content).join('\n')
+    expect(prompt).toContain('[b2]')
+    expect(prompt).not.toContain('[b3]')
+    // blockTextRange anchors it successfully, but the scope gate must drop it.
+    expect(edits).toEqual([])
+  })
+
+  it('skips graph blocks that vanished from the live doc (stale graph) without aborting', async () => {
+    const staleGraph = buildDeterministicGraph(FIXTURE_DOC) // knows b1, b2, b3
+    const docNoB2 = docOf(
+      p('b1', '"Launch Date" means March 1, 2026.'),
+      p('b3', 'Marketing emails go out two weeks ahead of the Launch Date.'),
+    )
+    const state = stateOf(docNoB2)
+    const primary = primaryEditFor(docNoB2, 'b1', 'March 1, 2026', 'June 1, 2026')
+    const captured: StructuredRequest[] = []
+    const edits = await proposeCascadeEdits(state, primary, CONFIG, {
+      graph: staleGraph,
+      callStructured: scripted(
+        [
+          {
+            name: 'propose_edit',
+            input: {
+              block_id: 'b3',
+              target_text: 'two weeks ahead',
+              new_text: 'six weeks ahead',
+              reason: 'test',
+            },
+          },
+        ],
+        captured,
+      ),
+    })
+    const prompt = captured[0].messages.map((m) => m.content).join('\n')
+    expect(prompt).not.toContain('[b2]') // vanished block never reaches the model
+    expect(prompt).toContain('[b3]')
+    expect(edits).toHaveLength(1)
+    expect(edits[0].blockId).toBe('b3')
+  })
+
   it('returns [] without calling the model when the primary block is unstamped', async () => {
     const unstamped = docOf(p(null, 'no ids here at all'))
     const state = stateOf(unstamped)
@@ -215,6 +278,71 @@ describe('proposeCascadeEdits — anchoring', () => {
       ]),
     })
     expect(edits).toEqual([])
+  })
+
+  it('collapses duplicate/overlapping proposals over one region — first proposal wins', async () => {
+    const state = stateOf(FIXTURE_DOC)
+    const primary = primaryEditFor(FIXTURE_DOC, 'b1', 'March 1, 2026', 'June 1, 2026')
+    const dup = {
+      block_id: 'b2',
+      target_text: 'ends on March 1, 2026',
+      new_text: 'ends on June 1, 2026',
+      reason: 'stale date',
+    }
+    const edits = await proposeCascadeEdits(state, primary, CONFIG, {
+      graph: buildDeterministicGraph(FIXTURE_DOC),
+      callStructured: scripted([
+        { name: 'propose_edit', input: dup },
+        // Exact duplicate call with different replacement text.
+        { name: 'propose_edit', input: { ...dup, new_text: 'concluded on June 1, 2026' } },
+        // Partially overlapping range in the same block.
+        {
+          name: 'propose_edit',
+          input: {
+            block_id: 'b2',
+            target_text: 'March 1, 2026, just before',
+            new_text: 'June 1, 2026, just before',
+            reason: 'overlaps the first',
+          },
+        },
+      ]),
+    })
+    // Double-applying one region in a single transaction corrupts the text —
+    // only the first proposal may survive.
+    expect(edits).toHaveLength(1)
+    expect(edits[0].newText).toBe('ends on June 1, 2026')
+  })
+
+  it('newText "" is delete semantics and survives; missing new_text or blank target_text is dropped', async () => {
+    const state = stateOf(FIXTURE_DOC)
+    const primary = primaryEditFor(FIXTURE_DOC, 'b1', 'March 1, 2026', 'June 1, 2026')
+    const edits = await proposeCascadeEdits(state, primary, CONFIG, {
+      graph: buildDeterministicGraph(FIXTURE_DOC),
+      callStructured: scripted([
+        {
+          name: 'propose_edit',
+          input: {
+            block_id: 'b2',
+            target_text: ', just before the Launch Date',
+            new_text: '', // deletion
+            reason: 'now redundant',
+          },
+        },
+        {
+          name: 'propose_edit',
+          input: { block_id: 'b3', target_text: 'Marketing emails', reason: 'no new_text' },
+        },
+        {
+          name: 'propose_edit',
+          input: { block_id: 'b3', target_text: '   ', new_text: 'x', reason: 'blank target' },
+        },
+      ]),
+    })
+    expect(edits).toHaveLength(1)
+    expect(edits[0].newText).toBe('')
+    expect(state.doc.textBetween(edits[0].from, edits[0].to)).toBe(
+      ', just before the Launch Date',
+    )
   })
 
   it('drops proposals overlapping the primary range', async () => {

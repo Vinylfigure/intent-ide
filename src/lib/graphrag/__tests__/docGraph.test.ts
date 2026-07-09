@@ -107,6 +107,41 @@ describe('buildDeterministicGraph', () => {
   })
 })
 
+describe('contentHash boundaries', () => {
+  it('field separators keep block boundaries unambiguous (no concatenation collisions)', () => {
+    // Without separators between blockId/text fields these two pairs would
+    // hash identically ("a·foo·b·bar" vs "a·foob·b·ar" and "ax·foo" vs "a·xfoo").
+    expect(contentHash(docOf(p('a', 'foo'), p('b', 'bar')))).not.toBe(
+      contentHash(docOf(p('a', 'foob'), p('b', 'ar'))),
+    )
+    expect(contentHash(docOf(p('ax', 'foo')))).not.toBe(contentHash(docOf(p('a', 'xfoo'))))
+    // Sanity: identical content hashes identically.
+    expect(contentHash(docOf(p('a', 'foo'), p('b', 'bar')))).toBe(
+      contentHash(docOf(p('a', 'foo'), p('b', 'bar'))),
+    )
+  })
+
+  it('empty doc (single unstamped paragraph): stable hash, zero graph nodes, LLM pass skipped', async () => {
+    const empty = schema.node('doc', null, [schema.node('paragraph')])
+    const hash = contentHash(empty)
+    expect(typeof hash).toBe('string')
+    expect(hash.length).toBeGreaterThan(0)
+    expect(hash).toBe(contentHash(schema.node('doc', null, [schema.node('paragraph')])))
+
+    const graph = buildDeterministicGraph(empty)
+    expect(graph.nodes.size).toBe(0)
+    expect(graph.edges).toHaveLength(0)
+
+    let called = false
+    await augmentWithLlmEdges(graph, CONFIG, async () => {
+      called = true
+      return { toolCalls: [] }
+    })
+    expect(called).toBe(false)
+    expect(graph.llmApplied).toBe(false)
+  })
+})
+
 describe('getNeighborhood', () => {
   it('returns BFS hop distances bounded by the hop cap', () => {
     // chain: a — b — c — d
@@ -130,6 +165,16 @@ describe('getNeighborhood', () => {
   it('returns empty map for unknown block', () => {
     const graph = buildDeterministicGraph(docOf(p('a', 'text')))
     expect(getNeighborhood(graph, 'nope', 2).size).toBe(0)
+  })
+
+  it('hops=0 returns only the block itself; negative hops behave the same', () => {
+    const graph = buildDeterministicGraph(
+      docOf(p('a', '"Alpha" means the first thing.'), p('b', 'Alpha appears here.')),
+    )
+    // Sanity: a and b really are connected.
+    expect(getNeighborhood(graph, 'b', 1).has('a')).toBe(true)
+    expect([...getNeighborhood(graph, 'b', 0).entries()]).toEqual([['b', 0]])
+    expect([...getNeighborhood(graph, 'b', -1).entries()]).toEqual([['b', 0]])
   })
 })
 
@@ -194,6 +239,27 @@ describe('augmentWithLlmEdges', () => {
     })
     expect(graph.llmApplied).toBe(false)
     expect(graph.edges).toHaveLength(before)
+  })
+
+  it('skips the pass above 200 textblocks but still runs at exactly 200 (cap boundary)', async () => {
+    const mkDoc = (n: number) =>
+      docOf(...Array.from({ length: n }, (_, i) => p(`b${i}`, `distinct sentence number ${i}.`)))
+    let calls = 0
+    const counting: CallStructuredFn = async () => {
+      calls++
+      return { toolCalls: [] }
+    }
+
+    const over = buildDeterministicGraph(mkDoc(201))
+    expect(over.nodes.size).toBe(201)
+    await augmentWithLlmEdges(over, CONFIG, counting)
+    expect(calls).toBe(0)
+    expect(over.llmApplied).toBe(false) // deterministic-only, never flips
+
+    const atCap = buildDeterministicGraph(mkDoc(200))
+    await augmentWithLlmEdges(atCap, CONFIG, counting)
+    expect(calls).toBe(1)
+    expect(atCap.llmApplied).toBe(true)
   })
 
   it('skips silently when no API key is configured (non-ollama)', async () => {

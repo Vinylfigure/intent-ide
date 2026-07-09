@@ -105,6 +105,24 @@ describe('computeBlockIdFixes', () => {
     expect(computeBlockIdFixes(doc)).toHaveLength(0)
   })
 
+  it('retries genId until the id is unseen (collision with an existing id)', () => {
+    const doc = docOf(p('one', 'taken'), p('two'))
+    const seq = ['taken', 'taken', 'fresh'] // collides twice with the stamped block
+    let i = 0
+    const fixes = computeBlockIdFixes(doc, () => seq[i++] ?? `overflow-${i}`)
+    expect(fixes).toHaveLength(1)
+    expect(fixes[0].attrs.blockId).toBe('fresh')
+  })
+
+  it('retries genId when it repeats an id it just minted in the same pass', () => {
+    const doc = docOf(p('one'), p('two'))
+    const seq = ['gen-1', 'gen-1', 'gen-2'] // generator repeats itself
+    let i = 0
+    const fixes = computeBlockIdFixes(doc, () => seq[i++] ?? `overflow-${i}`)
+    const ids = fixes.map((f) => f.attrs.blockId)
+    expect(ids).toEqual(['gen-1', 'gen-2'])
+  })
+
   it('preserves other attrs when fixing (heading level)', () => {
     const doc = schema.node('doc', null, [
       schema.node('heading', { level: 3 }, [schema.text('h')]),
@@ -168,6 +186,18 @@ describe('blockIdPlugin', () => {
     expect(afterRedo[1].blockId).not.toBe('orig')
   })
 
+  it('merging two stamped paragraphs keeps the first id and appends no restamp transaction', () => {
+    const state = stateWith(docOf(p('one', 'id-1'), p('two', 'id-2')))
+    const boundary = state.doc.child(0).nodeSize // position between the two paragraphs
+    const result = apply(state, (s) => s.tr.join(boundary))
+    // No duplicate/null ids after the merge, so the plugin must stay silent.
+    expect(result.transactions).toHaveLength(1)
+    const blocks = collectBlocks(result.state.doc)
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].blockId).toBe('id-1')
+    expect(blocks[0].node.textContent).toBe('onetwo')
+  })
+
   it('legacy JSON without blockId loads with null defaults and gets stamped on first change', () => {
     const legacyJson = {
       type: 'doc',
@@ -228,6 +258,17 @@ describe('lookup helpers', () => {
     expect(blockIdAtPos(listDoc, inner.pos + 3)).toBe('li-1')
   })
 
+  it('blockIdAtPos: doc-level boundaries resolve to null; out-of-range positions clamp safely', () => {
+    const doc = docOf(p('alpha', 'b1'))
+    expect(blockIdAtPos(doc, 0)).toBeNull() // before the first block: no block ancestor
+    expect(blockIdAtPos(doc, doc.content.size)).toBeNull() // after the last block
+    expect(blockIdAtPos(doc, 1)).toBe('b1') // first position inside the block
+    expect(() => blockIdAtPos(doc, -10)).not.toThrow()
+    expect(() => blockIdAtPos(doc, 99999)).not.toThrow()
+    expect(blockIdAtPos(doc, -10)).toBeNull()
+    expect(blockIdAtPos(doc, 99999)).toBeNull()
+  })
+
   it('collectTextblocks excludes wrapper nodes', () => {
     const listDoc = schema.node('doc', null, [
       schema.node('blockquote', { blockId: 'bq' }, [p('quoted', 'p-in-bq')]),
@@ -281,5 +322,54 @@ describe('blockTextRange', () => {
     expect(blockTextRange(doc, 'nope', 'text')).toBeNull()
     expect(blockTextRange(doc, 'b1', 'absent')).toBeNull()
     expect(blockTextRange(doc, 'b1', '')).toBeNull()
+  })
+
+  it('matches the entire block text at exact node boundaries', () => {
+    const doc = docOf(p('alpha', 'b1'), p('beta', 'b2'))
+    const b2 = findBlockById(doc, 'b2')!
+    const range = blockTextRange(doc, 'b2', 'beta')
+    expect(range).not.toBeNull()
+    expect(range!.from).toBe(b2.pos + 1) // first content position
+    expect(range!.to).toBe(b2.pos + b2.node.nodeSize - 1) // last content position
+  })
+
+  describe('hard_break handling', () => {
+    const withBreak = schema.node('paragraph', { blockId: 'hb' }, [
+      schema.text('line one'),
+      schema.node('hard_break'),
+      schema.text('line two'),
+    ])
+
+    it('never matches a query spanning the break (concatenated text, non-contiguous positions)', () => {
+      const doc = docOf(withBreak)
+      // Concatenated block text is "line oneline two" — these only exist across the break.
+      expect(blockTextRange(doc, 'hb', 'oneline')).toBeNull()
+      expect(blockTextRange(doc, 'hb', 'e onel')).toBeNull()
+    })
+
+    it('matches after the break at positions that account for the leaf node', () => {
+      const doc = docOf(withBreak)
+      const range = blockTextRange(doc, 'hb', 'line two')
+      expect(range).not.toBeNull()
+      expect(doc.textBetween(range!.from, range!.to)).toBe('line two')
+    })
+
+    it('skips a first occurrence that spans the break and returns a later contiguous one', () => {
+      const doc = docOf(
+        schema.node('paragraph', { blockId: 'rt' }, [
+          schema.text('end x'),
+          schema.node('hard_break'),
+          schema.text('x endx end'),
+        ]),
+      )
+      // Concatenated text "end xx endx end": "x end" first occurs across the
+      // break (idx 4), then contiguously inside the second text node (idx 5).
+      const range = blockTextRange(doc, 'rt', 'x end')
+      expect(range).not.toBeNull()
+      expect(doc.textBetween(range!.from, range!.to)).toBe('x end')
+      const para = findBlockById(doc, 'rt')!
+      const breakPos = para.pos + 1 + 'end x'.length
+      expect(range!.from).toBeGreaterThan(breakPos) // landed after the break
+    })
   })
 })

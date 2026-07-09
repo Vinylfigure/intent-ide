@@ -296,6 +296,11 @@ export async function proposeCascadeEdits(
     if (!sentIds.has(resolvedBlockId)) continue
     // Skip anything overlapping the primary range to avoid double-editing it.
     if (located.from < primary.to && located.to > primary.from) continue
+    // Duplicate gate: repeated tool calls anchor to the same range (blockTextRange
+    // returns the first occurrence), and applying two replacements over one region
+    // in a single transaction corrupts the text — first proposal wins.
+    const anchored = located
+    if (edits.some((e) => anchored.from < e.to && anchored.to > e.from)) continue
 
     const targetBlockText = findBlockById(doc, resolvedBlockId)?.node.textContent ?? ''
     const evidence = buildEvidence(state, input)
