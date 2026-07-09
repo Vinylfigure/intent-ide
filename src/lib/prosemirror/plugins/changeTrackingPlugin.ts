@@ -1,5 +1,6 @@
 import { Plugin, PluginKey, Transaction } from 'prosemirror-state'
 import { generateId } from '@/lib/utils/id'
+import { blockIdPluginKey } from './blockIdPlugin'
 
 interface ChangeTrackingState {
   lastChangeId: string | null
@@ -45,9 +46,12 @@ export function createChangeTrackingPlugin(): Plugin {
       const docChanged = transactions.some(tr => tr.docChanged)
       if (!docChanged) return null
 
-      // Skip undo/redo transactions and our own tracking transactions
+      // Skip undo/redo, our own tracking transactions, and blockId stamping
+      // (attr-only stamps would otherwise log phantom "Direct edit" entries)
       const isUndo = transactions.some(tr =>
-        tr.getMeta('history$') || tr.getMeta(changeTrackingPluginKey)
+        tr.getMeta('history$') ||
+        tr.getMeta(changeTrackingPluginKey) ||
+        tr.getMeta(blockIdPluginKey)
       )
       if (isUndo) return null
 
