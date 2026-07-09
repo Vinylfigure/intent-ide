@@ -46,14 +46,19 @@ export function createChangeTrackingPlugin(): Plugin {
       const docChanged = transactions.some(tr => tr.docChanged)
       if (!docChanged) return null
 
-      // Skip undo/redo, our own tracking transactions, and blockId stamping
-      // (attr-only stamps would otherwise log phantom "Direct edit" entries)
-      const isUndo = transactions.some(tr =>
+      // Skip undo/redo, our own tracking transactions, blockId stamping
+      // (attr-only stamps would otherwise log phantom "Direct edit" entries),
+      // and state loads: restore and document-switch dispatch a full-document
+      // replaceWith with addToHistory:false — those are not edits, and must
+      // not push full-document beforeSlice/afterSlice entries into the
+      // persisted changes store.
+      const skip = transactions.some(tr =>
         tr.getMeta('history$') ||
         tr.getMeta(changeTrackingPluginKey) ||
-        tr.getMeta(blockIdPluginKey)
+        tr.getMeta(blockIdPluginKey) ||
+        tr.getMeta('addToHistory') === false
       )
-      if (isUndo) return null
+      if (skip) return null
 
       // Compute the changed range
       let changeFrom = newState.doc.content.size

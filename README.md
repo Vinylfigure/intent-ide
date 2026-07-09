@@ -73,7 +73,7 @@ This project is both an AI product and an experiment in AI-augmented engineering
 - [`.claude/skills/`](.claude/skills) — reusable task recipes (add a ProseMirror plugin, add an API route, scaffold a cascade edit) that encode the codebase's conventions
 - [`memory-bank/`](memory-bank) — persistent project memory across AI sessions: [audit ledger](memory-bank/audit.md) of every architectural decision with human-approval records, [changelog](memory-bank/changelog.md), [progress tracker](memory-bank/progress.md), and distilled [system patterns](memory-bank/systemPatterns.md). (Session-scratch files — the active context window and raw reflection log — are local-only and created fresh on first session.)
 - [`docs/specs/`](docs/specs) — the design specs the agents build against
-- [`docs/compliance.md`](docs/compliance.md) — EU AI Act compliance statement (Articles 12 & 14): immutable, content-addressed version history linked to the audit trail, with human-gated restores
+- [`docs/compliance.md`](docs/compliance.md) — EU AI Act compliance statement (Articles 12 & 14): an append-only, hash-verified (tamper-evident) version history linked to the audit trail, with human-gated restores
 
 The same human-in-the-loop discipline the product enforces on document edits was applied to building it: agents propose, tests and adversarial review interrogate, a human approves.
 

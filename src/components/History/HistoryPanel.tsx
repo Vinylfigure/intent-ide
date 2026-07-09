@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDocumentStore } from '@/stores/documentStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useToastStore } from '@/stores/toastStore'
@@ -19,6 +19,10 @@ import { Confirmation } from '@/components/ui/Confirmation'
 // Word-level diffs stay readable up to a point; long documents fall back to
 // the line-level view.
 const WORD_DIFF_MAX_CHARS = 15000
+
+// One history page. When a page comes back full there may be older versions —
+// "Show earlier versions" fetches the next page via the ?before cursor.
+const PAGE_SIZE = 100
 
 const KIND_LABELS: Record<CommitKind, string> = {
   import: 'Created',
@@ -94,22 +98,52 @@ export function HistoryPanel() {
   const [compareDiff, setCompareDiff] = useState<DiffPair | 'loading' | null>(null)
   const [restoreTarget, setRestoreTarget] = useState<CommitMeta | null>(null)
   const [restoring, setRestoring] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  // Guards the expanded-row diff against out-of-order responses: a slow fetch
+  // for a previously expanded row must not overwrite the current row's diff.
+  const diffRequestRef = useRef(0)
 
   const fetchHistory = useCallback(async () => {
     if (!activeDocumentId) {
       setCommits([])
+      setHasMore(false)
       return
     }
     setLoading(true)
     setError(null)
     try {
-      setCommits(await listCommits(activeDocumentId))
+      const page = await listCommits(activeDocumentId, { limit: PAGE_SIZE })
+      setCommits(page)
+      setHasMore(page.length === PAGE_SIZE)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load version history')
     } finally {
       setLoading(false)
     }
   }, [activeDocumentId])
+
+  const loadEarlier = async () => {
+    if (!activeDocumentId || loadingMore) return
+    const oldest = commits[commits.length - 1]
+    if (!oldest) return
+    setLoadingMore(true)
+    try {
+      const page = await listCommits(activeDocumentId, {
+        limit: PAGE_SIZE,
+        before: oldest.createdAt,
+      })
+      setCommits((prev) => [...prev, ...page])
+      setHasMore(page.length === PAGE_SIZE)
+    } catch (err) {
+      useToastStore.getState().addToast(
+        err instanceof Error ? err.message : 'Could not load earlier versions',
+        'error',
+      )
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
   useEffect(() => {
     fetchHistory()
@@ -123,6 +157,7 @@ export function HistoryPanel() {
   const shortLabel = (hash: string) => `version ${hash.slice(0, 8)}`
 
   const loadRowDiff = async (commit: CommitMeta) => {
+    const token = ++diffRequestRef.current
     if (!commit.parentHash) {
       setExpandedDiff('first')
       return
@@ -133,6 +168,7 @@ export function HistoryPanel() {
         getCommit(commit.hash),
         getCommit(commit.parentHash),
       ])
+      if (diffRequestRef.current !== token) return // superseded by a newer expand
       if (!current || !previous) throw new Error('Version content unavailable')
       setExpandedDiff({
         before: docJsonToText(previous.docJson),
@@ -141,6 +177,7 @@ export function HistoryPanel() {
         afterLabel: 'This version',
       })
     } catch (err) {
+      if (diffRequestRef.current !== token) return
       setExpandedDiff(null)
       useToastStore.getState().addToast(
         err instanceof Error ? err.message : 'Could not load the comparison',
@@ -151,6 +188,7 @@ export function HistoryPanel() {
 
   const toggleExpanded = (commit: CommitMeta) => {
     if (expandedHash === commit.hash) {
+      diffRequestRef.current++ // invalidate any in-flight diff fetch
       setExpandedHash(null)
       setExpandedDiff(null)
       return
@@ -253,8 +291,8 @@ export function HistoryPanel() {
         </div>
       </div>
       <p className="text-xs text-muted">
-        Every saved version of this document. Restoring never deletes anything — it adds a new
-        version on top.
+        Versions captured as you work — created, applied AI changes, saved edit sessions, and
+        restores. Restoring adds a new version on top; earlier versions stay in the chain.
       </p>
 
       {compareMode && (
@@ -283,8 +321,8 @@ export function HistoryPanel() {
           </div>
           <p className="text-sm text-muted">No versions yet</p>
           <p className="text-xs text-muted/60 mt-1 max-w-56">
-            Every version of this document is kept here — created, AI changes you approved, your
-            edit sessions, and restores.
+            Versions appear here when a document is created, an AI change is applied, an edit
+            session is saved, or a version is restored.
           </p>
         </div>
       )}
@@ -385,9 +423,21 @@ export function HistoryPanel() {
         })}
       </div>
 
+      {hasMore && (
+        <button
+          onClick={loadEarlier}
+          disabled={loadingMore}
+          className="w-full px-3 py-2 text-xs rounded-xl border border-border/70 bg-white/60 text-muted hover:text-ink hover:border-accent/30 transition-colors disabled:opacity-50"
+        >
+          {loadingMore ? 'Loading earlier versions...' : 'Show earlier versions'}
+        </button>
+      )}
+
       {commits.length > 0 && (
         <p className="text-[10px] text-muted-foreground/70 pt-1">
-          Version history is immutable and linked to the audit trail (EU AI Act Art. 12 &amp; 14).
+          Version history is append-only at the application level (no edit or delete operations;
+          server-verified hashes make records tamper-evident) and is linked to the audit trail in
+          support of EU AI Act Art. 12 &amp; 14.
         </p>
       )}
 

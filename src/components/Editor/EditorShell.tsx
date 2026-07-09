@@ -111,7 +111,18 @@ export function EditorShell() {
         clearTimeout(saveTimerRef.current)
         const ds = useDocumentStore.getState()
         if (ds.activeDocumentId && ds.isDirty) {
-          ds.saveDocument(ds.activeDocumentId, view.state.doc.toJSON())
+          const docJson = view.state.doc.toJSON()
+          ds.saveDocument(ds.activeDocumentId, docJson)
+          // Keep history in step with localStorage: without this, an unmount
+          // flush leaves localStorage permanently ahead of the version chain.
+          // Content-hash dedupe makes it free when nothing changed.
+          recordCommit({
+            docJson,
+            documentId: ds.activeDocumentId,
+            kind: 'direct',
+            message: 'Edited document',
+            actor: 'human',
+          })
         }
       }
       cancelScheduledDocGraphRebuild()
@@ -135,7 +146,17 @@ export function EditorShell() {
         clearTimeout(saveTimerRef.current)
         saveTimerRef.current = null
       }
-      docStore.saveDocument(previousDocumentId, view.state.doc.toJSON())
+      const docJson = view.state.doc.toJSON()
+      docStore.saveDocument(previousDocumentId, docJson)
+      // Doc-switch flush must reach the version chain too (see unmount flush
+      // above) — dedupe makes it a no-op when the content is unchanged.
+      recordCommit({
+        docJson,
+        documentId: previousDocumentId,
+        kind: 'direct',
+        message: 'Edited document',
+        actor: 'human',
+      })
     }
 
     const json = activeDocumentId
