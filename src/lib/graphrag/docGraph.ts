@@ -5,6 +5,12 @@ import type { CascadeEdgeType } from '@/lib/annotations/types'
 import { collectTextblocks } from '@/lib/prosemirror/blockIds'
 import { fetchStructured, type CallStructuredFn } from '@/lib/ai/structuredClient'
 import { augmentWithEmbeddingEdges, type EmbedFn } from './embedEdges'
+import {
+  searchNodes as graphitiSearchNodes,
+  getSubgraph as graphitiGetSubgraph,
+  type GraphNode as GraphitiNode,
+  type SubgraphResult as GraphitiSubgraph,
+} from '@/lib/mcp/graphitiClient'
 
 /**
  * Document dependency graph — the retrieval index the cascade queries instead
@@ -62,6 +68,13 @@ export interface DocGraph {
    * — mirror of llmPartial. Never a silent truncation: setting this warns.
    */
   embeddingsPartial: boolean
+  /**
+   * True once the Graphiti entity pass ran to completion. Stays false on any
+   * MCP failure/timeout (FalkorDB is usually down in dev) — the pass is
+   * best-effort and a later build may retry, but a cached fully-built graph is
+   * never invalidated just because Graphiti was unreachable.
+   */
+  graphitiApplied: boolean
   /** Per-textblock FNV-1a over blockId + text — the incremental-diff unit. */
   blockHashes: Map<string, string>
   nodes: Map<string, DocGraphNode>
@@ -317,6 +330,7 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
     llmPartial: false,
     embeddingsApplied: false,
     embeddingsPartial: false,
+    graphitiApplied: false,
     blockHashes,
     nodes,
     edges,
@@ -507,6 +521,121 @@ function mergeLlmToolCalls(
   graph.adjacency = buildAdjacency(graph.edges)
 }
 
+// --- Graphiti entity pass -----------------------------------------------------
+
+// Same call shape as the old read-only cascade lane (searchNodes → top-3
+// subgraphs), but the results become GRAPH EDGES the one cascade surface
+// consumes — not a parallel decoration surface. Tight caps on purpose: the
+// old lane's known failure mode was a false-positive firehose from generic
+// entity names matched all over the document.
+const GRAPHITI_TIMEOUT_MS = 1500
+const GRAPHITI_QUERY_MAX_CHARS = 200
+const GRAPHITI_SEARCH_LIMIT = 5
+const GRAPHITI_SUBGRAPH_CAP = 3
+const GRAPHITI_MAX_BLOCKS_PER_ENTITY = 10
+const GRAPHITI_MIN_ENTITY_LENGTH = 4
+
+export interface GraphitiEdgeDeps {
+  searchNodes?: (query: string, limit?: number) => Promise<GraphitiNode[]>
+  getSubgraph?: (nodeId: string, radius?: number) => Promise<GraphitiSubgraph>
+  timeoutMs?: number
+}
+
+/** Race a promise against a deadline; the timer never outlives the race. */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('graphiti timeout')), ms)
+  })
+  try {
+    return await Promise.race([work, deadline])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Third edge source: knowledge-graph entities from the Graphiti MCP server.
+ * Searches the graph for entities related to this document, then links every
+ * pair of blocks that BOTH mention an entity name (word-boundary match via
+ * containsTerm) with a `references`/`graphiti` edge carrying the entity name
+ * as evidence.
+ *
+ * Guardrails (the old read-only lane's false-positive lessons):
+ * - entities shorter than GRAPHITI_MIN_ENTITY_LENGTH chars or matching the
+ *   term stopwords are skipped entirely;
+ * - an entity mentioned in more than GRAPHITI_MAX_BLOCKS_PER_ENTITY blocks is
+ *   capped to its first N blocks in document order (no pairwise firehose);
+ * - entities found in fewer than 2 distinct blocks produce nothing.
+ *
+ * Strictly best-effort and non-blocking: the whole MCP conversation races a
+ * GRAPHITI_TIMEOUT_MS deadline, and ANY failure (FalkorDB down — the usual
+ * dev state) returns silently having changed nothing.
+ */
+export async function augmentWithGraphitiEdges(
+  graph: DocGraph,
+  deps: GraphitiEdgeDeps = {},
+): Promise<void> {
+  if (graph.graphitiApplied) return
+  if (graph.nodes.size < 2) {
+    graph.graphitiApplied = true
+    return
+  }
+  const search = deps.searchNodes ?? graphitiSearchNodes
+  const subgraph = deps.getSubgraph ?? graphitiGetSubgraph
+  const timeoutMs = deps.timeoutMs ?? GRAPHITI_TIMEOUT_MS
+
+  try {
+    const entityNames = await withDeadline(
+      (async () => {
+        const ordered = [...graph.nodes.values()].sort((a, b) => a.pos - b.pos)
+        const query = ordered
+          .map((n) => n.text)
+          .join(' ')
+          .slice(0, GRAPHITI_QUERY_MAX_CHARS)
+        const matching = await search(query, GRAPHITI_SEARCH_LIMIT)
+        const names = new Set<string>()
+        for (const node of matching.slice(0, GRAPHITI_SUBGRAPH_CAP)) {
+          names.add(node.name)
+          const sub = await subgraph(node.uuid, 2)
+          for (const gn of sub.nodes) names.add(gn.name)
+        }
+        return names
+      })(),
+      timeoutMs,
+    )
+
+    const ordered = [...graph.nodes.values()].sort((a, b) => a.pos - b.pos)
+    const edgeKeys = new Set(graph.edges.map((e) => `${e.from}${e.to}${e.type}`))
+    let added = false
+    for (const rawName of entityNames) {
+      const name = rawName?.trim()
+      if (!name || name.length < GRAPHITI_MIN_ENTITY_LENGTH) continue
+      if (TERM_STOPWORDS.has(name.toLowerCase())) continue
+      const containing = ordered
+        .filter((n) => containsTerm(n.text, name))
+        .slice(0, GRAPHITI_MAX_BLOCKS_PER_ENTITY)
+      if (containing.length < 2) continue
+      for (let i = 0; i < containing.length; i++) {
+        for (let j = i + 1; j < containing.length; j++) {
+          const from = containing[i].blockId
+          const to = containing[j].blockId
+          const key = `${from}${to}references`
+          if (edgeKeys.has(key)) continue
+          edgeKeys.add(key)
+          graph.edges.push({ from, to, type: 'references', source: 'graphiti', evidence: name })
+          added = true
+        }
+      }
+    }
+    if (added) graph.adjacency = buildAdjacency(graph.edges)
+    graph.graphitiApplied = true
+  } catch {
+    // MCP unreachable, malformed reply, or deadline hit — the graph is fully
+    // usable without this pass; return silently, never throw, never block.
+  }
+}
+
 // --- Cache + entry points ---------------------------------------------------
 
 const CACHE_MAX = 8
@@ -654,6 +783,10 @@ export async function getDocGraph(
     embed?: EmbedFn
     /** Test/caller override for the settings-store embeddings toggle. */
     embeddingsEnabled?: boolean
+    /** Skip the Graphiti entity pass (background rebuilds — user-initiated only). */
+    skipGraphiti?: boolean
+    /** Injectable Graphiti MCP client (tests: scripted searchNodes/getSubgraph). */
+    graphiti?: GraphitiEdgeDeps
   } = {},
 ): Promise<DocGraph> {
   const hash = contentHash(doc)
@@ -693,6 +826,14 @@ export async function getDocGraph(
     }
     if (embeddingsOn && !graph.embeddingsApplied) {
       await augmentWithEmbeddingEdges(graph, config, deps.embed)
+    }
+    // Graphiti entity edges: user-initiated builds only (same privacy stance
+    // as the LLM/embedding passes — background typing must never trigger MCP
+    // traffic). Deliberately NOT part of the cache-hit condition above: when
+    // FalkorDB is down (the usual dev state) a warm cache must not re-pay the
+    // connection attempt on every cascade.
+    if (!deps.skipGraphiti && !graph.graphitiApplied) {
+      await augmentWithGraphitiEdges(graph, deps.graphiti)
     }
     cacheGraph(hash, graph)
     publishDocGraph(seq, 'ready', graph)
@@ -798,10 +939,10 @@ let rebuildTimer: ReturnType<typeof setTimeout> | null = null
 /**
  * Debounced background rebuild, wired into the editor's dispatchTransaction so
  * the cascade usually hits a warm deterministic graph. Deliberately
- * DETERMINISTIC-ONLY (`skipLlm` + `skipEmbeddings`): document text must never
- * leave the machine as a side effect of typing — the LLM extraction and
- * embedding passes run lazily inside the cascade, which the user explicitly
- * initiated. All failures are swallowed.
+ * DETERMINISTIC-ONLY (`skipLlm` + `skipEmbeddings` + `skipGraphiti`): document
+ * text must never leave the machine (or process) as a side effect of typing —
+ * the LLM extraction, embedding, and Graphiti passes run lazily inside the
+ * cascade, which the user explicitly initiated. All failures are swallowed.
  */
 export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void {
   if (rebuildTimer) clearTimeout(rebuildTimer)
@@ -813,6 +954,7 @@ export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void 
       await getDocGraph(view.state.doc, useSettingsStore.getState().llmConfig, {
         skipLlm: true,
         skipEmbeddings: true,
+        skipGraphiti: true,
       })
     })().catch(() => {})
   }, delayMs)
