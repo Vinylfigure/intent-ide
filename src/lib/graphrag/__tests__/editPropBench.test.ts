@@ -6,6 +6,7 @@ import type { LLMConfig } from '@/stores/settingsStore'
 import type { CallStructuredFn, StructuredRequest } from '@/lib/ai/structuredClient'
 import type { ProposedEdit } from '@/lib/annotations/types'
 import { proposeCascadeEdits } from '@/lib/ai/orchestrator'
+import { judgeMustCandidates, type JudgeFn, type JudgeVerdict } from '@/lib/ai/relevanceJudge'
 import { buildDeterministicGraph, augmentWithLlmEdges, invalidateDocGraphCache } from '../docGraph'
 import { CASCADE_FIXTURES, resolvePrimary, type CascadeFixture } from './editPropBench.fixtures'
 
@@ -46,6 +47,23 @@ function scripted(
   }
 }
 
+/** Default judge: confirm every derived must so unjudged fixtures keep their labels. */
+const confirmAllJudge: JudgeFn = async (candidates) =>
+  new Map(
+    candidates.map((_, i): [number, JudgeVerdict] => [
+      i,
+      { genuinelyConflicts: true, reason: 'confirmed' },
+    ]),
+  )
+
+/** Scripted judge: the real judgeMustCandidates parsing over scripted verdicts. */
+function scriptedJudge(
+  calls: Array<{ name: string; input: Record<string, unknown> }>,
+): JudgeFn {
+  return (candidates, primary, doc, config) =>
+    judgeMustCandidates(candidates, primary, doc, config, scripted(calls, []))
+}
+
 async function runFixture(fixture: CascadeFixture): Promise<{
   edits: ProposedEdit[]
   captured: StructuredRequest[]
@@ -64,6 +82,7 @@ async function runFixture(fixture: CascadeFixture): Promise<{
   const edits = await proposeCascadeEdits(state, primary, CONFIG, {
     graph,
     callStructured: scripted(fixture.scriptedCascadeCalls, captured, fixture.throwOnCascade),
+    judge: fixture.scriptedJudgeCalls ? scriptedJudge(fixture.scriptedJudgeCalls) : confirmAllJudge,
   })
   return { edits, captured, doc }
 }

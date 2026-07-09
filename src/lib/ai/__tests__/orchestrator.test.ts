@@ -7,6 +7,7 @@ import { buildDeterministicGraph, invalidateDocGraphCache } from '@/lib/graphrag
 import type { CallStructuredFn, StructuredRequest } from '@/lib/ai/structuredClient'
 import type { LLMConfig } from '@/stores/settingsStore'
 import type { SuggestedEdit } from '@/lib/annotations/types'
+import type { JudgeFn, JudgeVerdict } from '@/lib/ai/relevanceJudge'
 import {
   proposeCascadeEdits,
   primaryProposedEdit,
@@ -38,6 +39,15 @@ function scripted(
     return { toolCalls: calls }
   }
 }
+
+/** Judge that confirms every candidate — keeps derived musts as musts. */
+const confirmAllJudge: JudgeFn = async (candidates) =>
+  new Map(
+    candidates.map((_, i): [number, JudgeVerdict] => [
+      i,
+      { genuinelyConflicts: true, reason: 'confirmed' },
+    ]),
+  )
 
 /** Primary edit replacing `phrase` inside block `blockId`. */
 function primaryEditFor(doc: PMNode, blockId: string, phrase: string, newText: string): SuggestedEdit {
@@ -374,6 +384,7 @@ describe('proposeCascadeEdits — evidence gating and severity', () => {
     return proposeCascadeEdits(state, primaryOf(FIXTURE_DOC), CONFIG, {
       graph: buildDeterministicGraph(FIXTURE_DOC),
       callStructured: scripted([{ name: 'propose_edit', input }]),
+      judge: confirmAllJudge,
     })
   }
 
@@ -457,6 +468,7 @@ describe('proposeCascadeEdits — evidence gating and severity', () => {
     const state = stateOf(FIXTURE_DOC)
     const edits = await proposeCascadeEdits(state, primaryOf(FIXTURE_DOC), CONFIG, {
       graph: buildDeterministicGraph(FIXTURE_DOC),
+      judge: confirmAllJudge,
       callStructured: scripted([
         {
           name: 'propose_edit',
@@ -482,6 +494,149 @@ describe('proposeCascadeEdits — evidence gating and severity', () => {
       ]),
     })
     expect(edits.map((e) => e.severity)).toEqual(['must', 'optional'])
+  })
+})
+
+describe('proposeCascadeEdits — relevance judge gating must', () => {
+  const primaryOf = (doc: PMNode) => primaryEditFor(doc, 'b1', 'March 1, 2026', 'June 1, 2026')
+
+  // A proposal that derives 'must': cited, and b2 still contains the stale date.
+  const MUST_PROPOSAL = {
+    name: 'propose_edit',
+    input: {
+      block_id: 'b2',
+      target_text: 'ends on March 1, 2026',
+      new_text: 'ends on June 1, 2026',
+      reason: 'stale date',
+      source_block_id: 'b1',
+      quoted_text: 'March 1, 2026',
+      edge_type: 'contradicts',
+    },
+  }
+
+  it('demotes a non-confirmed must to probably with an auto-review note', async () => {
+    const state = stateOf(FIXTURE_DOC)
+    const denyAll: JudgeFn = async (candidates) =>
+      new Map(
+        candidates.map((_, i): [number, JudgeVerdict] => [
+          i,
+          { genuinelyConflicts: false, reason: 'coincidental date match' },
+        ]),
+      )
+    const edits = await proposeCascadeEdits(state, primaryOf(FIXTURE_DOC), CONFIG, {
+      graph: buildDeterministicGraph(FIXTURE_DOC),
+      callStructured: scripted([MUST_PROPOSAL]),
+      judge: denyAll,
+    })
+    expect(edits).toHaveLength(1)
+    expect(edits[0].severity).toBe('probably')
+    expect(edits[0].reason).toBe('stale date (auto-review: coincidental date match)')
+  })
+
+  it('keeps derived severities unchanged when the judge throws (best-effort)', async () => {
+    const state = stateOf(FIXTURE_DOC)
+    const edits = await proposeCascadeEdits(state, primaryOf(FIXTURE_DOC), CONFIG, {
+      graph: buildDeterministicGraph(FIXTURE_DOC),
+      callStructured: scripted([MUST_PROPOSAL]),
+      judge: async () => {
+        throw new Error('judge down')
+      },
+    })
+    expect(edits).toHaveLength(1)
+    expect(edits[0].severity).toBe('must')
+    expect(edits[0].reason).toBe('stale date')
+  })
+
+  it('never calls the judge when no must survives derivation', async () => {
+    const state = stateOf(FIXTURE_DOC)
+    let judgeCalled = false
+    const edits = await proposeCascadeEdits(state, primaryOf(FIXTURE_DOC), CONFIG, {
+      graph: buildDeterministicGraph(FIXTURE_DOC),
+      callStructured: scripted([
+        {
+          name: 'propose_edit',
+          input: {
+            block_id: 'b3',
+            target_text: 'Marketing emails',
+            new_text: 'Promotional emails',
+            reason: 'style, uncited', // no evidence → optional
+          },
+        },
+      ]),
+      judge: async () => {
+        judgeCalled = true
+        return new Map()
+      },
+    })
+    expect(edits).toHaveLength(1)
+    expect(edits[0].severity).toBe('optional')
+    expect(judgeCalled).toBe(false)
+  })
+
+  it('default judge runs over callStructured and applies the skeptical missing-verdict default', async () => {
+    const state = stateOf(FIXTURE_DOC)
+    const requests: StructuredRequest[] = []
+    // One scripted transport answering BOTH stages: cascade → the must proposal,
+    // judge → no verdicts at all (model went silent).
+    const transport: CallStructuredFn = async (req) => {
+      requests.push(req)
+      if (req.tools.some((t) => t.name === 'propose_edit')) {
+        return { toolCalls: [MUST_PROPOSAL] }
+      }
+      return { toolCalls: [] }
+    }
+    const edits = await proposeCascadeEdits(state, primaryOf(FIXTURE_DOC), CONFIG, {
+      graph: buildDeterministicGraph(FIXTURE_DOC),
+      callStructured: transport,
+    })
+    expect(requests.map((r) => r.tools[0].name)).toEqual(['propose_edit', 'verdict'])
+    expect(edits).toHaveLength(1)
+    expect(edits[0].severity).toBe('probably')
+    expect(edits[0].reason).toContain('(auto-review: no verdict returned)')
+  })
+
+  it('re-sorts after demotion so confirmed musts stay ahead of demoted ones', async () => {
+    // Two blocks that BOTH derive 'must' (each still contains the stale date);
+    // the judge denies the earlier one (b2) and confirms the later one (b3).
+    const doc = docOf(
+      p('b1', '"Launch Date" means March 1, 2026.'),
+      p('b2', 'The beta program ends on March 1, 2026, just before the Launch Date.'),
+      p('b3', 'Printed banners show March 1, 2026 as the Launch Date.'),
+    )
+    const state = stateOf(doc)
+    const judge: JudgeFn = async (candidates) =>
+      new Map(
+        candidates.map((c, i): [number, JudgeVerdict] => [
+          i,
+          c.blockId === 'b2'
+            ? { genuinelyConflicts: false, reason: 'unrelated' }
+            : { genuinelyConflicts: true, reason: 'confirmed' },
+        ]),
+      )
+    const edits = await proposeCascadeEdits(state, primaryOf(doc), CONFIG, {
+      graph: buildDeterministicGraph(doc),
+      callStructured: scripted([
+        MUST_PROPOSAL,
+        {
+          name: 'propose_edit',
+          input: {
+            block_id: 'b3',
+            target_text: 'March 1, 2026 as the Launch Date',
+            new_text: 'June 1, 2026 as the Launch Date',
+            reason: 'stale banner date',
+            source_block_id: 'b1',
+            quoted_text: 'March 1, 2026',
+            edge_type: 'contradicts',
+          },
+        },
+      ]),
+      judge,
+    })
+    expect(edits).toHaveLength(2)
+    expect(edits.map((e) => [e.blockId, e.severity])).toEqual([
+      ['b3', 'must'],
+      ['b2', 'probably'],
+    ])
   })
 })
 
