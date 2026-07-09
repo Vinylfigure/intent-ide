@@ -9,6 +9,7 @@ import {
   setProposedEdits,
   getProposedAnchors,
 } from '../plugins/proposedChangePlugin'
+import { blockTextRange } from '../blockIds'
 import type { ProposedEdit } from '@/lib/annotations/types'
 
 function p(blockId: string, text: string): PMNode {
@@ -102,6 +103,22 @@ describe('setProposedEdits re-anchoring (drift fix)', () => {
     setProposedEdits(view, [edit({ id: 'pe_exact', from: 1, to: 6, targetText: 'alpha', blockId: 'b1' })])
     const anchor = getProposedAnchors(view.state).get('pe_exact')
     expect(anchor).toMatchObject({ from: 1, to: 6 })
+  })
+
+  it('validate-stored-first: a correct blockId-less anchor at the SECOND occurrence stays put', () => {
+    // "beta" occurs in b1 AND b2. The stored positions point (correctly) at the
+    // b2 occurrence and there is NO blockId — the fingerprint fallback would
+    // relocate it to the first occurrence in b1. Validate-stored-first must
+    // keep the stored anchor untouched.
+    const view = tracked(mount(doc))
+    const b2Range = blockTextRange(view.state.doc, 'b2', 'beta')!
+    expect(b2Range).toBeTruthy()
+    setProposedEdits(view, [
+      edit({ id: 'pe_second', from: b2Range.from, to: b2Range.to, targetText: 'beta' }),
+    ])
+    const anchor = getProposedAnchors(view.state).get('pe_second')
+    expect(anchor).toMatchObject({ from: b2Range.from, to: b2Range.to })
+    expect(view.state.doc.textBetween(anchor!.from, anchor!.to)).toBe('beta')
   })
 
   it('passes insertions (empty targetText) through with stored positions', () => {

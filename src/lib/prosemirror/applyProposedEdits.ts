@@ -37,6 +37,10 @@ export function applyProposedEdits(view: EditorView, acceptedIds: string[]): App
   const resolved: AppliedEdit[] = []
 
   for (const id of acceptedIds) {
+    // NOTE: the plugin always holds the FULL edit set (flow-state holds are a
+    // revealed:false flag, never a missing anchor), so an accepted id whose
+    // anchor is still unrevealed is perfectly valid to apply — the commit
+    // modal shows every edit, so accepting one there is a conscious decision.
     const a = anchors.get(id)
     if (!a) return { ok: false, reason: `Proposed edit ${id} no longer exists.` }
 
@@ -44,6 +48,9 @@ export function applyProposedEdits(view: EditorView, acceptedIds: string[]): App
     const safeTo = Math.min(a.to, doc.content.size)
     const current = safeFrom <= safeTo ? doc.textBetween(safeFrom, safeTo) : ''
 
+    // Insertions (targetText:'' ⇒ from === to) trivially pass this check —
+    // they bypass fingerprint validation entirely (and render no decoration).
+    // Known limitation; do not rely on validation for insertion placement.
     if (current === a.targetText) {
       resolved.push({ from: safeFrom, to: safeTo, newText: a.newText, targetText: a.targetText, blockId: a.blockId ?? null })
       continue

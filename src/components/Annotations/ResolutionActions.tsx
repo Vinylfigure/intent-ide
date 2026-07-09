@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useChangesStore } from '@/stores/changesStore'
@@ -14,6 +14,11 @@ import { ingestAnnotationEpisode, ingestEditEpisode } from '@/lib/graphrag/episo
 import { recordHumanDecision, handlerToApprovalAction } from '@/lib/audit/approvalGate'
 import { applyUncertaintyFromLogprobs, applyUncertaintyFromFlags } from '@/lib/ai/uncertainty'
 import { getProposedAnchors, setProposedEditStatus } from '@/lib/prosemirror/plugins/proposedChangePlugin'
+import {
+  openCommitReview,
+  restoreCommitReview,
+  type CommitStatusSnapshot,
+} from '@/lib/annotations/commitStatusSnapshot'
 import { applyProposedEdits } from '@/lib/prosemirror/applyProposedEdits'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { createCommit } from '@/lib/history/commits'
@@ -33,6 +38,9 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   const [pendingHandler, setPendingHandler] = useState<string | null>(null)
   const [showTweakInput, setShowTweakInput] = useState(false)
   const [tweakText, setTweakText] = useState('')
+  // Plugin statuses at modal-open time — cancel restores these so an
+  // abandoned review session never leaks its toggles into the inline surfaces.
+  const commitSnapshotRef = useRef<CommitStatusSnapshot | null>(null)
 
   if (!annotation.resolution) return null
 
@@ -262,6 +270,17 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     setPendingHandler(null)
   }
 
+  // Open the commit modal: snapshot plugin statuses and seed the modal's
+  // optional-severity pre-rejections into the plugin (symmetric seeding — all
+  // review surfaces agree the moment the modal opens). Cancel restores the
+  // snapshot; confirm keeps the live statuses.
+  const openCommitModal = () => {
+    const edits = annotation.resolution?.edits
+    commitSnapshotRef.current =
+      view && edits && edits.length > 1 ? openCommitReview(view, edits) : null
+    setShowDiffModal(true)
+  }
+
   const handleAction = async (handler: string) => {
     // Log human oversight decision if we have an audit trail (non-blocking)
     const auditId = annotation.resolution?.auditId
@@ -278,7 +297,7 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         const edit = annotation.resolution?.suggestedEdit
         if (edit && view) {
           setPendingHandler(handler)
-          setShowDiffModal(true)
+          openCommitModal()
         }
         break
       }
@@ -289,7 +308,7 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         if (edit && view) {
           // Has a suggestedEdit — show diff modal
           setPendingHandler(handler)
-          setShowDiffModal(true)
+          openCommitModal()
         } else if (annotation.resolution && view) {
           // No suggestedEdit (ask/dig/flag) — insert resolution content as new paragraph after annotation
           const insertPos = Math.min(annotation.anchor.to, view.state.doc.content.size)
@@ -458,8 +477,21 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
           // ids the plugin doesn't track (single-edit fallback rows).
           if (view) setProposedEditStatus(view, id, status)
         }}
-        onConfirm={(ids) => applyConfirmedEdit(ids)}
-        onCancel={() => { setShowDiffModal(false); setPendingHandler(null) }}
+        onConfirm={(ids) => {
+          // Confirm: the live statuses stand — drop the snapshot, no restore.
+          commitSnapshotRef.current = null
+          applyConfirmedEdit(ids)
+        }}
+        onCancel={() => {
+          // Cancel: restore the open-time statuses so modal toggles (and the
+          // open-time optional pre-rejections) don't leak into inline surfaces.
+          if (view && commitSnapshotRef.current) {
+            restoreCommitReview(view, commitSnapshotRef.current)
+          }
+          commitSnapshotRef.current = null
+          setShowDiffModal(false)
+          setPendingHandler(null)
+        }}
         provocation={annotation.resolution?.provocation}
         isHighRisk={!!annotation.resolution?.usedMADS}
       />

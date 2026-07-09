@@ -1,6 +1,9 @@
 import type { Node as PMNode } from 'prosemirror-model'
+import type { EditorState } from 'prosemirror-state'
 import { findBlockById } from '@/lib/prosemirror/blockIds'
-import type { ProposedEdit } from './types'
+import { readLinePluginKey } from '@/lib/prosemirror/plugins/readLinePlugin'
+import { getProposedAnchors } from '@/lib/prosemirror/plugins/proposedChangePlugin'
+import type { ProposedEdit, ProposedEditRelation } from './types'
 
 /**
  * Flow-state buffering for cascade reveals (core PRD rule): downstream
@@ -19,23 +22,23 @@ import type { ProposedEdit } from './types'
  * and holding cascades forever behind a mark that may never move would
  * silently hide review surfaces.
  */
-export interface CascadeRevealPartition {
+export interface CascadeRevealPartition<T = ProposedEdit> {
   /** Edits to show now. */
-  reveal: ProposedEdit[]
+  reveal: T[]
   /** Cascades held back until the read-line crosses `breakpointPos`. */
-  held: ProposedEdit[]
+  held: T[]
 }
 
-export function partitionCascadeReveal(
-  edits: ProposedEdit[],
+export function partitionCascadeReveal<T extends Pick<ProposedEdit, 'relation' | 'from'>>(
+  edits: T[],
   highWaterMark: number,
   breakpointPos: number,
-): CascadeRevealPartition {
+): CascadeRevealPartition<T> {
   if (highWaterMark === 0 || highWaterMark >= breakpointPos) {
     return { reveal: edits, held: [] }
   }
-  const reveal: ProposedEdit[] = []
-  const held: ProposedEdit[] = []
+  const reveal: T[] = []
+  const held: T[] = []
   for (const edit of edits) {
     if (edit.relation === 'primary' || edit.from < highWaterMark) {
       reveal.push(edit)
@@ -72,4 +75,29 @@ export function cascadeBreakpointPos(
     // fall through
   }
   return 0
+}
+
+/**
+ * One tick of the flow-state hold poll, computed from LIVE plugin anchors —
+ * positions are re-mapped through every transaction, so both the ABOVE/BELOW
+ * partition and the breakpoint (the primary anchor's live block end) track
+ * the document as the user types during a hold, instead of freezing at the
+ * stale stored from/to captured at proposal time.
+ *
+ * Returns the ids of currently-HELD (unrevealed) anchors that should reveal
+ * now; empty array when nothing is held or nothing is ready.
+ */
+export function pollCascadeReveal(state: EditorState): string[] {
+  const anchors = getProposedAnchors(state)
+  const heldNow: Array<{ id: string; relation: ProposedEditRelation; from: number }> = []
+  let primary: { to: number; blockId?: string } | undefined
+  for (const [id, a] of anchors) {
+    if (a.relation === 'primary') primary = { to: a.to, blockId: a.blockId }
+    if (!a.revealed) heldNow.push({ id, relation: a.relation, from: a.from })
+  }
+  if (heldNow.length === 0) return []
+  const highWaterMark = readLinePluginKey.getState(state)?.highWaterMark ?? 0
+  const breakpoint = cascadeBreakpointPos(state.doc, primary)
+  const { reveal } = partitionCascadeReveal(heldNow, highWaterMark, breakpoint)
+  return reveal.map((e) => e.id)
 }

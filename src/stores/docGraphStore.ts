@@ -16,6 +16,14 @@ export type DocGraphStatus = 'idle' | 'building' | 'ready'
 interface DocGraphState {
   graph: DocGraph | null
   status: DocGraphStatus
+  /** Highest publish seq applied so far — stale (lower-seq) publishes are ignored. */
+  lastSeq: number
+  /**
+   * Compare-and-set publish: ignores any publish whose seq is below the
+   * highest already applied, so an older build's late 'building'/'ready'
+   * can neither churn the chip nor overwrite a fresher graph.
+   */
+  publish: (seq: number, status: DocGraphStatus, graph?: DocGraph) => void
   setGraph: (graph: DocGraph | null) => void
   setStatus: (status: DocGraphStatus) => void
 }
@@ -23,6 +31,12 @@ interface DocGraphState {
 export const useDocGraphStore = create<DocGraphState>()((set) => ({
   graph: null,
   status: 'idle',
+  lastSeq: 0,
+  publish: (seq, status, graph) =>
+    set((s) => {
+      if (seq < s.lastSeq) return s
+      return { lastSeq: seq, status, ...(graph !== undefined ? { graph } : {}) }
+    }),
   setGraph: (graph) => set({ graph }),
   setStatus: (status) => set({ status }),
 }))

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   useSettingsStore,
   type LLMProvider,
@@ -28,6 +28,13 @@ export function ApiKeyModal() {
   const [customModel, setCustomModel] = useState('')
   const [baseUrl, setBaseUrl] = useState(llmConfig.baseUrl ?? PROVIDER_BASE_URLS[llmConfig.provider] ?? '')
   const [wKey, setWKey] = useState(whisperKey)
+  // Spend estimate is module state, not reactive — poll it while the modal is
+  // open so long-lived sessions see the line move without reopening.
+  const [sessionTokens, setSessionTokens] = useState(() => getSessionEstimate())
+  useEffect(() => {
+    const timer = setInterval(() => setSessionTokens(getSessionEstimate()), 2000)
+    return () => clearInterval(timer)
+  }, [])
 
   const handleProviderChange = (p: LLMProvider) => {
     setProvider(p)
@@ -230,7 +237,7 @@ export function ApiKeyModal() {
             </p>
 
             <p className="text-xs font-mono text-muted">
-              This session: ~{getSessionEstimate().toLocaleString()} tokens (estimate)
+              This session: ~{sessionTokens.toLocaleString()} tokens sent (rough estimate; excludes transcription)
             </p>
           </div>
 

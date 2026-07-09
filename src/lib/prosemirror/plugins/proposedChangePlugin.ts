@@ -34,6 +34,14 @@ export interface ProposedAnchor {
   severity: CascadeSeverity
   evidence: CascadeEvidence | null
   blockId?: string
+  /**
+   * Flow-state hold flag (reveal-flag design): `false` means the anchor is
+   * tracked, mapped, status-carrying, and APPLYABLE like any other — it just
+   * renders no decoration yet. Held cascades stay in the apply-time source of
+   * truth; only their visibility is deferred, so a modal-accepted held edit
+   * can never abort the apply transaction with a missing anchor.
+   */
+  revealed: boolean
 }
 
 interface ProposedChangeState {
@@ -41,8 +49,12 @@ interface ProposedChangeState {
 }
 
 export interface ProposedChangeMeta {
-  action: 'setEdits' | 'setStatus' | 'clearAll'
+  action: 'setEdits' | 'setStatus' | 'revealEdits' | 'clearAll'
   edits?: ProposedEdit[]
+  /** setEdits: ids to store with revealed:false (flow-state hold). */
+  heldIds?: string[]
+  /** revealEdits: ids to flip revealed:true (statuses untouched). */
+  ids?: string[]
   id?: string
   status?: ProposedEditStatus
 }
@@ -59,8 +71,15 @@ function isAboveReadLine(state: EditorState, pos: number): boolean {
 function buildDecorations(state: EditorState, anchors: Map<string, ProposedAnchor>): DecorationSet {
   const decos: Decoration[] = []
   for (const [id, a] of anchors) {
+    // Flow-state hold: unrevealed anchors render nothing (no highlight, no
+    // margin flag) but remain live in every other way — mapped, status-carrying,
+    // and applyable.
+    if (!a.revealed) continue
     // Rejected edits are not rendered; pending + accepted are.
     if (a.status === 'rejected') continue
+    // Insertions (targetText:'' ⇒ from === to) render no decoration — known
+    // limitation shared with the fingerprint-validation bypass (see
+    // setProposedEdits / applyProposedEdits).
     if (a.from === a.to) continue
     const above = isAboveReadLine(state, a.from)
     const accepted = a.status === 'accepted'
@@ -126,6 +145,7 @@ export function createProposedChangePlugin(): Plugin {
         const meta = tr.getMeta(proposedChangePluginKey) as ProposedChangeMeta | undefined
         if (meta) {
           if (meta.action === 'setEdits') {
+            const held = new Set(meta.heldIds ?? [])
             anchors = new Map()
             for (const e of meta.edits ?? []) {
               anchors.set(e.id, {
@@ -139,7 +159,19 @@ export function createProposedChangePlugin(): Plugin {
                 severity: e.severity ?? (e.relation === 'primary' ? 'must' : 'probably'),
                 evidence: e.evidence ?? null,
                 blockId: e.blockId,
+                revealed: !held.has(e.id),
               })
+            }
+          } else if (meta.action === 'revealEdits' && meta.ids) {
+            // Flip visibility ONLY — statuses persist, so accept/reject
+            // decisions made while an anchor was held (or on its siblings)
+            // survive the reveal.
+            anchors = new Map(anchors)
+            for (const id of meta.ids) {
+              const existing = anchors.get(id)
+              if (existing && !existing.revealed) {
+                anchors.set(id, { ...existing, revealed: true })
+              }
             }
           } else if (meta.action === 'setStatus' && meta.id && meta.status) {
             const existing = anchors.get(meta.id)
@@ -202,25 +234,39 @@ export function createProposedChangePlugin(): Plugin {
 // --- Helpers --------------------------------------------------------------
 
 /**
- * Show a resolution's proposed edits as decorations.
+ * Show a resolution's proposed edits as decorations. ALWAYS receives the FULL
+ * edit set — flow-state holds are expressed via `heldIds` (those anchors are
+ * stored with revealed:false), never by withholding edits, so the apply-time
+ * source of truth is complete from the first dispatch.
  *
- * Drift fix: stored edit positions were captured at proposal time and the
- * document may have changed since (typing, an earlier apply, a re-reveal).
- * Each edit is re-anchored against the CURRENT doc before its anchor is
- * stored: prefer the block-scoped match when the edit knows its blockId
- * (disambiguating repeated phrases), fall back to a whole-doc fingerprint
- * search, and DROP edits whose target text no longer resolves anywhere
- * (a stale anchor decorating the wrong text is worse than no decoration).
- * Insertions (empty targetText) can't be fingerprinted and pass through
- * with their stored positions.
+ * Drift fix, validate-stored-first (mirrors applyProposedEdits' order):
+ * 1. If the stored range still holds exactly `targetText`, the stored anchor
+ *    IS the truth — keep it untouched. This is what lets a blockId-less
+ *    anchor whose target text also occurs earlier in the document stay at its
+ *    correct occurrence instead of silently relocating to the first match.
+ * 2. Only on mismatch, recover: block-scoped match when the edit knows its
+ *    blockId (disambiguating repeated phrases), else whole-doc fingerprint.
+ * 3. DROP edits whose target text no longer resolves anywhere (a stale anchor
+ *    decorating the wrong text is worse than no decoration).
+ * Insertions (empty targetText) can't be fingerprinted and pass through with
+ * their stored positions unvalidated — known limitation (they also render no
+ * decoration, since from === to).
  */
-export function setProposedEdits(view: EditorView, edits: ProposedEdit[]) {
+export function setProposedEdits(view: EditorView, edits: ProposedEdit[], heldIds?: string[]) {
   const doc = view.state.doc
   const reanchored: ProposedEdit[] = []
   let dropped = 0
   for (const e of edits) {
     if (!e.targetText) {
       reanchored.push(e)
+      continue
+    }
+    const safeFrom = Math.max(0, Math.min(e.from, doc.content.size))
+    const safeTo = Math.max(0, Math.min(e.to, doc.content.size))
+    if (safeFrom <= safeTo && doc.textBetween(safeFrom, safeTo) === e.targetText) {
+      reanchored.push(
+        safeFrom === e.from && safeTo === e.to ? e : { ...e, from: safeFrom, to: safeTo },
+      )
       continue
     }
     const range =
@@ -230,9 +276,7 @@ export function setProposedEdits(view: EditorView, edits: ProposedEdit[]) {
       dropped++
       continue
     }
-    reanchored.push(
-      range.from === e.from && range.to === e.to ? e : { ...e, from: range.from, to: range.to },
-    )
+    reanchored.push({ ...e, from: range.from, to: range.to })
   }
   if (dropped > 0) {
     console.warn(
@@ -243,6 +287,22 @@ export function setProposedEdits(view: EditorView, edits: ProposedEdit[]) {
     view.state.tr.setMeta(proposedChangePluginKey, {
       action: 'setEdits',
       edits: reanchored,
+      heldIds,
+    } as ProposedChangeMeta),
+  )
+}
+
+/**
+ * Flip held anchors to revealed WITHOUT touching their review statuses —
+ * reveal is a pure visibility change, so accept/reject decisions in progress
+ * are preserved by construction.
+ */
+export function revealProposedEdits(view: EditorView, ids: string[]) {
+  if (ids.length === 0) return
+  view.dispatch(
+    view.state.tr.setMeta(proposedChangePluginKey, {
+      action: 'revealEdits',
+      ids,
     } as ProposedChangeMeta),
   )
 }

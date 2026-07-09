@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
 import { schema } from '@/lib/prosemirror/schema'
-import { getDocGraph, invalidateDocGraphCache } from '@/lib/graphrag/docGraph'
+import { buildDeterministicGraph, getDocGraph, invalidateDocGraphCache } from '@/lib/graphrag/docGraph'
 import { useDocGraphStore } from '@/stores/docGraphStore'
 import type { LLMConfig } from '@/stores/settingsStore'
 
@@ -28,7 +28,7 @@ async function waitForStatus(status: string, timeoutMs = 1000): Promise<void> {
 
 beforeEach(() => {
   invalidateDocGraphCache()
-  useDocGraphStore.setState({ graph: null, status: 'idle' })
+  useDocGraphStore.setState({ graph: null, status: 'idle', lastSeq: 0 })
 })
 
 describe('docGraphStore publication (browser only)', () => {
@@ -47,5 +47,29 @@ describe('docGraphStore publication (browser only)', () => {
     expect(again).toBe(graph)
     await waitForStatus('ready')
     expect(useDocGraphStore.getState().graph).toBe(graph)
+  })
+
+  it('ignores stale-seq publishes (compare-and-set — chip churn/race fix)', () => {
+    const fresh = buildDeterministicGraph(doc())
+    const store = useDocGraphStore.getState()
+
+    store.publish(2, 'ready', fresh)
+    // A slower, OLDER build finishing late must not churn the chip back to
+    // 'building' or overwrite the fresher graph.
+    store.publish(1, 'building')
+    store.publish(1, 'ready', buildDeterministicGraph(doc()))
+
+    expect(useDocGraphStore.getState().status).toBe('ready')
+    expect(useDocGraphStore.getState().graph).toBe(fresh)
+    expect(useDocGraphStore.getState().lastSeq).toBe(2)
+  })
+
+  it('equal-seq publishes apply (a build finishes with the seq of its own "building")', () => {
+    const store = useDocGraphStore.getState()
+    store.publish(3, 'building')
+    const g = buildDeterministicGraph(doc())
+    store.publish(3, 'ready', g)
+    expect(useDocGraphStore.getState().status).toBe('ready')
+    expect(useDocGraphStore.getState().graph).toBe(g)
   })
 })

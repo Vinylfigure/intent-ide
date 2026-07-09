@@ -1,3 +1,5 @@
+import { addEstimate } from './spendEstimate'
+
 export type LLMProvider = 'claude' | 'openai' | 'ollama'
 
 export interface LLMConfig {
@@ -30,6 +32,9 @@ export async function callLLM(
   config: LLMConfig,
   options: LLMRequestOptions = {},
 ): Promise<string> {
+  const body = JSON.stringify({ messages, ...options })
+  // Soft spend indicator (display only) — resolve/classify traffic counts too.
+  addEstimate(body.length)
   const response = await fetch('/api/resolve', {
     method: 'POST',
     headers: {
@@ -39,7 +44,7 @@ export async function callLLM(
       'x-model': config.model,
       ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
     },
-    body: JSON.stringify({ messages, ...options }),
+    body,
   })
 
   if (!response.ok) {
@@ -73,6 +78,8 @@ export async function callLLMWithLogprobs(
   config: LLMConfig,
   options: Omit<LLMRequestOptions, 'stream'> = {},
 ): Promise<LLMResponse> {
+  const body = JSON.stringify({ messages, ...options, logprobs: true })
+  addEstimate(body.length)
   const response = await fetch('/api/resolve', {
     method: 'POST',
     headers: {
@@ -82,7 +89,7 @@ export async function callLLMWithLogprobs(
       'x-model': config.model,
       ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
     },
-    body: JSON.stringify({ messages, ...options, logprobs: true }),
+    body,
   })
 
   if (!response.ok) {
@@ -102,6 +109,8 @@ export async function* streamLLM(
   config: LLMConfig,
   options: LLMRequestOptions = {},
 ): AsyncGenerator<string> {
+  const body = JSON.stringify({ messages, ...options, stream: true })
+  addEstimate(body.length)
   const response = await fetch('/api/resolve', {
     method: 'POST',
     headers: {
@@ -111,7 +120,7 @@ export async function* streamLLM(
       'x-model': config.model,
       ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
     },
-    body: JSON.stringify({ messages, ...options, stream: true }),
+    body,
   })
 
   if (!response.ok) {

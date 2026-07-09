@@ -601,18 +601,25 @@ function expandOneHop(
 }
 
 /**
+ * Monotonic publish sequence — every getDocGraph invocation allocates one seq
+ * and stamps BOTH of its publishes ('building' and the final 'ready') with it.
+ * The store compare-and-sets on the seq, so a slow older build finishing after
+ * a newer publish can neither churn the chip back to 'building' nor overwrite
+ * a fresher graph with a stale one.
+ */
+let publishSeq = 0
+
+/**
  * Publish build lifecycle to the UI store (StatusBar chip, edge-path
  * affordances). Browser-only via lazy import — node tests and server code
  * never touch the store (same precedent as scheduleDocGraphRebuild's lazy
  * settings-store import). Failures are swallowed: publishing is cosmetic.
  */
-function publishDocGraph(status: 'building' | 'ready', graph?: DocGraph): void {
+function publishDocGraph(seq: number, status: 'building' | 'ready', graph?: DocGraph): void {
   if (typeof window === 'undefined') return
   void import('@/stores/docGraphStore')
     .then(({ useDocGraphStore }) => {
-      const store = useDocGraphStore.getState()
-      if (graph) store.setGraph(graph)
-      store.setStatus(status)
+      useDocGraphStore.getState().publish(seq, status, graph)
     })
     .catch(() => {})
 }
@@ -661,14 +668,16 @@ export async function getDocGraph(
     (cached.embeddingsApplied || !embeddingsOn)
   ) {
     // Cache hits publish too — a fresh page with a warm cache still needs the
-    // UI store filled before the chip / edge paths can render.
-    publishDocGraph('ready', cached)
+    // UI store filled before the chip / edge paths can render. Synchronous
+    // resolution: publish 'ready' directly, never a 'building' flicker.
+    publishDocGraph(++publishSeq, 'ready', cached)
     return cached
   }
   const pending = inflight.get(hash)
   if (pending) return pending
 
-  publishDocGraph('building')
+  const seq = ++publishSeq
+  publishDocGraph(seq, 'building')
   const promise = (async () => {
     const graph = cached ?? buildDeterministicGraph(doc)
     if (!deps.skipLlm && !graph.llmApplied) {
@@ -686,7 +695,7 @@ export async function getDocGraph(
       await augmentWithEmbeddingEdges(graph, config, deps.embed)
     }
     cacheGraph(hash, graph)
-    publishDocGraph('ready', graph)
+    publishDocGraph(seq, 'ready', graph)
     return graph
   })().finally(() => inflight.delete(hash))
 

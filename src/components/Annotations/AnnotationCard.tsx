@@ -4,9 +4,14 @@ import { useState, useCallback, useEffect } from 'react'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { TextSelection } from 'prosemirror-state'
-import { setProposedEdits, clearProposedEdits } from '@/lib/prosemirror/plugins/proposedChangePlugin'
+import {
+  setProposedEdits,
+  clearProposedEdits,
+  revealProposedEdits,
+  getProposedAnchors,
+} from '@/lib/prosemirror/plugins/proposedChangePlugin'
 import { readLinePluginKey } from '@/lib/prosemirror/plugins/readLinePlugin'
-import { partitionCascadeReveal, cascadeBreakpointPos } from '@/lib/annotations/cascadeReveal'
+import { partitionCascadeReveal, cascadeBreakpointPos, pollCascadeReveal } from '@/lib/annotations/cascadeReveal'
 import { ResolutionActions } from './ResolutionActions'
 import { CascadeList } from './CascadeList'
 import { ConversationThread } from './ConversationThread'
@@ -61,14 +66,17 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
   // "call out" those regions in the editor; clear them once it deactivates or the
   // edits are applied/dismissed (status leaves 'resolved'). Only the active card
   // touches decorations, so inactive cards never dispatch.
-  // Flow-state buffering (PRD): the primary edit and any cascade in the
-  // already-read region reveal immediately; cascades BELOW the read-line are
-  // held until the read-line high-water mark crosses the end of the primary
-  // edit's block (a coarse breakpoint). The read-line only advances via
-  // editor transactions, so a light poll of the plugin state is the simplest
-  // robust observer (no plugin-view registration, no extra store). A
-  // highWaterMark of 0 — no reading tracked yet — reveals everything
-  // immediately (see partitionCascadeReveal).
+  // Flow-state buffering (PRD, reveal-flag design): the plugin ALWAYS receives
+  // the FULL edit set so every edit has a live apply-time anchor from the first
+  // dispatch; cascades BELOW the read-line are stored revealed:false (no
+  // decoration yet) and flipped visible — statuses untouched — once the
+  // read-line high-water mark crosses the end of the primary edit's block (a
+  // coarse breakpoint). The read-line only advances via editor transactions,
+  // so a light poll of the plugin state is the simplest robust observer (no
+  // plugin-view registration, no extra store). Each poll tick reads LIVE
+  // mapped anchors (pollCascadeReveal) so typing during the hold shifts the
+  // partition and the breakpoint correctly. A highWaterMark of 0 — no reading
+  // tracked yet — reveals everything immediately (see partitionCascadeReveal).
   const reviewEdits = annotation.resolution?.edits
   useEffect(() => {
     if (!view || !isActive) return
@@ -76,15 +84,17 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
       const primary = reviewEdits.find((e) => e.relation === 'primary')
       const breakpoint = cascadeBreakpointPos(view.state.doc, primary)
       const highWaterMark = readLinePluginKey.getState(view.state)?.highWaterMark ?? 0
-      const { reveal, held } = partitionCascadeReveal(reviewEdits, highWaterMark, breakpoint)
-      setProposedEdits(view, reveal)
+      const { held } = partitionCascadeReveal(reviewEdits, highWaterMark, breakpoint)
+      setProposedEdits(view, reviewEdits, held.map((e) => e.id))
       if (held.length > 0) {
         const timer = setInterval(() => {
-          const mark = readLinePluginKey.getState(view.state)?.highWaterMark ?? 0
-          if (mark >= breakpoint) {
-            clearInterval(timer)
-            setProposedEdits(view, reviewEdits)
+          const ids = pollCascadeReveal(view.state)
+          if (ids.length > 0) revealProposedEdits(view, ids)
+          let anyHeld = false
+          for (const a of getProposedAnchors(view.state).values()) {
+            if (!a.revealed) { anyHeld = true; break }
           }
+          if (!anyHeld) clearInterval(timer)
         }, 500)
         return () => {
           clearInterval(timer)
