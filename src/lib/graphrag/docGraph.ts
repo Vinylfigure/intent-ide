@@ -122,7 +122,7 @@ function extractDefinedTerms(node: PMNode): string[] {
 }
 
 /** Word-boundary, case-insensitive containment (mirrors cascadeCheck's matcher). */
-function containsTerm(text: string, term: string): boolean {
+export function containsTerm(text: string, term: string): boolean {
   const lowerText = text.toLowerCase()
   const lowerTerm = term.toLowerCase()
   let start = 0

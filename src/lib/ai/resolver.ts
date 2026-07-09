@@ -9,6 +9,7 @@ import { getBlockText, getSectionText } from '@/lib/prosemirror/helpers'
 import { runMADS } from './mads'
 import { logResolutionAudit } from '@/lib/audit/auditLogger'
 import { primaryProposedEdit, proposeCascadeEdits } from './orchestrator'
+import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { getDefaultVerbosity } from '@/lib/annotations/types'
 import type { Annotation, ConversationMessage, Resolution, ResolutionAction, SuggestedEdit, Scope, Verbosity } from '@/lib/annotations/types'
 import { generateId } from '@/lib/utils/id'
@@ -119,16 +120,13 @@ async function attachCascadeEdits(
   anchorText: string,
 ): Promise<void> {
   if (!resolution.suggestedEdit) return
-  const primary = primaryProposedEdit(resolution.suggestedEdit, anchorText)
-  const docText = editorState.doc
-    .textBetween(0, editorState.doc.content.size, '\n')
-    .slice(0, 6000)
-  const cascades = await proposeCascadeEdits(
-    editorState,
-    resolution.suggestedEdit,
-    docText,
-    config,
-  )
+  const primaryBlockId =
+    blockIdAtPos(editorState.doc, resolution.suggestedEdit.from) ?? undefined
+  const primary = primaryProposedEdit(resolution.suggestedEdit, anchorText, primaryBlockId)
+  // Graph-scoped: the dependency graph bounds what the model sees, so the old
+  // whole-doc-truncated-to-6000-chars payload (which silently hid everything
+  // past ~page 4) is gone. Long documents now cascade end to end.
+  const cascades = await proposeCascadeEdits(editorState, resolution.suggestedEdit, config)
   resolution.edits = [primary, ...cascades]
 }
 
