@@ -307,13 +307,28 @@ export async function proposeCascadeEdits(
 
   // Re-resolve every candidate against the LIVE doc; graph positions are
   // build-time snapshots and are never trusted for content.
-  const candidates: Array<{ blockId: string; hop: number; pos: number; text: string }> = []
-  for (const [blockId, hop] of neighborhood) {
+  const candidates: Array<{
+    blockId: string
+    hop: number
+    sourceRank: number
+    pos: number
+    text: string
+  }> = []
+  for (const [blockId, { hop, sourceRank }] of neighborhood) {
     const live = findBlockById(doc, blockId)
     if (!live) continue // block vanished since graph build
-    candidates.push({ blockId, hop, pos: live.pos, text: live.node.textContent })
+    candidates.push({ blockId, hop, sourceRank, pos: live.pos, text: live.node.textContent })
   }
-  candidates.sort((a, b) => a.hop - b.hop || a.pos - b.pos)
+  // Source-aware ordering: at the same hop, blocks connected via
+  // higher-precision edges (deterministic/llm/embedding) outrank graphiti
+  // co-mentions, so the maxBlocks slice sheds low-precision candidates first.
+  candidates.sort((a, b) => a.hop - b.hop || a.sourceRank - b.sourceRank || a.pos - b.pos)
+  if (candidates.length > maxBlocks) {
+    // Never a silent truncation — counts only, no document text.
+    console.warn(
+      `cascade: neighborhood truncated — sending ${maxBlocks} of ${candidates.length} candidate blocks`,
+    )
+  }
   const sent = candidates.slice(0, maxBlocks)
   const sentIds = new Set(sent.map((c) => c.blockId))
 

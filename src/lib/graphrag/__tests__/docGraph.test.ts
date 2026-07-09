@@ -12,6 +12,7 @@ import {
   formatEdgePath,
   contentHash,
   invalidateDocGraphCache,
+  SOURCE_PRIORITY,
   type DocGraphEdge,
 } from '../docGraph'
 
@@ -157,12 +158,12 @@ describe('getNeighborhood', () => {
       ),
     )
     const twoHops = getNeighborhood(graph, 'a', 2)
-    expect(twoHops.get('a')).toBe(0)
-    expect(twoHops.get('b')).toBe(1)
-    expect(twoHops.get('c')).toBe(2)
+    expect(twoHops.get('a')).toEqual({ hop: 0, sourceRank: 0 })
+    expect(twoHops.get('b')?.hop).toBe(1)
+    expect(twoHops.get('c')?.hop).toBe(2)
     expect(twoHops.has('d')).toBe(false)
     const threeHops = getNeighborhood(graph, 'a', 3)
-    expect(threeHops.get('d')).toBe(3)
+    expect(threeHops.get('d')?.hop).toBe(3)
   })
 
   it('returns empty map for unknown block', () => {
@@ -176,8 +177,30 @@ describe('getNeighborhood', () => {
     )
     // Sanity: a and b really are connected.
     expect(getNeighborhood(graph, 'b', 1).has('a')).toBe(true)
-    expect([...getNeighborhood(graph, 'b', 0).entries()]).toEqual([['b', 0]])
-    expect([...getNeighborhood(graph, 'b', -1).entries()]).toEqual([['b', 0]])
+    expect([...getNeighborhood(graph, 'b', 0).entries()]).toEqual([
+      ['b', { hop: 0, sourceRank: 0 }],
+    ])
+    expect([...getNeighborhood(graph, 'b', -1).entries()]).toEqual([
+      ['b', { hop: 0, sourceRank: 0 }],
+    ])
+  })
+
+  it('sourceRank is the best (lowest) SOURCE_PRIORITY among edges reaching a block at its discovery hop', () => {
+    const graph = buildDeterministicGraph(docOf(p('a', 'x'), p('b', 'y'), p('c', 'z')))
+    // a—b via graphiti only; a—c via BOTH graphiti and deterministic.
+    const abGraphiti: DocGraphEdge = { from: 'a', to: 'b', type: 'references', source: 'graphiti' }
+    const acGraphiti: DocGraphEdge = { from: 'a', to: 'c', type: 'references', source: 'graphiti' }
+    const acDet: DocGraphEdge = { from: 'c', to: 'a', type: 'references', source: 'deterministic' }
+    graph.edges.push(abGraphiti, acGraphiti, acDet)
+    graph.adjacency.set('a', [abGraphiti, acGraphiti, acDet])
+    graph.adjacency.set('b', [abGraphiti])
+    graph.adjacency.set('c', [acGraphiti, acDet])
+
+    const hood = getNeighborhood(graph, 'a', 1)
+    expect(hood.get('b')).toEqual({ hop: 1, sourceRank: SOURCE_PRIORITY.graphiti })
+    // c was ALSO reached via graphiti first, but the deterministic edge at the
+    // same discovery hop wins the rank.
+    expect(hood.get('c')).toEqual({ hop: 1, sourceRank: SOURCE_PRIORITY.deterministic })
   })
 })
 
@@ -637,6 +660,24 @@ describe('findEdgePath', () => {
     expect(findEdgePath(graph, 'missing', 'a')).toBeNull()
     expect(findEdgePath(graph, 'a', 'b')).toBeNull()
     expect(findEdgePath(graph, 'a', 'a')).toEqual([])
+  })
+
+  it('prefers non-graphiti evidence on an equal-length path (SOURCE_PRIORITY walk order)', () => {
+    const graph = buildDeterministicGraph(docOf(p('a', 'x'), p('b', 'y')))
+    // Parallel a↔b edges: graphiti listed FIRST in adjacency, deterministic second.
+    const graphitiEdge: DocGraphEdge = {
+      from: 'a', to: 'b', type: 'references', source: 'graphiti', evidence: 'Co-Mention',
+    }
+    const detEdge: DocGraphEdge = {
+      from: 'b', to: 'a', type: 'references', source: 'deterministic', evidence: 'Total Budget',
+    }
+    graph.edges.push(graphitiEdge, detEdge)
+    graph.adjacency.set('a', [graphitiEdge, detEdge])
+    graph.adjacency.set('b', [graphitiEdge, detEdge])
+
+    // Both directions surface the higher-precision deterministic edge.
+    expect(findEdgePath(graph, 'a', 'b')).toEqual([detEdge])
+    expect(findEdgePath(graph, 'b', 'a')).toEqual([detEdge])
   })
 })
 

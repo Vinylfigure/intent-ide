@@ -10,6 +10,7 @@ import {
 } from '@/lib/prosemirror/plugins/proposedChangePlugin'
 import { useDocGraphStore } from '@/stores/docGraphStore'
 import { findEdgePath, formatEdgePath } from '@/lib/graphrag/docGraph'
+import { recordCascadeStatusChange } from '@/lib/telemetry/cascadeCalibration'
 import { SEVERITY_LABELS } from '@/lib/annotations/types'
 
 interface ControlPosition {
@@ -91,6 +92,10 @@ export function ProposedEditControl() {
 
   const handleAccept = useCallback(() => {
     if (!view || !activeId) return
+    // Calibration telemetry (metadata only, status-change guarded) — read the
+    // CURRENT anchor status before dispatching the change.
+    const current = getProposedAnchors(view.state).get(activeId)
+    if (current) recordCascadeStatusChange(current, 'accepted', 'inline')
     // Status-only: never mutates the document. Batched apply does that.
     setProposedEditStatus(view, activeId, 'accepted')
     useProposedEditUiStore.getState().clear()
@@ -98,6 +103,8 @@ export function ProposedEditControl() {
 
   const handleReject = useCallback(() => {
     if (!view || !activeId) return
+    const current = getProposedAnchors(view.state).get(activeId)
+    if (current) recordCascadeStatusChange(current, 'rejected', 'inline')
     setProposedEditStatus(view, activeId, 'rejected')
     useProposedEditUiStore.getState().clear()
   }, [view, activeId])

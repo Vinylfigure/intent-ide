@@ -10,6 +10,7 @@ import {
 } from '@/stores/settingsStore'
 import { modelRejectsSampling } from '@/lib/ai/modelCapabilities'
 import { getSessionEstimate } from '@/lib/ai/spendEstimate'
+import { useCascadeCalibrationStore } from '@/stores/cascadeCalibrationStore'
 
 export function ApiKeyModal() {
   const llmConfig = useSettingsStore((s) => s.llmConfig)
@@ -21,6 +22,24 @@ export function ApiKeyModal() {
   const setJudgeEnabled = useSettingsStore((s) => s.setJudgeEnabled)
   const embeddingsEnabled = useSettingsStore((s) => s.embeddingsEnabled)
   const setEmbeddingsEnabled = useSettingsStore((s) => s.setEmbeddingsEnabled)
+  const telemetryEnabled = useSettingsStore((s) => s.telemetryEnabled)
+  const setTelemetryEnabled = useSettingsStore((s) => s.setTelemetryEnabled)
+  const calibrationCounts = useCascadeCalibrationStore((s) => s.counts)
+  const resetCalibration = useCascadeCalibrationStore((s) => s.reset)
+
+  // Local calibration readout: explicit review decisions only (accepted vs
+  // accepted + rejected) — 'applied' is a downstream consequence, not a
+  // per-proposal verdict.
+  const calibrationRatio = (severity: 'must' | 'probably' | 'optional') => {
+    const row = calibrationCounts[severity]
+    return { accepted: row.accepted, total: row.accepted + row.rejected }
+  }
+  const mustRatio = calibrationRatio('must')
+  const likelyRatio = calibrationRatio('probably')
+  const optionalRatio = calibrationRatio('optional')
+  // Hint only once there is a real sample — a single early rejection out of
+  // one or two decisions is noise, not miscalibration.
+  const mustMiscalibrated = mustRatio.total >= 5 && mustRatio.accepted / mustRatio.total < 0.7
 
   const [provider, setProvider] = useState<LLMProvider>(llmConfig.provider)
   const [apiKey, setApiKey] = useState(llmConfig.apiKey)
@@ -228,6 +247,47 @@ export function ApiKeyModal() {
                 placeholder="Default: text-embedding-3-small (OpenAI) / nomic-embed-text (Ollama)"
                 className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
               />
+            </div>
+
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={telemetryEnabled}
+                onChange={(e) => setTelemetryEnabled(e.target.checked)}
+                className="mt-0.5 accent-ink"
+              />
+              <span className="text-sm text-ink leading-snug">
+                Share anonymous review stats (no document content)
+                <span className="block text-xs text-muted">
+                  Sends only severity and accept/reject counts for cascade proposals —
+                  never document text or identifiers. Off by default. If you connect an
+                  analytics client, its standard metadata applies.
+                </span>
+              </span>
+            </label>
+
+            {/* Local severity-calibration readout — always local, never sent. */}
+            <div className="rounded-lg border border-border bg-warm/40 px-3 py-2 space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-mono text-muted">
+                  Must accepted: {mustRatio.accepted}/{mustRatio.total}
+                  {' '}&middot; Likely: {likelyRatio.accepted}/{likelyRatio.total}
+                  {' '}&middot; Optional: {optionalRatio.accepted}/{optionalRatio.total}
+                </p>
+                <button
+                  onClick={resetCalibration}
+                  className="text-xs text-muted hover:text-ink underline underline-offset-2 shrink-0"
+                  title="Reset the local cascade review statistics"
+                >
+                  Reset
+                </button>
+              </div>
+              {mustMiscalibrated && (
+                <p className="text-xs text-annotation-correction">
+                  Verification may be miscalibrated &mdash; you reject most
+                  &ldquo;must change&rdquo; proposals.
+                </p>
+              )}
             </div>
 
             <p className="text-xs text-muted leading-relaxed">

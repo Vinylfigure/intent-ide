@@ -5,6 +5,12 @@ import type { CascadeEdgeType } from '@/lib/annotations/types'
 import { collectTextblocks } from '@/lib/prosemirror/blockIds'
 import { fetchStructured, type CallStructuredFn } from '@/lib/ai/structuredClient'
 import { augmentWithEmbeddingEdges, type EmbedFn } from './embedEdges'
+import {
+  searchNodes as graphitiSearchNodes,
+  getSubgraph as graphitiGetSubgraph,
+  type GraphNode as GraphitiNode,
+  type SubgraphResult as GraphitiSubgraph,
+} from '@/lib/mcp/graphitiClient'
 
 /**
  * Document dependency graph — the retrieval index the cascade queries instead
@@ -31,6 +37,18 @@ export interface DocGraphNode {
 }
 
 export type DocGraphEdgeSource = 'deterministic' | 'llm' | 'embedding' | 'graphiti'
+
+/**
+ * Precision ranking of edge sources — lower is higher-precision. Used to
+ * stable-sort adjacency walks (findEdgePath evidence selection) and to rank
+ * cascade candidates discovered at the same hop (orchestrator ordering).
+ */
+export const SOURCE_PRIORITY: Record<DocGraphEdgeSource, number> = {
+  deterministic: 0,
+  llm: 1,
+  embedding: 2,
+  graphiti: 3,
+}
 
 export interface DocGraphEdge {
   from: string
@@ -62,6 +80,16 @@ export interface DocGraph {
    * — mirror of llmPartial. Never a silent truncation: setting this warns.
    */
   embeddingsPartial: boolean
+  /**
+   * True once the Graphiti entity pass ran to completion. Stays false on any
+   * MCP failure/timeout (FalkorDB is usually down in dev) — the pass is
+   * best-effort, but a cached fully-built graph is never invalidated just
+   * because Graphiti was unreachable. Note the retry boundary: a warm-cache
+   * rebuild of the SAME content hash short-circuits before the Graphiti pass,
+   * so a failed pass is only retried when the content hash changes (a new
+   * build) — never on warm-cache hits.
+   */
+  graphitiApplied: boolean
   /** Per-textblock FNV-1a over blockId + text — the incremental-diff unit. */
   blockHashes: Map<string, string>
   nodes: Map<string, DocGraphNode>
@@ -317,6 +345,7 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
     llmPartial: false,
     embeddingsApplied: false,
     embeddingsPartial: false,
+    graphitiApplied: false,
     blockHashes,
     nodes,
     edges,
@@ -507,6 +536,176 @@ function mergeLlmToolCalls(
   graph.adjacency = buildAdjacency(graph.edges)
 }
 
+// --- Graphiti entity pass -----------------------------------------------------
+
+// Same call shape as the old read-only cascade lane (searchNodes → top-3
+// subgraphs), but the results become GRAPH EDGES the one cascade surface
+// consumes — not a parallel decoration surface. Tight caps on purpose: the
+// old lane's known failure mode was a false-positive firehose from generic
+// entity names matched all over the document.
+const GRAPHITI_TIMEOUT_MS = 1500
+const GRAPHITI_QUERY_MAX_CHARS = 200
+const GRAPHITI_SEARCH_LIMIT = 5
+const GRAPHITI_SUBGRAPH_CAP = 3
+const GRAPHITI_MAX_BLOCKS_PER_ENTITY = 10
+const GRAPHITI_MIN_ENTITY_LENGTH = 4
+// Right-axis bounds: caps per-ENTITY above bound the left axis (blocks per
+// entity), these bound how many entities and how many total edges one build
+// may ever produce — a chatty knowledge graph cannot firehose the doc graph.
+const GRAPHITI_MAX_ENTITIES_PER_BUILD = 12
+const GRAPHITI_MAX_EDGES_PER_BUILD = 120
+
+export interface GraphitiEdgeDeps {
+  searchNodes?: (query: string, limit?: number, signal?: AbortSignal) => Promise<GraphitiNode[]>
+  getSubgraph?: (nodeId: string, radius?: number, signal?: AbortSignal) => Promise<GraphitiSubgraph>
+  timeoutMs?: number
+}
+
+/**
+ * Run abortable work against a deadline. The deadline both rejects the race
+ * AND aborts the signal handed to `work`, so in-flight fetches are cancelled
+ * and any sequential follow-up calls stop — no zombie MCP conversation
+ * outliving the race. The timer never outlives the race.
+ */
+async function withDeadline<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+): Promise<T> {
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(new Error('graphiti timeout'))
+      reject(new Error('graphiti timeout'))
+    }, ms)
+  })
+  try {
+    return await Promise.race([work(controller.signal), deadline])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Third edge source: knowledge-graph entities from the Graphiti MCP server.
+ * Searches the graph for entities related to this document, then links every
+ * pair of blocks that BOTH mention an entity name (word-boundary match via
+ * containsTerm) with a `references`/`graphiti` edge carrying the entity name
+ * as evidence.
+ *
+ * Guardrails (the old read-only lane's false-positive lessons):
+ * - entities shorter than GRAPHITI_MIN_ENTITY_LENGTH chars or matching the
+ *   term stopwords are skipped entirely;
+ * - at most GRAPHITI_MAX_ENTITIES_PER_BUILD valid entities are processed per
+ *   build (first-appearance order); hitting the cap logs a count-only warn;
+ * - an entity mentioned in more than GRAPHITI_MAX_BLOCKS_PER_ENTITY blocks is
+ *   capped to its first N blocks in document order (no pairwise firehose);
+ * - at most GRAPHITI_MAX_EDGES_PER_BUILD graphiti edges are added per build;
+ *   hitting the cap logs a count-only warn;
+ * - entities found in fewer than 2 distinct blocks produce nothing;
+ * - dedupe is direction-agnostic: a graphiti pair whose reverse orientation
+ *   already exists as a deterministic/llm 'references' edge adds nothing.
+ *
+ * Strictly best-effort and non-blocking: the whole MCP conversation races a
+ * GRAPHITI_TIMEOUT_MS deadline that also ABORTS the in-flight MCP calls (the
+ * AbortSignal is threaded through searchNodes/getSubgraph, and the sequential
+ * subgraph loop stops between calls once aborted), and ANY failure (FalkorDB
+ * down — the usual dev state) returns silently having changed nothing.
+ */
+export async function augmentWithGraphitiEdges(
+  graph: DocGraph,
+  deps: GraphitiEdgeDeps = {},
+): Promise<void> {
+  if (graph.graphitiApplied) return
+  if (graph.nodes.size < 2) {
+    graph.graphitiApplied = true
+    return
+  }
+  const search = deps.searchNodes ?? graphitiSearchNodes
+  const subgraph = deps.getSubgraph ?? graphitiGetSubgraph
+  const timeoutMs = deps.timeoutMs ?? GRAPHITI_TIMEOUT_MS
+
+  try {
+    const entityNames = await withDeadline(
+      async (signal) => {
+        const ordered = [...graph.nodes.values()].sort((a, b) => a.pos - b.pos)
+        const query = ordered
+          .map((n) => n.text)
+          .join(' ')
+          .slice(0, GRAPHITI_QUERY_MAX_CHARS)
+        const matching = await search(query, GRAPHITI_SEARCH_LIMIT, signal)
+        const names = new Set<string>()
+        for (const node of matching.slice(0, GRAPHITI_SUBGRAPH_CAP)) {
+          // The deadline may already have fired — never start a zombie call.
+          if (signal.aborted) throw new Error('graphiti timeout')
+          names.add(node.name)
+          const sub = await subgraph(node.uuid, 2, signal)
+          for (const gn of sub.nodes) names.add(gn.name)
+        }
+        return names
+      },
+      timeoutMs,
+    )
+
+    const ordered = [...graph.nodes.values()].sort((a, b) => a.pos - b.pos)
+    const edgeKeys = new Set(graph.edges.map((e) => `${e.from} ${e.to} ${e.type}`))
+    let added = false
+    let processedEntities = 0
+    let addedEdges = 0
+    let entityCapHit = false
+    let edgeCapHit = false
+    for (const rawName of entityNames) {
+      const name = rawName?.trim()
+      if (!name || name.length < GRAPHITI_MIN_ENTITY_LENGTH) continue
+      if (TERM_STOPWORDS.has(name.toLowerCase())) continue
+      if (processedEntities >= GRAPHITI_MAX_ENTITIES_PER_BUILD) {
+        entityCapHit = true
+        break
+      }
+      processedEntities++
+      const containing = ordered
+        .filter((n) => containsTerm(n.text, name))
+        .slice(0, GRAPHITI_MAX_BLOCKS_PER_ENTITY)
+      if (containing.length < 2) continue
+      outer: for (let i = 0; i < containing.length; i++) {
+        for (let j = i + 1; j < containing.length; j++) {
+          const from = containing[i].blockId
+          const to = containing[j].blockId
+          // Direction-normalized dedupe: check BOTH orientations so a graphiti
+          // pair can never shadow-duplicate a reversed deterministic term edge.
+          const key = `${from} ${to} references`
+          const reverseKey = `${to} ${from} references`
+          if (edgeKeys.has(key) || edgeKeys.has(reverseKey)) continue
+          if (addedEdges >= GRAPHITI_MAX_EDGES_PER_BUILD) {
+            edgeCapHit = true
+            break outer
+          }
+          edgeKeys.add(key)
+          graph.edges.push({ from, to, type: 'references', source: 'graphiti', evidence: name })
+          added = true
+          addedEdges++
+        }
+      }
+      if (edgeCapHit) break
+    }
+    if (entityCapHit) {
+      console.warn(
+        `docGraph: graphiti entity cap hit — processed ${GRAPHITI_MAX_ENTITIES_PER_BUILD} entities, remainder skipped`,
+      )
+    }
+    if (edgeCapHit) {
+      console.warn(
+        `docGraph: graphiti edge cap hit — added ${GRAPHITI_MAX_EDGES_PER_BUILD} edges, remainder skipped`,
+      )
+    }
+    if (added) graph.adjacency = buildAdjacency(graph.edges)
+    graph.graphitiApplied = true
+  } catch {
+    // MCP unreachable, malformed reply, or deadline hit — the graph is fully
+    // usable without this pass; return silently, never throw, never block.
+  }
+}
+
 // --- Cache + entry points ---------------------------------------------------
 
 const CACHE_MAX = 8
@@ -654,6 +853,10 @@ export async function getDocGraph(
     embed?: EmbedFn
     /** Test/caller override for the settings-store embeddings toggle. */
     embeddingsEnabled?: boolean
+    /** Skip the Graphiti entity pass (background rebuilds — user-initiated only). */
+    skipGraphiti?: boolean
+    /** Injectable Graphiti MCP client (tests: scripted searchNodes/getSubgraph). */
+    graphiti?: GraphitiEdgeDeps
   } = {},
 ): Promise<DocGraph> {
   const hash = contentHash(doc)
@@ -694,6 +897,14 @@ export async function getDocGraph(
     if (embeddingsOn && !graph.embeddingsApplied) {
       await augmentWithEmbeddingEdges(graph, config, deps.embed)
     }
+    // Graphiti entity edges: user-initiated builds only (same privacy stance
+    // as the LLM/embedding passes — background typing must never trigger MCP
+    // traffic). Deliberately NOT part of the cache-hit condition above: when
+    // FalkorDB is down (the usual dev state) a warm cache must not re-pay the
+    // connection attempt on every cascade.
+    if (!deps.skipGraphiti && !graph.graphitiApplied) {
+      await augmentWithGraphitiEdges(graph, deps.graphiti)
+    }
     cacheGraph(hash, graph)
     publishDocGraph(seq, 'ready', graph)
     return graph
@@ -703,24 +914,42 @@ export async function getDocGraph(
   return promise
 }
 
-/** BFS over the undirected adjacency: blockId → hop distance (0 = the block itself). */
+export interface NeighborhoodEntry {
+  /** BFS hop distance (0 = the block itself). */
+  hop: number
+  /**
+   * Best (lowest) SOURCE_PRIORITY among the edges that connected the block at
+   * its discovery hop — a block reachable through a deterministic edge ranks
+   * ahead of one reachable only through a graphiti co-mention at the same hop.
+   * 0 for the seed block itself.
+   */
+  sourceRank: number
+}
+
+/** BFS over the undirected adjacency: blockId → { hop, sourceRank }. */
 export function getNeighborhood(
   graph: DocGraph,
   blockId: string,
   hops: number,
-): Map<string, number> {
-  const dist = new Map<string, number>()
+): Map<string, NeighborhoodEntry> {
+  const dist = new Map<string, NeighborhoodEntry>()
   if (!graph.nodes.has(blockId)) return dist
-  dist.set(blockId, 0)
+  dist.set(blockId, { hop: 0, sourceRank: 0 })
   let frontier = [blockId]
   for (let hop = 1; hop <= hops && frontier.length; hop++) {
     const next: string[] = []
     for (const id of frontier) {
       for (const edge of graph.adjacency.get(id) ?? []) {
         const neighbor = edge.from === id ? edge.to : edge.from
-        if (!dist.has(neighbor)) {
-          dist.set(neighbor, hop)
+        const rank = SOURCE_PRIORITY[edge.source]
+        const existing = dist.get(neighbor)
+        if (!existing) {
+          dist.set(neighbor, { hop, sourceRank: rank })
           next.push(neighbor)
+        } else if (existing.hop === hop && rank < existing.sourceRank) {
+          // Another edge reaches the same block at its discovery hop with a
+          // higher-precision source — keep the best rank.
+          existing.sourceRank = rank
         }
       }
     }
@@ -733,6 +962,9 @@ export function getNeighborhood(
  * BFS shortest path over the undirected adjacency, as the ordered edge list
  * walked from `fromBlockId` to `toBlockId`. Returns [] when the endpoints are
  * the same block, null when either endpoint is unknown or no path exists.
+ * Each node's edges are walked in SOURCE_PRIORITY order (stable sort), so on
+ * equal-length paths the "why this proposal?" line surfaces the
+ * higher-precision evidence (deterministic/llm/embedding before graphiti).
  * Pure — powers the "why this proposal?" affordance.
  */
 export function findEdgePath(
@@ -743,13 +975,16 @@ export function findEdgePath(
   if (!graph.nodes.has(fromBlockId) || !graph.nodes.has(toBlockId)) return null
   if (fromBlockId === toBlockId) return []
 
+  const bySourcePriority = (edges: DocGraphEdge[]): DocGraphEdge[] =>
+    [...edges].sort((a, b) => SOURCE_PRIORITY[a.source] - SOURCE_PRIORITY[b.source])
+
   const cameFrom = new Map<string, { via: DocGraphEdge; prev: string }>()
   const visited = new Set([fromBlockId])
   let frontier = [fromBlockId]
   while (frontier.length) {
     const next: string[] = []
     for (const id of frontier) {
-      for (const edge of graph.adjacency.get(id) ?? []) {
+      for (const edge of bySourcePriority(graph.adjacency.get(id) ?? [])) {
         const far = edge.from === id ? edge.to : edge.from
         if (visited.has(far)) continue
         visited.add(far)
@@ -798,10 +1033,10 @@ let rebuildTimer: ReturnType<typeof setTimeout> | null = null
 /**
  * Debounced background rebuild, wired into the editor's dispatchTransaction so
  * the cascade usually hits a warm deterministic graph. Deliberately
- * DETERMINISTIC-ONLY (`skipLlm` + `skipEmbeddings`): document text must never
- * leave the machine as a side effect of typing — the LLM extraction and
- * embedding passes run lazily inside the cascade, which the user explicitly
- * initiated. All failures are swallowed.
+ * DETERMINISTIC-ONLY (`skipLlm` + `skipEmbeddings` + `skipGraphiti`): document
+ * text must never leave the machine (or process) as a side effect of typing —
+ * the LLM extraction, embedding, and Graphiti passes run lazily inside the
+ * cascade, which the user explicitly initiated. All failures are swallowed.
  */
 export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void {
   if (rebuildTimer) clearTimeout(rebuildTimer)
@@ -813,6 +1048,7 @@ export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void 
       await getDocGraph(view.state.doc, useSettingsStore.getState().llmConfig, {
         skipLlm: true,
         skipEmbeddings: true,
+        skipGraphiti: true,
       })
     })().catch(() => {})
   }, delayMs)

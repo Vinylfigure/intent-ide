@@ -4,6 +4,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useDocGraphStore } from '@/stores/docGraphStore'
 import { getProposedAnchors, setProposedEditStatus } from '@/lib/prosemirror/plugins/proposedChangePlugin'
 import { findEdgePath, formatEdgePath } from '@/lib/graphrag/docGraph'
+import { recordCascadeStatusChange } from '@/lib/telemetry/cascadeCalibration'
 import type { Annotation, CascadeSeverity, ProposedEdit, ProposedEditStatus } from '@/lib/annotations/types'
 import { SEVERITY_LABELS, SEVERITY_ORDER } from '@/lib/annotations/types'
 
@@ -110,11 +111,25 @@ export function CascadeList({ annotation }: CascadeListProps) {
 
   const setStatus = (edit: ProposedEdit, status: ProposedEditStatus) => {
     if (!view) return
+    if (status === 'accepted' || status === 'rejected') {
+      // Calibration telemetry (metadata only): guard against the CURRENT live
+      // status so a no-op click never double-counts. Record ONLY when the live
+      // plugin anchor exists (matching ProposedEditControl and the modal) —
+      // without an anchor setProposedEditStatus below is a no-op, and counting
+      // a decision that changed nothing would skew calibration.
+      const current = getProposedAnchors(view.state).get(edit.id)
+      if (current) recordCascadeStatusChange(current, status, 'list')
+    }
     setProposedEditStatus(view, edit.id, status)
   }
 
   return (
-    <div className="mt-3 mx-1 p-3 border border-amber-300 bg-amber-50 rounded-xl shadow-sm">
+    <div
+      data-cascade-list={annotation.id}
+      tabIndex={-1}
+      aria-label={`Affected sections for this change (${count})`}
+      className="mt-3 mx-1 p-3 border border-amber-300 bg-amber-50 rounded-xl shadow-sm focus:outline-none"
+    >
       {/* Header */}
       <div className="flex items-start gap-2 mb-2">
         <span className="text-amber-600 text-xs font-bold shrink-0">⤳</span>

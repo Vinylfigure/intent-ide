@@ -1,9 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { EditorState } from 'prosemirror-state'
 import type { Node as PMNode } from 'prosemirror-model'
 import { schema } from '@/lib/prosemirror/schema'
 import { blockTextRange, findBlockById } from '@/lib/prosemirror/blockIds'
-import { buildDeterministicGraph, invalidateDocGraphCache } from '@/lib/graphrag/docGraph'
+import {
+  buildDeterministicGraph,
+  invalidateDocGraphCache,
+  type DocGraph,
+  type DocGraphEdge,
+} from '@/lib/graphrag/docGraph'
 import type { CallStructuredFn, StructuredRequest } from '@/lib/ai/structuredClient'
 import type { LLMConfig } from '@/stores/settingsStore'
 import type { SuggestedEdit } from '@/lib/annotations/types'
@@ -151,6 +156,57 @@ describe('proposeCascadeEdits — scoping', () => {
     expect(prompt).toContain('[b3]')
     expect(edits).toHaveLength(1)
     expect(edits[0].blockId).toBe('b3')
+  })
+
+  it('source-aware ordering: a deterministic-connected block outranks graphiti co-mentions at the same hop and survives the maxBlocks slice (truncation warns)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // Primary b1 defines "Launch Date"; detB (LAST in the doc, so worst doc
+      // position) references it deterministically; g1..g24 are connected to b1
+      // only through graphiti co-mention edges but all sit at earlier positions.
+      const doc = docOf(
+        p('b1', '"Launch Date" means March 1, 2026.'),
+        ...Array.from({ length: 24 }, (_, i) => p(`g${i + 1}`, `Graphiti filler block ${i + 1}.`)),
+        p('detB', 'Everything is due by the Launch Date.'),
+      )
+      const graph: DocGraph = buildDeterministicGraph(doc)
+      const pushEdge = (e: DocGraphEdge) => {
+        graph.edges.push(e)
+        for (const id of [e.from, e.to]) {
+          const list = graph.adjacency.get(id) ?? []
+          list.push(e)
+          graph.adjacency.set(id, list)
+        }
+      }
+      for (let i = 1; i <= 24; i++) {
+        pushEdge({ from: 'b1', to: `g${i}`, type: 'references', source: 'graphiti', evidence: 'x' })
+      }
+      // Sanity: the deterministic defined-term edge detB→b1 exists.
+      expect(
+        graph.edges.some((e) => e.from === 'detB' && e.to === 'b1' && e.source === 'deterministic'),
+      ).toBe(true)
+
+      const state = stateOf(doc)
+      const primary = primaryEditFor(doc, 'b1', 'March 1, 2026', 'June 1, 2026')
+      const captured: StructuredRequest[] = []
+      await proposeCascadeEdits(state, primary, CONFIG, {
+        graph,
+        maxBlocks: 24, // 26 candidates → 2 must be shed
+        callStructured: scripted([], captured),
+      })
+      const prompt = captured[0].messages.map((m) => m.content).join('\n')
+      // (hop, pos) ordering would shed detB (worst position); (hop, sourceRank,
+      // pos) keeps it and sheds the two worst-positioned graphiti co-mentions.
+      expect(prompt).toContain('[detB]')
+      expect(prompt).toContain('[g22]')
+      expect(prompt).not.toContain('[g23]')
+      expect(prompt).not.toContain('[g24]')
+      // The slice is never silent: counts-only truncation warning.
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0][0])).toContain('24 of 26')
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('candidate lines carry (§ heading path) context; blocks outside any heading stay bare', async () => {
