@@ -80,9 +80,9 @@ export function contentHash(doc: PMNode): string {
   }
   for (const b of collectTextblocks(doc)) {
     update(b.blockId ?? '')
-    update('')
+    update('\u0001')
     update(b.node.textContent)
-    update('')
+    update('\u0002')
   }
   return h.toString(36)
 }
@@ -466,26 +466,36 @@ let rebuildTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
  * Debounced background rebuild, wired into the editor's dispatchTransaction so
- * the cascade usually hits a warm cache. Reads the live LLM config at fire
- * time; all failures are swallowed (the cascade degrades gracefully).
+ * the cascade usually hits a warm deterministic graph. Deliberately
+ * DETERMINISTIC-ONLY (`skipLlm`): document text must never leave the machine
+ * as a side effect of typing — the LLM extraction pass runs lazily inside the
+ * cascade, which the user explicitly initiated. All failures are swallowed.
  */
 export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void {
   if (rebuildTimer) clearTimeout(rebuildTimer)
   rebuildTimer = setTimeout(() => {
     rebuildTimer = null
+    if (view.isDestroyed) return
     void (async () => {
       const { useSettingsStore } = await import('@/stores/settingsStore')
-      await getDocGraph(view.state.doc, useSettingsStore.getState().llmConfig)
+      await getDocGraph(view.state.doc, useSettingsStore.getState().llmConfig, {
+        skipLlm: true,
+      })
     })().catch(() => {})
   }, delayMs)
+}
+
+/** Cancel any pending background rebuild (editor unmount). */
+export function cancelScheduledDocGraphRebuild(): void {
+  if (rebuildTimer) {
+    clearTimeout(rebuildTimer)
+    rebuildTimer = null
+  }
 }
 
 /** Test hygiene: clear cache, inflight builds, and any pending rebuild. */
 export function invalidateDocGraphCache(): void {
   graphCache.clear()
   inflight.clear()
-  if (rebuildTimer) {
-    clearTimeout(rebuildTimer)
-    rebuildTimer = null
-  }
+  cancelScheduledDocGraphRebuild()
 }

@@ -9,7 +9,7 @@ import { createPlugins } from '@/lib/prosemirror/plugins'
 import { useEditorStore } from '@/stores/editorStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { setChangeCallback } from '@/lib/prosemirror/plugins/changeTrackingPlugin'
-import { scheduleDocGraphRebuild } from '@/lib/graphrag/docGraph'
+import { scheduleDocGraphRebuild, cancelScheduledDocGraphRebuild } from '@/lib/graphrag/docGraph'
 import { useChangesStore } from '@/stores/changesStore'
 import { ConflictTooltip } from './ConflictTooltip'
 import { UncertaintyTooltip } from './UncertaintyTooltip'
@@ -106,6 +106,7 @@ export function EditorShell() {
           ds.saveDocument(ds.activeDocumentId, view.state.doc.toJSON())
         }
       }
+      cancelScheduledDocGraphRebuild()
       view.destroy()
       viewRef.current = null
       setView(null)
@@ -141,6 +142,10 @@ export function EditorShell() {
           view.state.doc.content.size,
           nextDoc.content
         )
+        // A document SWITCH is not an edit: keeping it out of history stops
+        // Cmd-Z from resurrecting the previous document's content and then
+        // autosaving it under the new document's id.
+        tr.setMeta('addToHistory', false)
         view.dispatch(tr)
       } catch {
         // keep current document if replacement payload is invalid

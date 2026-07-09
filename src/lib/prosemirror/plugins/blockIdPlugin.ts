@@ -35,14 +35,20 @@ export function createBlockIdPlugin(): Plugin {
     },
 
     view(view) {
-      const fixes = computeBlockIdFixes(view.state.doc)
-      if (fixes.length > 0) {
-        const tr = view.state.tr
-        for (const fix of fixes) tr.setNodeMarkup(fix.pos, undefined, fix.attrs)
-        view.dispatch(
-          tr.setMeta(blockIdPluginKey, { stamped: fixes.length }).setMeta('addToHistory', false),
-        )
-      }
+      // Deferred: plugin view hooks run synchronously inside the EditorView
+      // constructor, and host dispatchTransaction closures typically reference
+      // the `view` const being constructed (TDZ crash if we dispatch here).
+      queueMicrotask(() => {
+        if (view.isDestroyed) return
+        const fixes = computeBlockIdFixes(view.state.doc)
+        if (fixes.length > 0) {
+          const tr = view.state.tr
+          for (const fix of fixes) tr.setNodeMarkup(fix.pos, undefined, fix.attrs)
+          view.dispatch(
+            tr.setMeta(blockIdPluginKey, { stamped: fixes.length }).setMeta('addToHistory', false),
+          )
+        }
+      })
       return {}
     },
   })

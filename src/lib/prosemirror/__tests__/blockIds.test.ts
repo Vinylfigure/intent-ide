@@ -148,6 +148,22 @@ describe('blockIdPlugin', () => {
     expect(result.transactions.length).toBe(1)
   })
 
+  it('Enter at block START keeps the identity with the content, not the empty top half', () => {
+    let state = stateWith(docOf(p('hello world', 'orig')), [history(), createBlockIdPlugin()])
+    // Cursor at position 1 = the very start of the paragraph's text.
+    state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, 1)))
+    splitBlock(state, (tr) => {
+      state = state.apply(tr)
+    })
+    const blocks = collectBlocks(state.doc)
+    expect(blocks).toHaveLength(2)
+    expect(blocks[0].node.textContent).toBe('')
+    expect(blocks[1].node.textContent).toBe('hello world')
+    // The non-empty half is the keeper: graph edges citing 'orig' still point at text.
+    expect(blocks[1].blockId).toBe('orig')
+    expect(blocks[0].blockId).not.toBe('orig')
+  })
+
   it('splitting a paragraph yields two distinct ids, first keeps the original', () => {
     let state = stateWith(docOf(p('hello world', 'orig')), [history(), createBlockIdPlugin()])
     state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, 6)))

@@ -67,29 +67,49 @@ export interface BlockIdFix {
 }
 
 /**
- * One pass over the doc: any block whose id is null OR already seen gets a fresh id.
- * First-in-document-order keeps its id — splitting a paragraph therefore leaves the
- * top half's identity intact and mints a new id for the bottom half.
+ * One pass over the doc: any block whose id is null or duplicated gets a fresh
+ * id. Per duplicated id, the KEEPER is the first non-empty occurrence in
+ * document order (fallback: the first occurrence) — a mid-paragraph split
+ * leaves the top half's identity intact, while Enter at the START of a
+ * paragraph keeps the identity with the content instead of the empty top half
+ * (graph edges and evidence citing that id keep pointing at real text).
  */
 export function computeBlockIdFixes(
   doc: PMNode,
   genId: () => string = generateId,
 ): BlockIdFix[] {
-  const seen = new Set<string>()
-  const fixes: BlockIdFix[] = []
+  const blocks: Array<{ pos: number; node: PMNode; id: string | null }> = []
   doc.descendants((node, pos) => {
-    if (!BLOCK_ID_TYPES.has(node.type.name)) return true
-    const id = node.attrs.blockId as string | null
-    if (id && !seen.has(id)) {
-      seen.add(id)
-      return true
+    if (BLOCK_ID_TYPES.has(node.type.name)) {
+      blocks.push({ pos, node, id: (node.attrs.blockId as string | null) ?? null })
     }
-    let fresh = genId()
-    while (seen.has(fresh)) fresh = genId()
-    seen.add(fresh)
-    fixes.push({ pos, attrs: { ...node.attrs, blockId: fresh } })
     return true
   })
+
+  const used = new Set<string>()
+  const byId = new Map<string, Array<{ pos: number; node: PMNode }>>()
+  for (const b of blocks) {
+    if (!b.id) continue
+    used.add(b.id)
+    const list = byId.get(b.id)
+    if (list) list.push(b)
+    else byId.set(b.id, [b])
+  }
+
+  const keeperPos = new Map<string, number>()
+  for (const [id, list] of byId) {
+    const nonEmpty = list.find((b) => b.node.textContent.length > 0)
+    keeperPos.set(id, (nonEmpty ?? list[0]).pos)
+  }
+
+  const fixes: BlockIdFix[] = []
+  for (const b of blocks) {
+    if (b.id && keeperPos.get(b.id) === b.pos) continue
+    let fresh = genId()
+    while (used.has(fresh)) fresh = genId()
+    used.add(fresh)
+    fixes.push({ pos: b.pos, attrs: { ...b.node.attrs, blockId: fresh } })
+  }
   return fixes
 }
 

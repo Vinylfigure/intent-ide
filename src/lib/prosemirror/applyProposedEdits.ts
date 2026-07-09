@@ -1,6 +1,7 @@
 import type { EditorView } from 'prosemirror-view'
 import type { Node as PMNode } from 'prosemirror-model'
 import { getProposedAnchors } from './plugins/proposedChangePlugin'
+import { blockTextRange } from './blockIds'
 
 /**
  * Applies a set of accepted proposed edits in ONE transaction, safely.
@@ -62,8 +63,12 @@ export function applyProposedEdits(view: EditorView, acceptedIds: string[]): App
       continue
     }
 
-    // Range drifted — recover by fingerprint match on the expected text.
-    const found = findTextInDoc(doc, a.targetText)
+    // Range drifted — recover by fingerprint match on the expected text,
+    // scoped to the edit's block when we know it (a phrase repeated in two
+    // blocks must not silently recover into the wrong one).
+    const found =
+      (a.blockId ? blockTextRange(doc, a.blockId, a.targetText) : null) ??
+      findTextInDoc(doc, a.targetText)
     if (!found) {
       return {
         ok: false,

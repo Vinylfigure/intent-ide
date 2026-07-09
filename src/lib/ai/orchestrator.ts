@@ -114,22 +114,36 @@ interface ToolCallInput {
   edge_type?: string
 }
 
+// Function words that vanish in any full-sentence rewrite; treating them as
+// "changed content" would inflate every rewrite into a 'must' conflict.
+const CONFLICT_STOPWORDS = new Set([
+  'this', 'that', 'these', 'those', 'with', 'without', 'from', 'into', 'onto',
+  'have', 'been', 'were', 'will', 'would', 'shall', 'should', 'could', 'must',
+  'they', 'their', 'them', 'there', 'here', 'when', 'where', 'which', 'while',
+  'what', 'whose', 'than', 'then', 'also', 'only', 'some', 'such', 'each',
+  'more', 'most', 'other', 'over', 'under', 'after', 'before', 'about',
+  'because', 'therefore', 'however', 'shown', 'given', 'upon', 'both', 'very',
+])
+
 /**
  * Tokens whose meaning changed in the primary edit: numbers/figures, quoted
- * phrases, and substantive words present before but gone after. These are what
- * a stale downstream block would still contain. Exported for tests.
+ * phrases, and substantive (non-stopword) words present before but gone after.
+ * These are what a stale downstream block would still contain. Exported for tests.
  */
 export function extractChangedTokens(before: string, after: string): string[] {
   const lowerAfter = after.toLowerCase()
   const tokens = new Set<string>()
 
   for (const m of before.matchAll(/[$€£]?\d(?:[\d,.]*\d)?%?/g)) {
+    // Bare single digits cross-fire ("Section 3" vs any "3") — need 2+ chars.
+    if (m[0].length < 2) continue
     if (!lowerAfter.includes(m[0].toLowerCase())) tokens.add(m[0])
   }
   for (const m of before.matchAll(/["“']([^"“”'\n]{3,60})["”']/g)) {
     if (!lowerAfter.includes(m[1].toLowerCase())) tokens.add(m[1])
   }
   for (const m of before.matchAll(/[A-Za-z][\w-]{3,}/g)) {
+    if (CONFLICT_STOPWORDS.has(m[0].toLowerCase())) continue
     if (!containsTerm(after, m[0])) tokens.add(m[0])
   }
   return [...tokens]

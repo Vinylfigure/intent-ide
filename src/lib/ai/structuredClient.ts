@@ -48,7 +48,10 @@ export const fetchStructured: CallStructuredFn = async (req, config) => {
     },
     body: JSON.stringify(req),
   })
-  if (!res.ok) return { toolCalls: [] }
+  // HTTP failure must THROW, not masquerade as an empty tool-call response:
+  // callers distinguish "the model chose to call nothing" (valid, cacheable)
+  // from "the provider is down" (retryable — must not poison caches).
+  if (!res.ok) throw new Error(`structured call failed: ${res.status}`)
   const data = await res.json()
   return { toolCalls: Array.isArray(data.toolCalls) ? data.toolCalls : [] }
 }
