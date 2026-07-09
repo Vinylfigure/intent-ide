@@ -9,6 +9,7 @@ import { createPlugins } from '@/lib/prosemirror/plugins'
 import { useEditorStore } from '@/stores/editorStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { setChangeCallback } from '@/lib/prosemirror/plugins/changeTrackingPlugin'
+import { scheduleDocGraphRebuild } from '@/lib/graphrag/docGraph'
 import { useChangesStore } from '@/stores/changesStore'
 import { ConflictTooltip } from './ConflictTooltip'
 import { UncertaintyTooltip } from './UncertaintyTooltip'
@@ -88,6 +89,7 @@ export function EditorShell() {
         view.updateState(newState)
         if (transaction.docChanged) {
           debouncedSave(view)
+          scheduleDocGraphRebuild(view)
         }
       },
     })
