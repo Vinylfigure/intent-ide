@@ -27,6 +27,23 @@ import { computeCommitHash, computeContentHash } from '@/lib/history/canonical'
 
 const VALID_KINDS = new Set(['import', 'apply', 'direct', 'restore'])
 
+/**
+ * Version history stores FULL document snapshots server-side, unauthenticated.
+ * On the public demo that would put visitor documents in the shared DB,
+ * readable by anyone holding a documentId — so it is off in production unless
+ * the operator opts in (HISTORY_ENABLED=1, e.g. a private self-host). Client
+ * writes are fire-and-forget (recordCommit) and degrade gracefully.
+ */
+function historyDisabled(): NextResponse | null {
+  if (process.env.NODE_ENV === 'production' && process.env.HISTORY_ENABLED !== '1') {
+    return NextResponse.json(
+      { error: 'Version history is disabled on this deployment' },
+      { status: 403 },
+    )
+  }
+  return null
+}
+
 const DEFAULT_LIMIT = 100
 const MAX_LIMIT = 200
 
@@ -57,6 +74,8 @@ const COMMIT_META_SELECT = {
  *   ?hash=...       — one version, including its full docJson
  */
 export async function GET(request: NextRequest) {
+  const disabled = historyDisabled()
+  if (disabled) return disabled
   try {
     const { searchParams } = request.nextUrl
     const hash = searchParams.get('hash')
@@ -121,6 +140,8 @@ export async function GET(request: NextRequest) {
  *         covers content and attribution) — idempotent re-send
  */
 export async function POST(request: NextRequest) {
+  const disabled = historyDisabled()
+  if (disabled) return disabled
   try {
     const body = await request.json()
     const { action, ...params } = body

@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+// Whisper transcription of longer recordings can exceed Vercel's default timeout.
+export const maxDuration = 60
+
 export async function POST(request: NextRequest) {
   const apiKey = request.headers.get('x-api-key')
   if (!apiKey) {

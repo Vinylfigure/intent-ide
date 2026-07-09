@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { CLASSIFICATION_PROMPT } from '@/lib/ai/prompts'
 import { modelRejectsSampling } from '@/lib/ai/modelCapabilities'
+import { validateBaseUrl } from '@/lib/server/validateBaseUrl'
 
 const VALID_TYPES = ['ask', 'edit', 'dig', 'flag']
+
+export const maxDuration = 60
 
 export async function POST(request: NextRequest) {
   const apiKey = request.headers.get('x-api-key') || ''
@@ -13,6 +16,11 @@ export async function POST(request: NextRequest) {
   // Only require API key for non-Ollama providers
   if (provider !== 'ollama' && !apiKey) {
     return NextResponse.json({ error: 'No API key provided' }, { status: 401 })
+  }
+
+  const baseUrlError = validateBaseUrl(baseUrl)
+  if (baseUrlError) {
+    return NextResponse.json({ error: baseUrlError }, { status: 400 })
   }
 
   try {
@@ -66,6 +74,8 @@ export async function POST(request: NextRequest) {
       const response = await fetch(url, {
         method: 'POST',
         headers,
+        // A validated public base URL could still 3xx to a private address.
+        redirect: 'manual',
         body: JSON.stringify({
           model,
           max_tokens: 50,

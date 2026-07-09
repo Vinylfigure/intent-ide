@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { modelRejectsSampling } from '@/lib/ai/modelCapabilities'
+import { validateBaseUrl } from '@/lib/server/validateBaseUrl'
+
+// LLM calls (especially MADS rounds) can run long; Vercel default is too short.
+export const maxDuration = 60
 
 export async function POST(request: NextRequest) {
   const apiKey = request.headers.get('x-api-key') || ''
@@ -9,6 +13,11 @@ export async function POST(request: NextRequest) {
 
   if (provider !== 'ollama' && !apiKey) {
     return NextResponse.json({ error: 'No API key provided' }, { status: 401 })
+  }
+
+  const baseUrlError = validateBaseUrl(baseUrl)
+  if (baseUrlError) {
+    return NextResponse.json({ error: baseUrlError }, { status: 400 })
   }
 
   try {
@@ -78,6 +87,8 @@ export async function POST(request: NextRequest) {
       const response = await fetch(url, {
         method: 'POST',
         headers,
+        // A validated public base URL could still 3xx to a private address.
+        redirect: 'manual',
         body: JSON.stringify(body),
       })
 
@@ -202,6 +213,7 @@ function handleStreamingRequest(params: StreamParams): Response {
           const response = await fetch(url, {
             method: 'POST',
             headers,
+            redirect: 'manual',
             body: JSON.stringify({
               model,
               max_tokens: maxTokens,

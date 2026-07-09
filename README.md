@@ -9,6 +9,8 @@
 
 AI can one-shot a document that's 90% right. The unsolved problem is the last 10%: today's tools force you to re-prompt and regenerate the whole thing, destroying the 90% you already liked. Intent IDE treats review as the product — you read, you react (by voice or text), and scoped AI agents make **targeted, auditable, human-approved edits** without touching anything else.
 
+**[Live demo →](https://intent-ide.vercel.app)** Bring your own API key (Settings → API Keys): it stays in your browser's localStorage and is forwarded per-request — never stored server-side. Documents never leave your browser except as LLM prompt context.
+
 <!-- screenshot: main editor with annotations panel -->
 <!-- screenshot: multi-region cascade review with inline accept/reject -->
 <!-- screenshot: semantic commit modal with per-change diff toggles -->
@@ -30,7 +32,7 @@ AI can one-shot a document that's 90% right. The unsolved problem is the last 10
 - **Structured tool-calling** — agents emit edits through a provider-agnostic `propose_edit` tool (`/api/structured`), not regex-parsed prose
 - **Annotation threads, drilling, and verbosity control** — follow-up conversations per annotation, paragraph-level drill-down into AI responses, per-annotation response length (concise/normal/detailed)
 - **Annotation minimap** — spatial overview of every annotation in the document, click-to-scroll
-- **BYOK, local-first** — bring your own Anthropic/OpenAI-compatible/Ollama keys; documents persist locally; the audit ledger is SQLite via Prisma
+- **BYOK, local-first** — bring your own Anthropic/OpenAI-compatible/Ollama keys; documents persist locally; the audit ledger is libSQL via Prisma (a local SQLite file in dev, [Turso](https://turso.tech) in production)
 
 ## Architecture
 
@@ -101,7 +103,24 @@ pip install -r requirements.txt
 python graphiti_mcp_server.py                 # MCP server on :8000
 ```
 
-Without the graph stack, cascade checks fall back to keyword matching; everything else works.
+Without the graph stack, cascade checks fall back to keyword matching; everything else works. The knowledge graph is a **local-dev-only** enhancement — the deployed demo runs without it, using the in-memory document graph and keyword fallback automatically.
+
+## Deployment
+
+The live demo runs on **Vercel** with the audit ledger on **Turso** (hosted libSQL — same Prisma adapter as local SQLite). Everything else is stateless: user documents and keys live in the browser, and the API routes are thin BYOK proxies.
+
+To deploy your own:
+
+1. Create a Turso database and apply the schema: `turso db create intent-ide-audit`, then pipe each `prisma/migrations/*/migration.sql` through `turso db shell intent-ide-audit`.
+2. Import the repo into Vercel (Node 22) and set the environment variables below. The build runs `prisma generate` automatically.
+
+| Env var | Value |
+| :--- | :--- |
+| `DATABASE_URL` | `libsql://<db>-<org>.turso.io` |
+| `DATABASE_AUTH_TOKEN` | `turso db tokens create <db>` |
+| `AUDIT_ADMIN_TOKEN` | random secret; gates unscoped `GET /api/audit` reads |
+
+Known limits on Vercel: LLM/transcription routes cap at 60s (`maxDuration`), and voice uploads are limited to ~4.5 MB — very long recordings may fail to transcribe. In production, custom OpenAI-compatible base URLs must be public `https` endpoints (private/loopback addresses are rejected), and each visitor's audit trail is scoped to an anonymous per-browser ID. Server-side version history (`/api/history`) is **disabled in production** by default — it stores full document snapshots, which the shared public demo must not do; private self-hosts can opt in with `HISTORY_ENABLED=1`.
 
 ## Testing
 
