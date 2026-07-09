@@ -26,6 +26,9 @@ interface ToolCall {
   input: unknown
 }
 
+/** Only cache-mark user payloads above this size — tiny prompts aren't worth a cache write. */
+const CACHE_MIN_CHARS = 2000
+
 export async function POST(request: NextRequest) {
   const apiKey = request.headers.get('x-api-key') || ''
   const provider = request.headers.get('x-provider') || 'claude'
@@ -57,6 +60,37 @@ export async function POST(request: NextRequest) {
       const systemMessage = messages.find((m) => m.role === 'system')?.content || ''
       const userMessages = messages.filter((m) => m.role !== 'system')
 
+      // Prompt caching: cascade/graph payloads resend the same large block
+      // listing across calls (cascade → judge, rebuild → rebuild). When the
+      // last user message is big enough to be worth caching, mark it — and the
+      // system prompt — with ephemeral cache_control so Anthropic caches the
+      // shared prefix. Small payloads keep the plain string shape untouched.
+      const lastUser = userMessages[userMessages.length - 1]
+      const shouldCache =
+        typeof lastUser?.content === 'string' && lastUser.content.length > CACHE_MIN_CHARS
+
+      const claudeMessages = shouldCache
+        ? userMessages.map((m, i) =>
+            i === userMessages.length - 1
+              ? {
+                  role: m.role,
+                  content: [
+                    {
+                      type: 'text',
+                      text: m.content,
+                      cache_control: { type: 'ephemeral' },
+                    },
+                  ],
+                }
+              : m
+          )
+        : userMessages
+
+      const claudeSystem =
+        shouldCache && systemMessage
+          ? [{ type: 'text', text: systemMessage, cache_control: { type: 'ephemeral' } }]
+          : systemMessage
+
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -68,8 +102,8 @@ export async function POST(request: NextRequest) {
           model,
           max_tokens: maxTokens,
           ...(modelRejectsSampling(model) ? {} : { temperature }),
-          system: systemMessage,
-          messages: userMessages,
+          system: claudeSystem,
+          messages: claudeMessages,
           tools,
           // Encourage but don't force — the model may legitimately propose zero edits.
           tool_choice: { type: 'auto' },
