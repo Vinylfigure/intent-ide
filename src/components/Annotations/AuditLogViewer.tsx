@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { getVisitorId } from '@/lib/audit/auditLogger'
 
 interface AuditRecord {
   id: string
@@ -39,7 +40,8 @@ export function AuditLogViewer() {
     setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ limit: '100' })
+      // Scope to this browser's records — unscoped reads are admin-only in prod.
+      const params = new URLSearchParams({ limit: '100', userId: getVisitorId() })
       if (statusFilter !== 'ALL') params.set('status', statusFilter)
       const res = await fetch(`/api/audit?${params}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)

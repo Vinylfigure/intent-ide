@@ -9,6 +9,9 @@
     "type": "git",
     "url": "https://github.com/Vinylfigure/intent-ide.git"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "keywords": [
     "ai",
     "document-review",
@@ -22,7 +25,8 @@
   ],
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
+    "postinstall": "prisma generate",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",

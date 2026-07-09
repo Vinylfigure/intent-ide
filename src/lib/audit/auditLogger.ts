@@ -47,6 +47,30 @@ export type ApprovalStatus =
   | 'MODIFIED_HUMAN'
 
 // ---------------------------------------------------------------------------
+// Visitor identity
+// ---------------------------------------------------------------------------
+
+const VISITOR_ID_KEY = 'intent-ide-visitor-id'
+
+/**
+ * Stable anonymous ID for this browser. On the shared public deployment it
+ * scopes each visitor's audit trail to them (GET /api/audit filters on it).
+ */
+export function getVisitorId(): string {
+  if (typeof localStorage === 'undefined') return 'local'
+  try {
+    let id = localStorage.getItem(VISITOR_ID_KEY)
+    if (!id) {
+      id = crypto.randomUUID()
+      localStorage.setItem(VISITOR_ID_KEY, id)
+    }
+    return id
+  } catch {
+    return 'local'
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Core: Append-only write via API route
 // ---------------------------------------------------------------------------
 
@@ -59,7 +83,7 @@ export async function logAuditEvent(params: AuditEventParams): Promise<string | 
     const response = await fetch('/api/audit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'log', ...params }),
+      body: JSON.stringify({ action: 'log', ...params, userId: params.userId ?? getVisitorId() }),
     })
 
     if (!response.ok) {
