@@ -1,4 +1,4 @@
-# System Patterns: Intent IDE (v8.3)
+# System Patterns: Intent IDE (v8.4 candidate)
 
 ## 1. System Architecture Overview
 Intent IDE moves away from standard monolithic LLM calls (simple RAG) to a structured, agentic cognitive architecture. The system is divided into three primary layers:
@@ -27,11 +27,27 @@ To successfully detect the "blast radius" of a user's edit, standard vector data
 * **Entity Resolution (Denoising):** Because LLMs generate noisy graphs, the system MUST implement an entity resolution/deduplication function (`ϕ: E ↦ E*`) before querying. Duplicate entities (e.g., "SaaS", "Software as a Service") must be merged into canonical nodes to prevent the graph from degrading into vanilla RAG.
 * **Temporal Tracking:** Graphiti tracks bi-temporal data. When a user overrides a previous rule, the old edge is NOT deleted. It is marked with an `invalid_at` timestamp. This preserves the historical context for the audit trail.
 
-### 3.2 The Cascade Check (Multi-Hop Retrieval)
-When an upstream change is proposed (a Semantic Commit), the system executes a "Cascade Check":
-1. **Trigger:** Retrieve the node associated with the modified text block.
-2. **Traversal:** Traverse explicit downstream dependency edges (`RELATES_TO`, `CONSTRAINS`, `OVERRIDES`).
-3. **Retrieval:** Return the subgraph of affected downstream clauses (the "blast radius") to the LLM *before* any text is generated.
+### 3.2 The Cascade Check (Two Lanes; docGraph is Primary as of v8.4)
+There are two cascade lanes. As of v8.4 the **editable** lane runs on a local, block-keyed **document dependency graph** (`src/lib/graphrag/docGraph.ts`) rather than the Graphiti entity graph:
+
+**Lane A — docGraph (editable, primary):**
+1. **Anchor:** Every block-level node carries a stable `blockId` attr (`schema.ts` `withBlockId` + `blockIdPlugin.ts`). BlockId — not string matching — is the anchor of record. Paste mints fresh ids (`parseDOM` ignores `data-block-id`); duplicate ids from node splits are re-stamped (keeper = first non-empty occurrence).
+2. **Graph build:** Nodes = blocks keyed by `blockId`; edges = typed relations (`CascadeEdgeType`: defines/references/depends-on/implements/tests/contradicts/duplicates) with `DocGraphEdgeSource = 'deterministic' | 'llm' | 'graphiti'`. Deterministic extractors (cross-refs→headings, defined terms, duplicated sentences) always run; ONE validated `link_blocks` LLM pass runs per content hash, capped at 200 textblocks. FNV-1a `contentHash` keys an LRU-8 cache with inflight dedupe.
+3. **Egress boundary:** `scheduleDocGraphRebuild` (background, on typing) is deterministic-only — document text never leaves the machine as a side effect of typing. The LLM pass runs lazily inside the user-initiated cascade.
+4. **Traversal:** `getNeighborhood` BFS from the primary edit's block, 2 hops, ≤24 candidate blocks (block COUNT is capped; block text is never truncated — the old `.slice(0, 6000)` whole-doc truncation is deleted).
+5. **Proposal:** The model sees only neighbor blocks (`blockId` + text) and returns `propose_edit` tool calls. Anchoring is blockId-first (`blockTextRange`) with a neighborhood-gated `findTextInDoc` fallback; overlapping/duplicate targets are dropped first-proposal-wins. All proposals flow into the existing HITL review surfaces and the validate-or-abort single-transaction apply.
+
+**Lane B — Graphiti entity graph (read-only, unchanged):** `graphrag/cascadeCheck.ts` still maps entity mentions to read-only conflict decorations. Deliberately untouched in v8.4; `DocGraphEdgeSource` reserves `'graphiti'` for a future bridge that feeds entity edges into the docGraph.
+
+### 3.3 Evidence-Gated Severity (Precision-First Discipline)
+A cascade that cries wolf is worse than no cascade, so every cascade proposal is evidence-gated and severity-ranked:
+* **Citation required:** Each proposal must carry `CascadeEvidence` (`{sourceBlockId, quotedText, edgeType}`), and the `quotedText` is verified **verbatim against the live document** before the proposal is surfaced. A proposal with no locatable citation can never be `must`.
+* **Severity is DERIVED, never trusted:** `deriveSeverity` in `orchestrator.ts` computes `CascadeSeverity` (`must`/`probably`/`optional`) from graph structure + `hasVerbatimConflict` (changed-token overlap via `extractChangedTokens`, with a stopword filter and 2-char number floor). The model's self-reported severity is ignored. Known limit: this verifies the citation EXISTS, not that it is semantically RELEVANT.
+* **UI contract:** All three review surfaces (`ProposedEditControl`, `CascadeList`, `SemanticCommitModal`) sort and visually distinguish severity; accept-all affordances default to `must`+`probably` with `optional` pre-toggled off. `normalizeProposedEdit()` backfills severity/evidence on legacy persisted edits during store rehydration.
+* **Regression gate:** the EditPropBench-grounded harness (`src/lib/graphrag/__tests__/editPropBench.*`, labels per arXiv:2605.02083) gates recall ≥ 0.9, zero protected-unchanged violations, and 100% citation validity on every `npm run test`. (The "LEDGER agentic editing" paper is a known-fabricated citation — never cite it.)
+
+### 3.4 Structured-Call Testability Seam
+`src/lib/ai/structuredClient.ts` defines an injectable `CallStructuredFn`: graph building and cascade logic take the structured-call function as a parameter, so the eval harness and unit tests script the "model" deterministically. `fetchStructured` (the production implementation) THROWS on `!res.ok` — an empty `toolCalls` array means "the model found nothing", while provider failure raises; conflating them would poison the content-hash cache with an empty graph.
 
 ---
 
