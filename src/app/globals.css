@@ -698,3 +698,18 @@
   flex-direction: column;
   gap: 8px;
 }
+
+/* Cascade list attention flash — "Show affected" scrolls to the CascadeList
+   (the one cascade surface) and pulses its outline once. */
+.cascade-list-flash {
+  animation: cascade-list-flash 1.5s ease-out;
+}
+
+@keyframes cascade-list-flash {
+  0% {
+    box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(217, 119, 6, 0);
+  }
+}

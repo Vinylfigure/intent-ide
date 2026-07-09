@@ -114,7 +114,12 @@ export function CascadeList({ annotation }: CascadeListProps) {
   }
 
   return (
-    <div className="mt-3 mx-1 p-3 border border-amber-300 bg-amber-50 rounded-xl shadow-sm">
+    <div
+      data-cascade-list={annotation.id}
+      tabIndex={-1}
+      aria-label={`Affected sections for this change (${count})`}
+      className="mt-3 mx-1 p-3 border border-amber-300 bg-amber-50 rounded-xl shadow-sm focus:outline-none"
+    >
       {/* Header */}
       <div className="flex items-start gap-2 mb-2">
         <span className="text-amber-600 text-xs font-bold shrink-0">⤳</span>

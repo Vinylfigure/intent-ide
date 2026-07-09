@@ -32,7 +32,6 @@ interface ResolutionActionsProps {
 
 export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   const updateAnnotation = useAnnotationStore((s) => s.update)
-  const addMessage = useAnnotationStore((s) => s.addMessage)
   const view = useEditorStore((s) => s.view)
   const [showDiffModal, setShowDiffModal] = useState(false)
   const [pendingHandler, setPendingHandler] = useState<string | null>(null)
@@ -374,44 +373,33 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
       }
       case 'show-cascade': {
         if (view) {
+          // Feed the knowledge graph (best-effort) — future doc-graph builds
+          // pick these entities up via the graphiti edge pass.
           ingestAnnotationEpisode(annotation)
 
-          const result = await runCascadeCheck(
-            view,
-            annotation.anchor.text,
-            annotation.resolution?.suggestedEdit?.newText ?? annotation.anchor.text,
-            annotation.anchor.from,
+          // The cascade proposals ARE the affected-sections view (one cascade
+          // surface). When this resolution carries cascade edits, bring the
+          // CascadeList into view and pulse it — no second read-only
+          // decoration lane.
+          const hasCascadeEdits = (annotation.resolution?.edits ?? []).some(
+            (e) => e.relation === 'cascade',
           )
-          if (result.count > 0) {
-            const source = result.usedGraphRAG ? 'knowledge graph' : 'keyword analysis'
-            const entities = result.affectedEntities.slice(0, 5).join(', ')
-            const summaryText = `**${result.count} affected section${result.count > 1 ? 's' : ''}** found via ${source}.\n\n${entities ? `Affected: ${entities}` : ''}`
-            // Inject as conversation message
-            const cascadeMsg: ConversationMessage = {
-              id: generateId(),
-              role: 'agent',
-              content: summaryText,
-              suggestedEdit: null,
-              timestamp: Date.now(),
-            }
-            // Seed conversation if needed
-            const freshAnn = useAnnotationStore.getState().getById(annotation.id)
-            if (freshAnn && (!freshAnn.conversation || freshAnn.conversation.length === 0) && freshAnn.resolution) {
-              addMessage(annotation.id, {
-                id: generateId(),
-                role: 'agent',
-                content: freshAnn.resolution.content,
-                suggestedEdit: freshAnn.resolution.suggestedEdit ?? null,
-                timestamp: Date.now(),
-              })
-            }
-            addMessage(annotation.id, cascadeMsg)
-
-            useToastStore.getState().addToast(
-              `${result.count} affected section${result.count > 1 ? 's' : ''} highlighted`,
-              'info'
+          if (hasCascadeEdits) {
+            const list = document.querySelector<HTMLElement>(
+              `[data-cascade-list="${annotation.id}"]`,
             )
+            if (list) {
+              list.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              list.focus({ preventScroll: true })
+              list.classList.remove('cascade-list-flash')
+              // Force a reflow so re-triggering restarts the animation.
+              void list.offsetWidth
+              list.classList.add('cascade-list-flash')
+              window.setTimeout(() => list.classList.remove('cascade-list-flash'), 1600)
+            }
           } else {
+            // No cascade edits to review — fall back to asking the agent for
+            // dependent locations as a conversation message.
             await sendFollowUp(annotation, 'Show all other locations in the document that reference or depend on this content. List each location with its text.')
           }
         }
