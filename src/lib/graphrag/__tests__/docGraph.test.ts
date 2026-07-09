@@ -285,7 +285,7 @@ describe('augmentWithLlmEdges — chunking (no silent large-doc skip)', () => {
     }
   }
 
-  it('one call for docs at or under the chunk size', async () => {
+  it('one call for small docs', async () => {
     const captured: StructuredRequest[] = []
     const graph = buildDeterministicGraph(mkDoc(40))
     await augmentWithLlmEdges(graph, CONFIG, capturing(captured))
@@ -294,21 +294,48 @@ describe('augmentWithLlmEdges — chunking (no silent large-doc skip)', () => {
     expect(graph.llmPartial).toBe(false)
   })
 
-  it('60-block doc: two contiguous chunks with a 4-block overlap for cross-boundary stitching', async () => {
+  it('150-block doc (the single-call ceiling): exactly ONE whole-doc call — every pair co-visible', async () => {
+    // The core 5–20-page use case must never be chunked: chunking makes
+    // pairs more than ~40 blocks apart structurally unlinkable.
     const captured: StructuredRequest[] = []
-    const graph = buildDeterministicGraph(mkDoc(60))
+    const graph = buildDeterministicGraph(mkDoc(150))
     await augmentWithLlmEdges(graph, CONFIG, capturing(captured))
-    expect(captured).toHaveLength(2)
+    expect(captured).toHaveLength(1)
+    const prompt = captured[0].messages.map((m) => m.content).join('\n')
+    expect(prompt).toContain('[b0]')
+    expect(prompt).toContain('[b149]')
+    expect(graph.llmApplied).toBe(true)
+    expect(graph.llmPartial).toBe(false)
+  })
+
+  it('151-block doc: falls over to the chunked pass', async () => {
+    const captured: StructuredRequest[] = []
+    const graph = buildDeterministicGraph(mkDoc(151))
+    await augmentWithLlmEdges(graph, CONFIG, capturing(captured))
+    expect(captured.length).toBeGreaterThan(1)
+    expect(captured).toHaveLength(5) // ceil((151 - 40) / 36) + 1
+    expect(graph.llmApplied).toBe(true)
+    expect(graph.llmPartial).toBe(false)
+  })
+
+  it('160-block doc: contiguous ≤40-block chunks with a 4-block overlap for cross-boundary stitching', async () => {
+    const captured: StructuredRequest[] = []
+    const graph = buildDeterministicGraph(mkDoc(160))
+    await augmentWithLlmEdges(graph, CONFIG, capturing(captured))
+    expect(captured).toHaveLength(5)
     const [first, second] = captured.map((r) => r.messages.map((m) => m.content).join('\n'))
     // Chunk 1: blocks 0–39.
     expect(first).toContain('[b0]')
     expect(first).toContain('[b39]')
     expect(first).not.toContain('[b40]')
-    // Chunk 2 starts 4 blocks back (36) and runs to the end.
+    // Chunk 2 starts 4 blocks back (36).
     expect(second).toContain('[b36]')
     expect(second).toContain('[b39]') // the shared overlap
-    expect(second).toContain('[b59]')
+    expect(second).toContain('[b75]')
     expect(second).not.toContain('[b35]')
+    // Last chunk runs to the end.
+    const last = captured[4].messages.map((m) => m.content).join('\n')
+    expect(last).toContain('[b159]')
     expect(graph.llmApplied).toBe(true)
     expect(graph.llmPartial).toBe(false)
   })
@@ -342,8 +369,8 @@ describe('augmentWithLlmEdges — chunking (no silent large-doc skip)', () => {
     }
   })
 
-  it('mid-pass chunk failure keeps earlier edges, leaves llmApplied false; retry dedupes', async () => {
-    const graph = buildDeterministicGraph(mkDoc(60)) // 2 chunks
+  it('a failed chunk keeps the other chunks’ edges (parallel calls), leaves llmApplied false; retry dedupes', async () => {
+    const graph = buildDeterministicGraph(mkDoc(160)) // 5 chunks
     let calls = 0
     const flaky: CallStructuredFn = async () => {
       calls++
@@ -359,9 +386,10 @@ describe('augmentWithLlmEdges — chunking (no silent large-doc skip)', () => {
     }
     await augmentWithLlmEdges(graph, CONFIG, flaky)
     expect(graph.llmApplied).toBe(false)
+    // The 4 successful chunks all reported the same edge — dedupe kept one.
     expect(graph.edges.filter((e) => e.source === 'llm')).toHaveLength(1)
 
-    await augmentWithLlmEdges(graph, CONFIG, flaky) // both chunks succeed now
+    await augmentWithLlmEdges(graph, CONFIG, flaky) // all chunks succeed now
     expect(graph.llmApplied).toBe(true)
     // The retry re-reported the same edge — dedupe kept exactly one.
     expect(graph.edges.filter((e) => e.source === 'llm')).toHaveLength(1)
@@ -417,6 +445,41 @@ describe('getDocGraph — incremental per-block updates', () => {
     expect(carried).toMatchObject({ from: 'b10', to: 'b11', type: 'depends-on' })
     expect(g2.llmApplied).toBe(true)
     expect(g2.llmPartial).toBe(false)
+  })
+
+  it('editing one endpoint of an LLM-only edge re-lists the FAR endpoint so the edge can be re-proposed (no monotonic decay)', async () => {
+    // Regression for the incremental-decay bug: carryForwardLlmEdges DROPS
+    // LLM edges touching changed blocks and rebuilds adjacency post-drop, so
+    // the far endpoint is invisible to the current adjacency. The 1-hop
+    // expansion must union in the PRIOR graph's adjacency or the model can
+    // never re-propose the link and the graph decays with every edit.
+    const propose = {
+      name: 'link_blocks',
+      input: { from_block_id: 'b10', to_block_id: 'b11', edge_type: 'depends-on' },
+    }
+    const doc1 = bigDoc('b', 30)
+    const g1 = await getDocGraph(doc1, CONFIG, { callStructured: scripted([propose]) })
+    // The b10↔b11 link exists ONLY as an LLM edge (no deterministic signal).
+    expect(
+      g1.edges.filter((e) => e.from === 'b10' && e.to === 'b11'),
+    ).toMatchObject([{ source: 'llm', type: 'depends-on' }])
+
+    // Edit b11 — the LLM edge touches it, so carry-forward drops the edge.
+    const doc2 = bigDoc('b', 30, { 11: 'Rewritten eleventh paragraph content.' })
+    const captured: StructuredRequest[] = []
+    const g2 = await getDocGraph(doc2, CONFIG, { callStructured: scripted([propose], captured) })
+
+    expect(captured).toHaveLength(1)
+    const prompt = captured[0].messages.map((m) => m.content).join('\n')
+    expect(prompt).toContain('[b11]') // the changed block
+    // b10 is reachable ONLY through the dropped LLM edge — the prior
+    // adjacency must seed it into the re-extraction listing.
+    expect(prompt).toContain('[b10]')
+    // The scripted re-proposal restored the edge.
+    expect(
+      g2.edges.filter((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11'),
+    ).toHaveLength(1)
+    expect(g2.llmApplied).toBe(true)
   })
 
   it('overlap matching picks the RIGHT prior graph out of several cached ones', async () => {

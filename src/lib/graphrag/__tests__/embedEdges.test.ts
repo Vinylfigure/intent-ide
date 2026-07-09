@@ -141,6 +141,84 @@ describe('augmentWithEmbeddingEdges', () => {
       true,
     )
   })
+
+  it('vector cache is keyed by provider + embed model: a settings switch re-embeds everything', async () => {
+    // Vectors from different providers/models live in incompatible spaces —
+    // reusing them would silently compare across embedding models.
+    const calls: string[][] = []
+    const embed = scriptedEmbed(calls)
+
+    const g1 = buildDeterministicGraph(FIXTURE_DOC)
+    await augmentWithEmbeddingEdges(g1, CONFIG, embed)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toHaveLength(4)
+
+    // Same doc, different provider — zero cache hits, full re-embed.
+    const g2 = buildDeterministicGraph(FIXTURE_DOC)
+    await augmentWithEmbeddingEdges(g2, { provider: 'openai', apiKey: 'k', model: 'gpt-4o' }, embed)
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toHaveLength(4)
+
+    // Same provider, different embed model — also a full re-embed.
+    const g3 = buildDeterministicGraph(FIXTURE_DOC)
+    await augmentWithEmbeddingEdges(g3, { ...CONFIG, embedModel: 'other-embedder' }, embed)
+    expect(calls).toHaveLength(3)
+    expect(calls[2]).toHaveLength(4)
+  })
+
+  it('mismatched vector dimensions produce NO edge — cosine never truncates to Math.min', async () => {
+    const doc = docOf(p('m0', 'first block'), p('m1', 'middle block'), p('m2', 'third block'))
+    const graph = buildDeterministicGraph(doc)
+    // m0 is 3-dim, m2 is 2-dim; the truncated 2-dim prefix WOULD be a perfect
+    // match (cos = 1.0), which is exactly the masking the fix removes.
+    const embed: EmbedFn = async (texts) =>
+      texts.map((t) =>
+        t === 'first block' ? [1, 0, 0] : t === 'third block' ? [1, 0] : [0, 1],
+      )
+    await augmentWithEmbeddingEdges(graph, CONFIG, embed)
+    expect(graph.edges.filter((e) => e.source === 'embedding')).toHaveLength(0)
+    expect(graph.embeddingsApplied).toBe(true)
+  })
+})
+
+describe('augmentWithEmbeddingEdges — block cap (mirror of llmPartial)', () => {
+  const mkDoc = (n: number) =>
+    docOf(...Array.from({ length: n }, (_, i) => p(`e${i}`, `embed filler ${i}`)))
+
+  it('300 blocks (the boundary): fully embedded, no warn, embeddingsPartial false', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const calls: string[][] = []
+      const graph = buildDeterministicGraph(mkDoc(300))
+      await augmentWithEmbeddingEdges(graph, CONFIG, scriptedEmbed(calls))
+      expect(calls[0]).toHaveLength(300)
+      expect(graph.embeddingsPartial).toBe(false)
+      expect(graph.embeddingsApplied).toBe(true)
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('301 blocks: capped at 300 in doc order, console.warn (blockIds only, no text), embeddingsPartial set', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const calls: string[][] = []
+      const graph = buildDeterministicGraph(mkDoc(301))
+      await augmentWithEmbeddingEdges(graph, CONFIG, scriptedEmbed(calls))
+      expect(calls[0]).toHaveLength(300)
+      expect(calls[0][0]).toBe('embed filler 0') // doc order, from the top
+      expect(graph.embeddingsPartial).toBe(true)
+      expect(graph.embeddingsApplied).toBe(true)
+      expect(warn).toHaveBeenCalledTimes(1)
+      const msg = String(warn.mock.calls[0][0])
+      expect(msg).toContain('1 of 301')
+      expect(msg).toContain('[e300]')
+      expect(msg).not.toContain('embed filler') // blockIds only — never block text
+    } finally {
+      warn.mockRestore()
+    }
+  })
 })
 
 describe('fetchEmbeddings', () => {
@@ -157,20 +235,46 @@ describe('fetchEmbeddings', () => {
     expect((init.headers as Record<string, string>)['x-provider']).toBe('claude')
   })
 
-  it('200 with vectors → returns them; network failure → null', async () => {
+  it('200 with vectors → returns them', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ vectors: [[1, 0]] }), { status: 200 })),
     )
     expect(await fetchEmbeddings(['x'], CONFIG)).toEqual([[1, 0]])
+  })
 
+  it('transient failures THROW so the pass stays unapplied and retries: network, 429, 5xx', async () => {
+    // Only a 501 (permanent — provider has no embeddings API) may return
+    // null; null marks embeddingsApplied forever, so a transient blip must
+    // never take that path.
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
         throw new Error('offline')
       }),
     )
-    expect(await fetchEmbeddings(['x'], CONFIG)).toBeNull()
+    await expect(fetchEmbeddings(['x'], CONFIG)).rejects.toThrow('offline')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('rate limited', { status: 429 })))
+    await expect(fetchEmbeddings(['x'], CONFIG)).rejects.toThrow('429')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('upstream boom', { status: 502 })))
+    await expect(fetchEmbeddings(['x'], CONFIG)).rejects.toThrow('502')
+  })
+
+  it('sends x-embed-model only when config.embedModel is set (UI lands in Wave C)', async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ vectors: [[1, 0]] }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchEmbeddings(['x'], { ...CONFIG, embedModel: 'nomic-embed-text' })
+    const withModel = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1]
+    expect((withModel.headers as Record<string, string>)['x-embed-model']).toBe('nomic-embed-text')
+
+    await fetchEmbeddings(['x'], CONFIG)
+    const without = (fetchMock.mock.calls[1] as unknown as [string, RequestInit])[1]
+    expect('x-embed-model' in (without.headers as Record<string, string>)).toBe(false)
   })
 })
 

@@ -9,18 +9,34 @@ import type { DocGraph, DocGraphEdge } from './docGraph'
  * 'embedding'. Graph-adjacent pairs and doc-adjacent neighbors are skipped:
  * the former are already connected, the latter are trivially related prose.
  *
- * Same failure-swallowing contract as the LLM pass: unsupported providers
- * (Anthropic has no embeddings API) and any failure degrade to fewer edges —
- * never an error thrown into the cascade.
+ * Failure contract: a PERMANENTLY unsupported provider (Anthropic has no
+ * embeddings API — /api/embed answers 501) degrades to fewer edges with no
+ * retry loop; TRANSIENT failures (network, 429, 5xx) throw out of the embed
+ * fn, augmentWithEmbeddingEdges swallows them and leaves the pass unapplied
+ * so the next cascade retries. Never an error thrown into the cascade.
  */
 
-/** null = embeddings unsupported for this provider, or the call failed. */
+/**
+ * null = embeddings PERMANENTLY unsupported for this provider (no retry).
+ * Transient failures must THROW so the pass stays unapplied and is retried.
+ */
 export type EmbedFn = (texts: string[], config: LLMConfig) => Promise<number[][] | null>
 
+// NOTE: uncalibrated across embedding models — 0.82 was picked against
+// text-embedding-3-small-style cosine distributions, and different models
+// (or dimensions) shift the similarity range. If a swapped embed model over-
+// or under-links paraphrases, this constant is where to tune.
 const SIMILARITY_THRESHOLD = 0.82
 
-// Module-level vector cache keyed by per-block content hash — an incremental
-// rebuild only embeds blocks whose text actually changed.
+// Cap on the embedding pass: only the first EMBED_MAX_BLOCKS blocks in doc
+// order are embedded. Beyond it the graph is marked embeddingsPartial and
+// warns (mirror of llmPartial) — never a silent truncation.
+const EMBED_MAX_BLOCKS = 300
+
+// Module-level vector cache keyed by provider + embed model + per-block
+// content hash — an incremental rebuild only embeds blocks whose text
+// actually changed, and switching provider/model never reuses foreign
+// vectors (which would silently compare across incompatible spaces).
 const VECTOR_CACHE_MAX = 500
 const vectorCache = new Map<string, number[]>()
 
@@ -41,32 +57,39 @@ export function clearEmbeddingVectorCache(): void {
 
 /**
  * Default EmbedFn: the provider-agnostic /api/embed route (same header
- * convention as /api/structured). A 501 (provider has no embeddings API) and
- * every other failure return null — the caller treats it as a silent no-op.
+ * convention as /api/structured, plus x-embed-model when configured). Only a
+ * 501 (provider PERMANENTLY has no embeddings API — the claude case) returns
+ * null, which the caller treats as a silent no-op with no retry. Everything
+ * transient — network errors, 429, 5xx — THROWS, so augmentWithEmbeddingEdges
+ * leaves embeddingsApplied false and the next cascade retries.
  */
 export const fetchEmbeddings: EmbedFn = async (texts, config) => {
-  try {
-    const res = await fetch('/api/embed', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'x-provider': config.provider,
-        'x-model': config.model,
-        ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
-      },
-      body: JSON.stringify({ texts }),
-    })
-    if (!res.ok) return null
-    const data = await res.json()
-    return Array.isArray(data.vectors) ? (data.vectors as number[][]) : null
-  } catch {
-    return null
-  }
+  const res = await fetch('/api/embed', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': config.apiKey,
+      'x-provider': config.provider,
+      'x-model': config.model,
+      ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+      ...(config.embedModel ? { 'x-embed-model': config.embedModel } : {}),
+    },
+    body: JSON.stringify({ texts }),
+  })
+  if (res.status === 501) return null // permanent: provider has no embeddings API
+  if (!res.ok) throw new Error(`embed request failed: ${res.status}`) // transient: retried
+  const data = await res.json()
+  return Array.isArray(data.vectors) ? (data.vectors as number[][]) : null
 }
 
+/**
+ * Cosine similarity. A dimension mismatch (vectors from different embedding
+ * models sharing the cache window) returns 0 — never Math.min truncation,
+ * which would silently compare incompatible spaces.
+ */
 function cosine(a: number[], b: number[]): number {
-  const len = Math.min(a.length, b.length)
+  if (a.length !== b.length) return 0
+  const len = a.length
   let dot = 0
   let normA = 0
   let normB = 0
@@ -84,11 +107,13 @@ function isGraphAdjacent(graph: DocGraph, a: string, b: string): boolean {
 }
 
 /**
- * Mutates `graph` in place: embeds all textblocks (cache-aware, one batched
- * call for the misses) and adds `duplicates` edges between non-adjacent pairs
- * above the similarity threshold. A null embed result (unsupported/failed
- * transport) marks the pass applied with zero edges; a thrown scripted embed
- * is swallowed and left unapplied for a later retry. Never throws.
+ * Mutates `graph` in place: embeds the first EMBED_MAX_BLOCKS textblocks in
+ * doc order (cache-aware, one batched call for the misses; beyond the cap the
+ * graph is marked embeddingsPartial and warns) and adds `duplicates` edges
+ * between non-adjacent pairs above the similarity threshold. A null embed
+ * result (provider permanently unsupported) marks the pass applied with zero
+ * edges; a thrown embed (transient failure) is swallowed and left unapplied
+ * for a later retry. Never throws.
  */
 export async function augmentWithEmbeddingEdges(
   graph: DocGraph,
@@ -101,8 +126,20 @@ export async function augmentWithEmbeddingEdges(
     return
   }
 
-  const ordered = [...graph.nodes.values()].sort((a, b) => a.pos - b.pos)
-  const hashOf = (blockId: string) => graph.blockHashes.get(blockId) ?? blockId
+  const orderedAll = [...graph.nodes.values()].sort((a, b) => a.pos - b.pos)
+  const ordered = orderedAll.slice(0, EMBED_MAX_BLOCKS)
+  if (orderedAll.length > EMBED_MAX_BLOCKS) {
+    const skipped = orderedAll.slice(EMBED_MAX_BLOCKS)
+    graph.embeddingsPartial = true
+    console.warn(
+      `docGraph: embedding pass block cap hit — ${skipped.length} of ${orderedAll.length} blocks ` +
+        `(from [${skipped[0].blockId}] onward) were not embedded; graph marked embeddingsPartial`,
+    )
+  }
+  // Vectors from different providers/models live in incompatible spaces —
+  // key the cache by both so a settings switch re-embeds instead of reusing.
+  const hashOf = (blockId: string) =>
+    `${config.provider}:${config.embedModel ?? 'default'}:${graph.blockHashes.get(blockId) ?? blockId}`
 
   const missing = ordered.filter((n) => !vectorCache.has(hashOf(n.blockId)))
   if (missing.length > 0) {

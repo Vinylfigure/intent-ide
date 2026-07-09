@@ -57,6 +57,11 @@ export interface DocGraph {
    * the provider has no embeddings API (fewer edges, no retry loop).
    */
   embeddingsApplied: boolean
+  /**
+   * True when the embedding pass could not cover every block (block cap hit)
+   * — mirror of llmPartial. Never a silent truncation: setting this warns.
+   */
+  embeddingsPartial: boolean
   /** Per-textblock FNV-1a over blockId + text — the incremental-diff unit. */
   blockHashes: Map<string, string>
   nodes: Map<string, DocGraphNode>
@@ -75,11 +80,16 @@ const EDGE_TYPES: ReadonlySet<string> = new Set([
   'duplicates',
 ])
 
-// LLM pass chunking: contiguous ≤40-block listings with a 4-block overlap
-// between consecutive chunks (cheap cross-boundary stitching — validation
-// already drops edges citing ids outside the graph), capped at 8 calls per
-// build. Beyond the cap the graph is marked llmPartial and warns — never a
-// silent truncation.
+// LLM pass sizing. Docs up to LLM_SINGLE_CALL_MAX blocks (the core 5–20-page
+// use case) go to the model in ONE whole-doc call so every pair of blocks is
+// co-visible — chunking would make pairs more than ~LLM_CHUNK_SIZE blocks
+// apart structurally unlinkable. Only ABOVE 150 blocks does the pass fall
+// back to contiguous ≤40-block chunks with a 4-block overlap between
+// consecutive chunks (cheap cross-boundary stitching — validation already
+// drops edges citing ids outside the graph), capped at 8 calls per build.
+// Beyond the cap the graph is marked llmPartial and warns — never a silent
+// truncation.
+const LLM_SINGLE_CALL_MAX = 150
 const LLM_CHUNK_SIZE = 40
 const LLM_CHUNK_OVERLAP = 4
 const LLM_MAX_CHUNKS = 8
@@ -306,6 +316,7 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
     llmApplied: false,
     llmPartial: false,
     embeddingsApplied: false,
+    embeddingsPartial: false,
     blockHashes,
     nodes,
     edges,
@@ -367,11 +378,16 @@ function llmAvailable(config: LLMConfig): boolean {
 }
 
 /**
- * Contiguous ≤LLM_CHUNK_SIZE chunks over the ordered block list, consecutive
- * chunks sharing LLM_CHUNK_OVERLAP blocks, hard-capped at LLM_MAX_CHUNKS.
- * `skipped` counts trailing blocks beyond the cap that no chunk covers.
+ * Listings for the extraction pass. At or under LLM_SINGLE_CALL_MAX blocks:
+ * ONE whole-doc listing (every pair co-visible). Above it: contiguous
+ * ≤LLM_CHUNK_SIZE chunks, consecutive chunks sharing LLM_CHUNK_OVERLAP
+ * blocks, hard-capped at LLM_MAX_CHUNKS. `skipped` counts trailing blocks
+ * beyond the cap that no chunk covers.
  */
 function chunkNodes(ordered: DocGraphNode[]): { chunks: DocGraphNode[][]; skipped: number } {
+  if (ordered.length <= LLM_SINGLE_CALL_MAX) {
+    return { chunks: [ordered], skipped: 0 }
+  }
   const chunks: DocGraphNode[][] = []
   const stride = LLM_CHUNK_SIZE - LLM_CHUNK_OVERLAP
   let covered = 0
@@ -388,8 +404,10 @@ function chunkNodes(ordered: DocGraphNode[]): { chunks: DocGraphNode[][]; skippe
  * changed-neighborhood subset (the incremental path). Mutates `graph` in
  * place: validated LLM edges are merged and `llmApplied` flips true; blocks
  * left uncovered by the chunk cap set `llmPartial` and warn — no silent
- * truncation. A chunk failure stops the pass with `llmApplied` still false
- * (edges merged so far are kept; the retry dedupes) — never throws.
+ * truncation. Chunk calls run in parallel (fetchWithRetry inside the call fn
+ * already handles per-call retry); any chunk failure keeps the successful
+ * chunks' edges but leaves `llmApplied` false so the next build retries (the
+ * edge-key dedupe absorbs the re-reported edges) — never throws.
  */
 export async function augmentWithLlmEdges(
   graph: DocGraph,
@@ -420,11 +438,12 @@ export async function augmentWithLlmEdges(
     )
   }
 
-  const allToolCalls: { name: string; input: unknown }[] = []
-  for (const chunk of chunks) {
-    const listing = chunk.map((n) => `[${n.blockId}] ${n.text}`).join('\n')
-    try {
-      const res = await call(
+  // Chunk calls are independent listings — run them in parallel (the call fn
+  // handles per-call retry internally).
+  const results = await Promise.allSettled(
+    chunks.map((chunk) => {
+      const listing = chunk.map((n) => `[${n.blockId}] ${n.text}`).join('\n')
+      return call(
         {
           messages: [
             { role: 'system', content: LINK_SYSTEM },
@@ -439,17 +458,21 @@ export async function augmentWithLlmEdges(
         // user's selected model, never a silent cheap-model downgrade.
         config,
       )
-      allToolCalls.push(...res.toolCalls)
-    } catch {
-      // Merge what earlier chunks found, but leave llmApplied false so the
-      // next getDocGraph retries (the edge-key dedupe absorbs the overlap).
-      mergeLlmToolCalls(graph, allToolCalls)
-      return
-    }
+    }),
+  )
+
+  const allToolCalls: { name: string; input: unknown }[] = []
+  let anyFailed = false
+  for (const res of results) {
+    if (res.status === 'fulfilled') allToolCalls.push(...res.value.toolCalls)
+    else anyFailed = true
   }
 
+  // Merge what the successful chunks found; a failed chunk leaves llmApplied
+  // false so the next getDocGraph retries (the edge-key dedupe absorbs the
+  // re-reported edges).
   mergeLlmToolCalls(graph, allToolCalls)
-  graph.llmApplied = true
+  if (!anyFailed) graph.llmApplied = true
 }
 
 /** Validate + dedupe link_blocks calls into the graph, rebuilding adjacency. */
@@ -548,13 +571,31 @@ function carryForwardLlmEdges(graph: DocGraph, prior: DocGraph): Set<string> {
   return changed
 }
 
-/** The seed blocks plus their 1-hop graph neighbors (union). */
-function expandOneHop(graph: DocGraph, seed: ReadonlySet<string>): Set<string> {
+/**
+ * The seed blocks plus their 1-hop graph neighbors (union of the CURRENT
+ * graph's adjacency and, when given, the PRIOR graph's adjacency).
+ *
+ * The prior adjacency is load-bearing: carryForwardLlmEdges DROPS every LLM
+ * edge touching a changed block, and rebuilds the current adjacency after the
+ * drop — so a dropped edge's far endpoint is invisible to the current
+ * adjacency. Without seeding from the prior graph the far endpoint never
+ * re-enters the re-extraction listing, the model can never re-propose the
+ * link, and every incremental pass permanently destroys LLM edges touching
+ * edited blocks (monotonic graph decay compounding across a session).
+ */
+function expandOneHop(
+  graph: DocGraph,
+  seed: ReadonlySet<string>,
+  priorAdjacency?: Map<string, DocGraphEdge[]>,
+): Set<string> {
   const out = new Set(seed)
+  const addFar = (id: string, edge: DocGraphEdge) => {
+    const far = edge.from === id ? edge.to : edge.from
+    if (graph.nodes.has(far)) out.add(far)
+  }
   for (const id of seed) {
-    for (const edge of graph.adjacency.get(id) ?? []) {
-      out.add(edge.from === id ? edge.to : edge.from)
-    }
+    for (const edge of graph.adjacency.get(id) ?? []) addFar(id, edge)
+    for (const edge of priorAdjacency?.get(id) ?? []) addFar(id, edge)
   }
   return out
 }
@@ -614,7 +655,9 @@ export async function getDocGraph(
       const prior = findBestPriorGraph(graph, hash)
       if (prior) {
         const changed = carryForwardLlmEdges(graph, prior)
-        targetIds = expandOneHop(graph, changed)
+        // Union with the prior adjacency so far endpoints of DROPPED LLM
+        // edges re-enter the listing and can be re-proposed.
+        targetIds = expandOneHop(graph, changed, prior.adjacency)
       }
       await augmentWithLlmEdges(graph, config, deps.callStructured ?? fetchStructured, targetIds)
     }

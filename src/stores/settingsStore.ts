@@ -10,6 +10,12 @@ export interface LLMConfig {
   apiKey: string
   model: string
   baseUrl?: string
+  /**
+   * Embedding model for the doc-graph paraphrase pass (sent as x-embed-model
+   * to /api/embed). No UI yet — Wave C exposes it; unset uses the route's
+   * per-provider default.
+   */
+  embedModel?: string
 }
 
 export const PROVIDER_MODELS: Record<LLMProvider, { label: string; value: string }[]> = {
