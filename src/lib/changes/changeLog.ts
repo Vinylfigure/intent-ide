@@ -25,6 +25,8 @@ export interface ChangeSet {
   title: string
   status: ChangeSetStatus
   updatedAt: number
+  /** Document version recorded when this change set was applied (see src/lib/history). */
+  commitHash?: string
 }
 
 export interface VersionSnapshot {

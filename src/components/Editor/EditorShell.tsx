@@ -11,6 +11,7 @@ import { useDocumentStore } from '@/stores/documentStore'
 import { setChangeCallback } from '@/lib/prosemirror/plugins/changeTrackingPlugin'
 import { scheduleDocGraphRebuild, cancelScheduledDocGraphRebuild } from '@/lib/graphrag/docGraph'
 import { useChangesStore } from '@/stores/changesStore'
+import { recordCommit } from '@/lib/history/commits'
 import { ConflictTooltip } from './ConflictTooltip'
 import { UncertaintyTooltip } from './UncertaintyTooltip'
 import { ProposedEditControl } from './ProposedEditControl'
@@ -32,10 +33,17 @@ export function EditorShell() {
     saveTimerRef.current = setTimeout(() => {
       const docStore = useDocumentStore.getState()
       if (docStore.activeDocumentId) {
-        docStore.saveDocument(
-          docStore.activeDocumentId,
-          view.state.doc.toJSON()
-        )
+        const docJson = view.state.doc.toJSON()
+        docStore.saveDocument(docStore.activeDocumentId, docJson)
+        // Version-history capture (fire-and-forget). Content-hash dedupe
+        // makes flushes with unchanged content free.
+        recordCommit({
+          docJson,
+          documentId: docStore.activeDocumentId,
+          kind: 'direct',
+          message: 'Edited document',
+          actor: 'human',
+        })
       }
     }, AUTOSAVE_DELAY)
   }, [])

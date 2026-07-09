@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useChangesStore } from '@/stores/changesStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 import { useToastStore } from '@/stores/toastStore'
 import { removeAnnotationDecoration } from '@/lib/prosemirror/plugins/annotationPlugin'
 import { generateId } from '@/lib/utils/id'
@@ -14,6 +15,8 @@ import { recordHumanDecision, handlerToApprovalAction } from '@/lib/audit/approv
 import { applyUncertaintyFromLogprobs, applyUncertaintyFromFlags } from '@/lib/ai/uncertainty'
 import { getProposedAnchors } from '@/lib/prosemirror/plugins/proposedChangePlugin'
 import { applyProposedEdits } from '@/lib/prosemirror/applyProposedEdits'
+import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
+import { createCommit } from '@/lib/history/commits'
 import { SemanticCommitModal } from '@/components/Editor/SemanticCommitModal'
 import type { Annotation, ConversationMessage } from '@/lib/annotations/types'
 import { SEVERITY_ORDER } from '@/lib/annotations/types'
@@ -83,6 +86,44 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     }
   }
 
+  // Version-history capture for applied AI changes (fire-and-forget — never
+  // blocks the apply path). Records the post-apply document as an 'apply'
+  // version linked to this annotation and its audit records, then stamps the
+  // change set with the resulting version hash.
+  const recordApplyCommit = (blockIdsTouched: string[]) => {
+    const currentView = useEditorStore.getState().view
+    if (!currentView) return
+    const auditIds =
+      changeSet && changeSet.auditRecordIds.length > 0
+        ? changeSet.auditRecordIds
+        : annotation.resolution?.auditId
+          ? [annotation.resolution.auditId]
+          : []
+    const transcript = annotation.transcript.trim()
+    const message = !transcript
+      ? 'AI change applied'
+      : transcript.length > 72
+        ? `${transcript.slice(0, 69)}...`
+        : transcript
+    createCommit({
+      docJson: currentView.state.doc.toJSON(),
+      documentId: annotation.documentId,
+      kind: 'apply',
+      message,
+      annotationId: annotation.id,
+      auditIds,
+      blockIdsTouched,
+      actor: 'ai+human',
+      modelVersion: useSettingsStore.getState().llmConfig.model,
+    })
+      .then((hash) => {
+        if (changeSetId) {
+          useChangesStore.getState().setChangeSetCommitHash(changeSetId, hash)
+        }
+      })
+      .catch((err) => console.warn('[history] Failed to record version:', err))
+  }
+
   const applyConfirmedEdit = (acceptedIds?: string[]) => {
     // Multi-region path: a cascade run produced several proposed edits. Apply the
     // user-accepted subset (from the commit modal) in one validated transaction
@@ -126,6 +167,11 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         useChangesStore.getState().updateChangeSetStatus(changeSetId, 'approved')
       }
       updateAnnotation(annotation.id, { status: 'applied' })
+      recordApplyCommit(
+        result.applied
+          .map((ap) => ap.blockId)
+          .filter((blockId): blockId is string => Boolean(blockId)),
+      )
       useToastStore.getState().addToast(
         `Applied ${result.applied.length} change${result.applied.length > 1 ? 's' : ''}`,
         'success',
@@ -145,6 +191,9 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
 
     const edit = annotation.resolution?.suggestedEdit
     if (!edit || !view) return
+
+    // Resolve the touched block before the positions shift under the apply.
+    const editedBlockId = blockIdAtPos(view.state.doc, edit.from)
 
     // Apply the edit to the document
     const tr = view.state.tr.replaceWith(
@@ -175,6 +224,7 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     }
 
     updateAnnotation(annotation.id, { status: 'applied' })
+    recordApplyCommit(editedBlockId ? [editedBlockId] : [])
 
     // Apply uncertainty highlights to the newly inserted text
     const newTo = edit.from + edit.newText.length

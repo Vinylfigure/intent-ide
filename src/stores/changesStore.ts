@@ -22,6 +22,7 @@ interface ChangesState {
   ensureChangeSetForAnnotation: (annotation: Annotation) => string | null
   linkAuditToAnnotation: (annotation: Annotation, auditRecordId: string) => void
   updateChangeSetStatus: (id: string, status: ChangeSetStatus) => void
+  setChangeSetCommitHash: (id: string, commitHash: string) => void
   getChangeSetByAnnotationId: (annotationId: string) => ChangeSet | undefined
   clear: () => void
 }
@@ -183,6 +184,13 @@ export const useChangesStore = create<ChangesState>()(
             changeSet.id === id
               ? { ...changeSet, status, updatedAt: Date.now() }
               : changeSet
+          ),
+        })),
+
+      setChangeSetCommitHash: (id, commitHash) =>
+        set((s) => ({
+          changeSets: s.changeSets.map((changeSet) =>
+            changeSet.id === id ? { ...changeSet, commitHash } : changeSet
           ),
         })),
 

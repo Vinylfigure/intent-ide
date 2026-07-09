@@ -3,6 +3,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { generateId } from '@/lib/utils/id'
+import { recordCommit } from '@/lib/history/commits'
 
 export interface DocumentMeta {
   id: string
@@ -105,6 +106,7 @@ export const useDocumentStore = create<DocumentStoreState>()(
         const id = generateId()
         const now = Date.now()
         const collectionIds = [...new Set(options?.collectionIds ?? EMPTY_COLLECTIONS)]
+        const documentTitle = title.trim() || 'Untitled'
 
         try {
           localStorage.setItem(getDocumentStorageKey(id), JSON.stringify(docJson))
@@ -116,7 +118,7 @@ export const useDocumentStore = create<DocumentStoreState>()(
           documents: [
             {
               id,
-              title: title.trim() || 'Untitled',
+              title: documentTitle,
               createdAt: now,
               updatedAt: now,
               collectionIds,
@@ -127,6 +129,16 @@ export const useDocumentStore = create<DocumentStoreState>()(
           lastSavedAt: now,
           isDirty: false,
         }))
+
+        // Root entry in the document's version history (fire-and-forget —
+        // covers blank/paste/generate/import and duplicates alike).
+        recordCommit({
+          docJson,
+          documentId: id,
+          kind: 'import',
+          message: `Created "${documentTitle}"`,
+          actor: 'human',
+        })
 
         return id
       },
