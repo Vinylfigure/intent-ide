@@ -54,12 +54,17 @@ model AuditLog {
   overrideReason      String?
 }
 
-/// Git-model document history — content-addressed snapshots in an append-only
-/// linear chain (parent pointers). Restore creates a NEW commit; history is
+/// Git-model document history — two-level content-addressed snapshots in an
+/// append-only linear chain (parent pointers). `contentHash` covers the
+/// document content only ("tree"); `hash` (the id) additionally covers
+/// attribution — parent, kind, message, actor, annotationId, auditIds,
+/// modelVersion ("commit") — so same-content versions with different
+/// provenance are distinct records. Restore creates a NEW commit; history is
 /// never rewritten. EU AI Act Article 12 record-keeping surface.
 /// Append-only: no update/delete operations permitted on history records.
 model DocCommit {
   hash            String   @id
+  contentHash     String
   documentId      String
   parentHash      String?
   kind            String   // 'import' | 'apply' | 'direct' | 'restore'
@@ -73,4 +78,5 @@ model DocCommit {
   createdAt       DateTime @default(now())
 
   @@index([documentId, createdAt])
+  @@index([documentId, parentHash])
 }

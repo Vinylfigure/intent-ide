@@ -1,11 +1,19 @@
 /**
- * Canonical serialization for content-addressed document versions.
+ * Canonical serialization + two-level hashing for document versions.
  *
- * The version hash is a sha256 over a canonical string derived from
- * (documentId, parentHash, docJson). Both the client (crypto.subtle in the
- * browser) and the server (/api/history, Node's WebCrypto) import THIS module
- * so the payload is byte-identical on both sides — the server recomputes the
- * hash and rejects mismatches, which is what makes history tamper-evident.
+ * Git's actual design, deliberately:
+ *   - contentHash ("tree"): sha256 over the canonical docJson ONLY.
+ *   - hash ("commit", the primary key): sha256 over a canonical join of
+ *     documentId, parentHash, contentHash, kind, message, actor,
+ *     annotationId, auditIds and modelVersion.
+ *
+ * Because the commit hash covers attribution, two versions that agree on
+ * content but disagree on provenance (e.g. an AI 'apply' and a 'direct'
+ * autosave landing on the same head) are DISTINCT records by construction —
+ * provenance can never be silently collapsed into a single row. The server
+ * (/api/history) recomputes BOTH hashes from this same module, so client and
+ * server are byte-identical and stored records are tamper-evident against
+ * partial modification.
  *
  * Pure module: no React, no Prisma, no DOM. Safe to import anywhere.
  */
@@ -33,17 +41,56 @@ export function canonicalStringify(value: unknown): string {
 }
 
 /**
- * The exact string that gets hashed for a version. `docJson` may arrive as an
- * object or as a JSON string (the API stores it as a string) — both normalize
- * to the same canonical form.
+ * The exact string whose sha256 is the CONTENT hash ("tree"). `docJson` may
+ * arrive as an object or as a JSON string (the API stores it as a string) —
+ * both normalize to the same canonical form.
  */
-export function commitPayload(
-  docJson: unknown,
-  parentHash: string | null,
-  documentId: string,
-): string {
+export function contentPayload(docJson: unknown): string {
   const parsed = typeof docJson === 'string' ? JSON.parse(docJson) : docJson
-  return `${documentId}\n${parentHash ?? ''}\n${canonicalStringify(parsed)}`
+  return canonicalStringify(parsed)
+}
+
+/** Content address for a snapshot: sha256 over the canonical docJson only. */
+export async function computeContentHash(docJson: unknown): Promise<string> {
+  return sha256Hex(contentPayload(docJson))
+}
+
+/** Everything the COMMIT hash covers — content (via contentHash) plus attribution. */
+export interface CommitHashFields {
+  documentId: string
+  parentHash: string | null
+  contentHash: string
+  kind: string
+  message: string
+  actor: string
+  annotationId: string | null
+  /** Audit record ids as an array (its canonical JSON form is what gets hashed). */
+  auditIds: string[]
+  modelVersion: string
+}
+
+/**
+ * The exact string whose sha256 is the COMMIT hash. A canonical object
+ * stringify (sorted keys, JSON-escaped values) — unambiguous even when
+ * fields contain newlines or separators.
+ */
+export function commitPayload(fields: CommitHashFields): string {
+  return canonicalStringify({
+    documentId: fields.documentId,
+    parentHash: fields.parentHash ?? null,
+    contentHash: fields.contentHash,
+    kind: fields.kind,
+    message: fields.message,
+    actor: fields.actor,
+    annotationId: fields.annotationId ?? '',
+    auditIds: fields.auditIds,
+    modelVersion: fields.modelVersion,
+  })
+}
+
+/** Commit address for a version: sha256 over the canonical commit payload. */
+export async function computeCommitHash(fields: CommitHashFields): Promise<string> {
+  return sha256Hex(commitPayload(fields))
 }
 
 /**
@@ -56,13 +103,4 @@ export async function sha256Hex(input: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('')
-}
-
-/** Content-address for a version: sha256 over the canonical payload. */
-export async function computeCommitHash(
-  docJson: unknown,
-  parentHash: string | null,
-  documentId: string,
-): Promise<string> {
-  return sha256Hex(commitPayload(docJson, parentHash, documentId))
 }

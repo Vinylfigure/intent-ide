@@ -13,6 +13,7 @@ PRAGMA foreign_keys=on;
 -- CreateTable
 CREATE TABLE "DocCommit" (
     "hash" TEXT NOT NULL PRIMARY KEY,
+    "contentHash" TEXT NOT NULL,
     "documentId" TEXT NOT NULL,
     "parentHash" TEXT,
     "kind" TEXT NOT NULL,
@@ -45,3 +46,6 @@ PRAGMA defer_foreign_keys=OFF;
 
 -- CreateIndex
 CREATE INDEX "DocCommit_documentId_createdAt_idx" ON "DocCommit"("documentId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "DocCommit_documentId_parentHash_idx" ON "DocCommit"("documentId", "parentHash");

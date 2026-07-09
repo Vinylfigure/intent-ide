@@ -197,8 +197,12 @@ export function HistoryPanel() {
     try {
       const full = await getCommit(target.hash)
       if (!full) throw new Error('Version content unavailable')
-      await restoreCommit(view, full, activeDocumentId)
-      useToastStore.getState().addToast('Version restored — a new version was created', 'success')
+      const result = await restoreCommit(view, full, activeDocumentId)
+      if (result.noop) {
+        useToastStore.getState().addToast('Already at this version', 'info')
+      } else {
+        useToastStore.getState().addToast('Version restored — a new version was created', 'success')
+      }
       setRestoreTarget(null)
       setExpandedHash(null)
       setExpandedDiff(null)

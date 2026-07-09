@@ -116,7 +116,7 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
       actor: 'ai+human',
       modelVersion: useSettingsStore.getState().llmConfig.model,
     })
-      .then((hash) => {
+      .then(({ hash }) => {
         if (changeSetId) {
           useChangesStore.getState().setChangeSetCommitHash(changeSetId, hash)
         }
