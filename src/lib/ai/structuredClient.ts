@@ -1,4 +1,5 @@
 import type { LLMConfig } from '@/stores/settingsStore'
+import { addEstimate } from '@/lib/ai/spendEstimate'
 
 /**
  * Injectable client for the provider-agnostic `/api/structured` tool-calling
@@ -92,6 +93,10 @@ export async function fetchWithRetry(
 }
 
 export const fetchStructured: CallStructuredFn = async (req, config) => {
+  const body = JSON.stringify(req)
+  // Soft spend indicator (display only) — count the outbound payload once,
+  // not per retry: retries re-send the same content.
+  addEstimate(body.length)
   const res = await fetchWithRetry(`${structuredBaseUrl}/api/structured`, {
     method: 'POST',
     headers: {
@@ -101,7 +106,7 @@ export const fetchStructured: CallStructuredFn = async (req, config) => {
       'x-model': config.model,
       ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
     },
-    body: JSON.stringify(req),
+    body,
   })
   const data = await res.json()
   return { toolCalls: Array.isArray(data.toolCalls) ? data.toolCalls : [] }

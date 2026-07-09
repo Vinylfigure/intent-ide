@@ -209,6 +209,21 @@ export interface CascadeOptions {
   maxBlocks?: number
   /** Relevance judge for 'must' candidates; defaults to judgeMustCandidates over callStructured. */
   judge?: JudgeFn
+  /**
+   * Test/caller override for the settings-store citation-verification toggle.
+   * When false the judge stage is skipped entirely — severities stay derived.
+   */
+  judgeEnabled?: boolean
+}
+
+/** User toggle for the citation-verification judge (settings store, default true). */
+async function judgeEnabledFromStore(): Promise<boolean> {
+  try {
+    const { useSettingsStore } = await import('@/stores/settingsStore')
+    return useSettingsStore.getState().judgeEnabled
+  } catch {
+    return true
+  }
 }
 
 /**
@@ -390,6 +405,11 @@ export async function proposeCascadeEdits(
   }
 
   edits.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.from - b.from)
+
+  // User toggle ("Verify must-severity citations"): when off, skip the judge
+  // entirely — severities stay derived from graph structure + conflict checks.
+  const judgeOn = opts.judgeEnabled ?? (await judgeEnabledFromStore())
+  if (!judgeOn) return edits
 
   const demoted = await applyRelevanceJudge(
     edits,

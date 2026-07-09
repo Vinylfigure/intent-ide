@@ -76,14 +76,20 @@ interface SettingsState {
   showApiKeyModal: boolean
   /**
    * Embedding-based paraphrase edges in the doc graph (default on). Silently
-   * inert for providers without an embeddings API (Anthropic). UI toggle
-   * lands in Wave C — the persisted field ships first.
+   * inert for providers without an embeddings API (Anthropic).
    */
   embeddingsEnabled: boolean
+  /**
+   * Second-pass citation verification for 'must'-severity cascade candidates
+   * (default on). One extra small-model call per cascade run; when off, the
+   * derived severities stand unverified.
+   */
+  judgeEnabled: boolean
   setLLMConfig: (config: Partial<LLMConfig>) => void
   setWhisperKey: (key: string) => void
   setShowApiKeyModal: (show: boolean) => void
   setEmbeddingsEnabled: (enabled: boolean) => void
+  setJudgeEnabled: (enabled: boolean) => void
   hasKeys: () => boolean
 }
 
@@ -99,11 +105,13 @@ export const useSettingsStore = create<SettingsState>()(
       whisperApiKey: '',
       showApiKeyModal: false,
       embeddingsEnabled: true,
+      judgeEnabled: true,
       setLLMConfig: (config) =>
         set((s) => ({ llmConfig: { ...s.llmConfig, ...config } })),
       setWhisperKey: (key) => set({ whisperApiKey: key }),
       setShowApiKeyModal: (show) => set({ showApiKeyModal: show }),
       setEmbeddingsEnabled: (enabled) => set({ embeddingsEnabled: enabled }),
+      setJudgeEnabled: (enabled) => set({ judgeEnabled: enabled }),
       hasKeys: () => {
         const s = get()
         // Ollama runs locally — no API key needed
@@ -120,6 +128,13 @@ export const useSettingsStore = create<SettingsState>()(
           if (normalized !== state.llmConfig.model) {
             state.setLLMConfig({ model: normalized })
           }
+        }
+        // Backfill toggles missing from older persisted snapshots (default on).
+        if (state && typeof (state as { embeddingsEnabled?: unknown }).embeddingsEnabled !== 'boolean') {
+          state.setEmbeddingsEnabled(true)
+        }
+        if (state && typeof (state as { judgeEnabled?: unknown }).judgeEnabled !== 'boolean') {
+          state.setJudgeEnabled(true)
         }
       },
     }

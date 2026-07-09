@@ -571,6 +571,24 @@ describe('proposeCascadeEdits — relevance judge gating must', () => {
     expect(edits[0].reason).toBe('stale date')
   })
 
+  it('judgeEnabled: false skips the judge stage entirely — severity stays derived', async () => {
+    const state = stateOf(FIXTURE_DOC)
+    let judgeCalled = false
+    const edits = await proposeCascadeEdits(state, primaryOf(FIXTURE_DOC), CONFIG, {
+      graph: buildDeterministicGraph(FIXTURE_DOC),
+      callStructured: scripted([MUST_PROPOSAL]),
+      judgeEnabled: false,
+      judge: async () => {
+        judgeCalled = true
+        return new Map()
+      },
+    })
+    expect(judgeCalled).toBe(false)
+    expect(edits).toHaveLength(1)
+    expect(edits[0].severity).toBe('must')
+    expect(edits[0].reason).toBe('stale date')
+  })
+
   it('never calls the judge when no must survives derivation', async () => {
     const state = stateOf(FIXTURE_DOC)
     let judgeCalled = false

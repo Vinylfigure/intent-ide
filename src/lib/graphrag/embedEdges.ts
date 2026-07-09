@@ -1,4 +1,5 @@
 import type { LLMConfig } from '@/stores/settingsStore'
+import { addEstimate } from '@/lib/ai/spendEstimate'
 import type { DocGraph, DocGraphEdge } from './docGraph'
 
 /**
@@ -64,6 +65,8 @@ export function clearEmbeddingVectorCache(): void {
  * leaves embeddingsApplied false and the next cascade retries.
  */
 export const fetchEmbeddings: EmbedFn = async (texts, config) => {
+  // Soft spend indicator (display only).
+  addEstimate(texts.reduce((n, t) => n + t.length, 0))
   const res = await fetch('/api/embed', {
     method: 'POST',
     headers: {
