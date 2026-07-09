@@ -43,7 +43,11 @@ export interface SubgraphResult {
   edges: Array<{ source: string; target: string; name?: string; fact: string; validAt?: string | null; invalidAt?: string | null }>
 }
 
-async function mcpCall<T>(toolName: string, args: Record<string, unknown>): Promise<T> {
+async function mcpCall<T>(
+  toolName: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
   const response = await fetch(GRAPHITI_MCP_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -51,6 +55,7 @@ async function mcpCall<T>(toolName: string, args: Record<string, unknown>): Prom
       method: "tools/call",
       params: { name: toolName, arguments: args },
     }),
+    ...(signal ? { signal } : {}),
   })
   if (!response.ok) {
     throw new Error(`Graphiti ${toolName} failed: ${response.status}`)
@@ -69,15 +74,24 @@ export async function addEpisode(episode: Episode): Promise<{ success: boolean }
   return { success: true }
 }
 
-export async function searchNodes(query: string, limit = 10): Promise<GraphNode[]> {
-  return mcpCall<GraphNode[]>("search_nodes", { query, limit })
+export async function searchNodes(
+  query: string,
+  limit = 10,
+  signal?: AbortSignal,
+): Promise<GraphNode[]> {
+  return mcpCall<GraphNode[]>("search_nodes", { query, limit }, signal)
 }
 
-export async function getSubgraph(nodeId: string, radius = 2): Promise<SubgraphResult> {
-  return mcpCall<SubgraphResult>("get_entity_subgraph", {
-    entity_uuid: nodeId,
-    radius,
-  })
+export async function getSubgraph(
+  nodeId: string,
+  radius = 2,
+  signal?: AbortSignal,
+): Promise<SubgraphResult> {
+  return mcpCall<SubgraphResult>(
+    "get_entity_subgraph",
+    { entity_uuid: nodeId, radius },
+    signal,
+  )
 }
 
 export async function searchFacts(query: string, limit = 10): Promise<GraphEdge[]> {

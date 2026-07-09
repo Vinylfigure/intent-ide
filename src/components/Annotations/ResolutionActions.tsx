@@ -20,10 +20,13 @@ import {
   type CommitStatusSnapshot,
 } from '@/lib/annotations/commitStatusSnapshot'
 import { applyProposedEdits } from '@/lib/prosemirror/applyProposedEdits'
+import { recordCascadeDecision } from '@/lib/telemetry/cascadeCalibration'
 import {
-  recordCascadeDecision,
-  recordCascadeStatusChange,
-} from '@/lib/telemetry/cascadeCalibration'
+  createModalDecisionBuffer,
+  type BufferedEditMeta,
+  type ModalDecisionBuffer,
+} from '@/lib/telemetry/modalDecisionBuffer'
+import { showAffectedMode } from '@/lib/annotations/showAffected'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { createCommit } from '@/lib/history/commits'
 import { SemanticCommitModal } from '@/components/Editor/SemanticCommitModal'
@@ -44,6 +47,10 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   // Plugin statuses at modal-open time — cancel restores these so an
   // abandoned review session never leaks its toggles into the inline surfaces.
   const commitSnapshotRef = useRef<CommitStatusSnapshot | null>(null)
+  // Modal-source telemetry buffer: toggles inside the modal are provisional
+  // (last decision per edit wins), flushed on CONFIRM only, discarded on
+  // cancel — so flip noise and abandoned sessions never inflate calibration.
+  const modalDecisionsRef = useRef<ModalDecisionBuffer | null>(null)
 
   if (!annotation.resolution) return null
 
@@ -295,6 +302,23 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     const edits = annotation.resolution?.edits
     commitSnapshotRef.current =
       view && edits && edits.length > 1 ? openCommitReview(view, edits) : null
+    // Telemetry buffer baseline: the OPEN-time statuses (the snapshot taken
+    // before the optional pre-rejection seeding), so a toggle that ends where
+    // it started flushes nothing on confirm.
+    if (edits && edits.length > 1) {
+      const editsById = new Map<string, BufferedEditMeta>(
+        edits.map((e) => [
+          e.id,
+          { relation: e.relation, severity: e.severity, evidence: e.evidence },
+        ]),
+      )
+      const openStatuses = new Map(
+        edits.map((e) => [e.id, commitSnapshotRef.current?.[e.id] ?? e.status] as const),
+      )
+      modalDecisionsRef.current = createModalDecisionBuffer(editsById, openStatuses)
+    } else {
+      modalDecisionsRef.current = null
+    }
     setShowDiffModal(true)
   }
 
@@ -396,13 +420,11 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
           ingestAnnotationEpisode(annotation)
 
           // The cascade proposals ARE the affected-sections view (one cascade
-          // surface). When this resolution carries cascade edits, bring the
-          // CascadeList into view and pulse it — no second read-only
-          // decoration lane.
-          const hasCascadeEdits = (annotation.resolution?.edits ?? []).some(
-            (e) => e.relation === 'cascade',
-          )
-          if (hasCascadeEdits) {
+          // surface). Scroll/pulse the CascadeList ONLY while it is actually
+          // rendered (status 'resolved' + cascade edits) — post-apply the list
+          // unmounts, so anything else falls back to a follow-up message that
+          // produces visible output instead of a dead button.
+          if (showAffectedMode(annotation) === 'scroll') {
             const list = document.querySelector<HTMLElement>(
               `[data-cascade-list="${annotation.id}"]`,
             )
@@ -482,21 +504,27 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
           // pre-apply source of truth across all review surfaces. No-ops for
           // ids the plugin doesn't track (single-edit fallback rows).
           if (view) {
-            // Calibration telemetry (metadata only): guarded against the
-            // CURRENT plugin status so echoed toggles never double-count.
-            const current = getProposedAnchors(view.state).get(id)
-            if (current) recordCascadeStatusChange(current, status, 'modal')
+            // Calibration telemetry: BUFFERED (last decision per edit id),
+            // flushed on confirm only — provisional modal flips and cancelled
+            // sessions never inflate the counts.
+            modalDecisionsRef.current?.toggle(id, status)
             setProposedEditStatus(view, id, status)
           }
         }}
         onConfirm={(ids) => {
           // Confirm: the live statuses stand — drop the snapshot, no restore.
+          // Flush the buffered modal decisions (one event per decided edit).
+          modalDecisionsRef.current?.confirm()
+          modalDecisionsRef.current = null
           commitSnapshotRef.current = null
           applyConfirmedEdit(ids)
         }}
         onCancel={() => {
           // Cancel: restore the open-time statuses so modal toggles (and the
           // open-time optional pre-rejections) don't leak into inline surfaces.
+          // Discard the buffered decisions — an abandoned review records nothing.
+          modalDecisionsRef.current?.cancel()
+          modalDecisionsRef.current = null
           if (view && commitSnapshotRef.current) {
             restoreCommitReview(view, commitSnapshotRef.current)
           }

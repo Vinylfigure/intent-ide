@@ -119,6 +119,146 @@ describe('augmentWithGraphitiEdges', () => {
     expect(touched.has('b12')).toBe(false)
   })
 
+  it('caps distinct processed entities at 12 per build (13th skipped, count-only warn)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // 13 valid entities TermA01..TermA13, each mentioned in exactly 2 blocks.
+      const blocks = Array.from({ length: 13 }, (_, i) => {
+        const n = String(i + 1).padStart(2, '0')
+        return [
+          p(`x${n}`, `Clause about TermA${n} begins here.`),
+          p(`y${n}`, `Later clause repeats TermA${n} verbatim.`),
+        ]
+      }).flat()
+      const graph = buildDeterministicGraph(docOf(...blocks))
+      // Hub hit is under the 4-char minimum, so it is skipped (not processed)
+      // and the 13 subgraph-discovered entities arrive in insertion order.
+      const client = scriptedClient([entity('API')], {
+        'uuid-API': {
+          nodes: Array.from({ length: 13 }, (_, i) =>
+            entity(`TermA${String(i + 1).padStart(2, '0')}`),
+          ),
+          edges: [],
+        },
+      })
+      await augmentWithGraphitiEdges(graph, client)
+
+      const graphitiEdges = graph.edges.filter((e) => e.source === 'graphiti')
+      expect(graphitiEdges).toHaveLength(12) // one edge per processed entity
+      const evidences = new Set(graphitiEdges.map((e) => e.evidence))
+      expect(evidences.has('TermA12')).toBe(true)
+      expect(evidences.has('TermA13')).toBe(false) // the 13th was never processed
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0][0])).toContain('entity cap')
+      expect(String(warn.mock.calls[0][0])).toContain('12')
+      expect(graph.graphitiApplied).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('caps total graphiti edges at 120 per build (count-only warn, no silent firehose)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // 3 entities × 10 disjoint mentioning blocks = 3 × C(10,2) = 135 potential edges.
+      const mk = (term: string, prefix: string) =>
+        Array.from({ length: 10 }, (_, i) =>
+          p(`${prefix}${i}`, `Clause ${i} of this section cites the ${term} figure.`),
+        )
+      const graph = buildDeterministicGraph(
+        docOf(...mk('AlphaTotal', 'a'), ...mk('BetaTotal', 'b'), ...mk('GammaTotal', 'c')),
+      )
+      await augmentWithGraphitiEdges(
+        graph,
+        scriptedClient([entity('AlphaTotal'), entity('BetaTotal'), entity('GammaTotal')]),
+      )
+
+      const graphitiEdges = graph.edges.filter((e) => e.source === 'graphiti')
+      expect(graphitiEdges).toHaveLength(120)
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0][0])).toContain('edge cap')
+      expect(String(warn.mock.calls[0][0])).toContain('120')
+      expect(graph.graphitiApplied).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('reversed duplicates of deterministic term edges are deduped (direction-normalized key)', async () => {
+    // Deterministic pass 2b creates use→def ('references', evidence term). The
+    // graphiti pair walks blocks in DOC order, producing def→use — the reverse
+    // orientation of the same relationship, which must not become a parallel edge.
+    const graph = buildDeterministicGraph(
+      docOf(
+        p('def', '"Pilot Program" means the trial rollout.'),
+        p('use', 'Funding for the Pilot Program comes from reserves.'),
+      ),
+    )
+    expect(graph.edges).toEqual([
+      {
+        from: 'use',
+        to: 'def',
+        type: 'references',
+        source: 'deterministic',
+        evidence: 'Pilot Program',
+      },
+    ])
+    await augmentWithGraphitiEdges(graph, scriptedClient([entity('Pilot Program')]))
+    expect(graph.edges.filter((e) => e.source === 'graphiti')).toEqual([])
+    expect(graph.edges).toHaveLength(1) // still just the deterministic edge
+    expect(graph.graphitiApplied).toBe(true)
+  })
+
+  it('threads an AbortSignal to the client and aborts in-flight calls at the deadline', async () => {
+    const graph = buildDeterministicGraph(
+      docOf(p('b1', 'Alpha Term here.'), p('b2', 'Alpha Term there.')),
+    )
+    const subgraphCalls: string[] = []
+    let searchSignal: AbortSignal | undefined
+    await augmentWithGraphitiEdges(graph, {
+      searchNodes: async (_q, _l, signal) => {
+        searchSignal = signal
+        return [entity('E-one'), entity('E-two'), entity('E-three')]
+      },
+      // Honors the signal: pends until aborted, then rejects.
+      getSubgraph: (uuid, _radius, signal) => {
+        subgraphCalls.push(uuid)
+        return new Promise((_, reject) => {
+          signal?.addEventListener('abort', () => reject(new Error('aborted')))
+        })
+      },
+      timeoutMs: 20,
+    })
+    expect(searchSignal).toBeInstanceOf(AbortSignal)
+    expect(searchSignal!.aborted).toBe(true)
+    expect(graph.graphitiApplied).toBe(false)
+    // Give any would-be zombie continuation time to fire further calls.
+    await new Promise((r) => setTimeout(r, 40))
+    expect(subgraphCalls).toEqual(['uuid-E-one']) // sequential calls stopped at the abort
+  })
+
+  it('stops zombie sequential getSubgraph calls even when the client ignores the signal', async () => {
+    // The client resolves AFTER the deadline without honoring the abort — the
+    // pass must still stop between calls via the signal.aborted check instead
+    // of walking all three subgraphs in the background.
+    const graph = buildDeterministicGraph(
+      docOf(p('b1', 'Alpha Term here.'), p('b2', 'Alpha Term there.')),
+    )
+    const subgraphCalls: string[] = []
+    await augmentWithGraphitiEdges(graph, {
+      searchNodes: async () => [entity('E-one'), entity('E-two'), entity('E-three')],
+      getSubgraph: async (uuid) => {
+        subgraphCalls.push(uuid)
+        await new Promise((r) => setTimeout(r, 40)) // outlives the deadline
+        return { nodes: [], edges: [] }
+      },
+      timeoutMs: 15,
+    })
+    expect(graph.graphitiApplied).toBe(false)
+    await new Promise((r) => setTimeout(r, 120))
+    expect(subgraphCalls).toEqual(['uuid-E-one'])
+  })
+
   it('returns silently (no edges, no throw) when the MCP client fails', async () => {
     const graph = buildDeterministicGraph(
       docOf(p('b1', 'Alpha Term here.'), p('b2', 'Alpha Term there.')),

@@ -113,9 +113,12 @@ export function CascadeList({ annotation }: CascadeListProps) {
     if (!view) return
     if (status === 'accepted' || status === 'rejected') {
       // Calibration telemetry (metadata only): guard against the CURRENT live
-      // status so a no-op click never double-counts.
-      const current = getProposedAnchors(view.state).get(edit.id) ?? edit
-      recordCascadeStatusChange(current, status, 'list')
+      // status so a no-op click never double-counts. Record ONLY when the live
+      // plugin anchor exists (matching ProposedEditControl and the modal) —
+      // without an anchor setProposedEditStatus below is a no-op, and counting
+      // a decision that changed nothing would skew calibration.
+      const current = getProposedAnchors(view.state).get(edit.id)
+      if (current) recordCascadeStatusChange(current, status, 'list')
     }
     setProposedEditStatus(view, edit.id, status)
   }

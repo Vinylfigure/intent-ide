@@ -38,6 +38,18 @@ export interface DocGraphNode {
 
 export type DocGraphEdgeSource = 'deterministic' | 'llm' | 'embedding' | 'graphiti'
 
+/**
+ * Precision ranking of edge sources — lower is higher-precision. Used to
+ * stable-sort adjacency walks (findEdgePath evidence selection) and to rank
+ * cascade candidates discovered at the same hop (orchestrator ordering).
+ */
+export const SOURCE_PRIORITY: Record<DocGraphEdgeSource, number> = {
+  deterministic: 0,
+  llm: 1,
+  embedding: 2,
+  graphiti: 3,
+}
+
 export interface DocGraphEdge {
   from: string
   to: string
@@ -71,8 +83,11 @@ export interface DocGraph {
   /**
    * True once the Graphiti entity pass ran to completion. Stays false on any
    * MCP failure/timeout (FalkorDB is usually down in dev) — the pass is
-   * best-effort and a later build may retry, but a cached fully-built graph is
-   * never invalidated just because Graphiti was unreachable.
+   * best-effort, but a cached fully-built graph is never invalidated just
+   * because Graphiti was unreachable. Note the retry boundary: a warm-cache
+   * rebuild of the SAME content hash short-circuits before the Graphiti pass,
+   * so a failed pass is only retried when the content hash changes (a new
+   * build) — never on warm-cache hits.
    */
   graphitiApplied: boolean
   /** Per-textblock FNV-1a over blockId + text — the incremental-diff unit. */
@@ -534,21 +549,38 @@ const GRAPHITI_SEARCH_LIMIT = 5
 const GRAPHITI_SUBGRAPH_CAP = 3
 const GRAPHITI_MAX_BLOCKS_PER_ENTITY = 10
 const GRAPHITI_MIN_ENTITY_LENGTH = 4
+// Right-axis bounds: caps per-ENTITY above bound the left axis (blocks per
+// entity), these bound how many entities and how many total edges one build
+// may ever produce — a chatty knowledge graph cannot firehose the doc graph.
+const GRAPHITI_MAX_ENTITIES_PER_BUILD = 12
+const GRAPHITI_MAX_EDGES_PER_BUILD = 120
 
 export interface GraphitiEdgeDeps {
-  searchNodes?: (query: string, limit?: number) => Promise<GraphitiNode[]>
-  getSubgraph?: (nodeId: string, radius?: number) => Promise<GraphitiSubgraph>
+  searchNodes?: (query: string, limit?: number, signal?: AbortSignal) => Promise<GraphitiNode[]>
+  getSubgraph?: (nodeId: string, radius?: number, signal?: AbortSignal) => Promise<GraphitiSubgraph>
   timeoutMs?: number
 }
 
-/** Race a promise against a deadline; the timer never outlives the race. */
-async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+/**
+ * Run abortable work against a deadline. The deadline both rejects the race
+ * AND aborts the signal handed to `work`, so in-flight fetches are cancelled
+ * and any sequential follow-up calls stop — no zombie MCP conversation
+ * outliving the race. The timer never outlives the race.
+ */
+async function withDeadline<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+): Promise<T> {
+  const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('graphiti timeout')), ms)
+    timer = setTimeout(() => {
+      controller.abort(new Error('graphiti timeout'))
+      reject(new Error('graphiti timeout'))
+    }, ms)
   })
   try {
-    return await Promise.race([work, deadline])
+    return await Promise.race([work(controller.signal), deadline])
   } finally {
     clearTimeout(timer)
   }
@@ -564,13 +596,21 @@ async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
  * Guardrails (the old read-only lane's false-positive lessons):
  * - entities shorter than GRAPHITI_MIN_ENTITY_LENGTH chars or matching the
  *   term stopwords are skipped entirely;
+ * - at most GRAPHITI_MAX_ENTITIES_PER_BUILD valid entities are processed per
+ *   build (first-appearance order); hitting the cap logs a count-only warn;
  * - an entity mentioned in more than GRAPHITI_MAX_BLOCKS_PER_ENTITY blocks is
  *   capped to its first N blocks in document order (no pairwise firehose);
- * - entities found in fewer than 2 distinct blocks produce nothing.
+ * - at most GRAPHITI_MAX_EDGES_PER_BUILD graphiti edges are added per build;
+ *   hitting the cap logs a count-only warn;
+ * - entities found in fewer than 2 distinct blocks produce nothing;
+ * - dedupe is direction-agnostic: a graphiti pair whose reverse orientation
+ *   already exists as a deterministic/llm 'references' edge adds nothing.
  *
  * Strictly best-effort and non-blocking: the whole MCP conversation races a
- * GRAPHITI_TIMEOUT_MS deadline, and ANY failure (FalkorDB down — the usual
- * dev state) returns silently having changed nothing.
+ * GRAPHITI_TIMEOUT_MS deadline that also ABORTS the in-flight MCP calls (the
+ * AbortSignal is threaded through searchNodes/getSubgraph, and the sequential
+ * subgraph loop stops between calls once aborted), and ANY failure (FalkorDB
+ * down — the usual dev state) returns silently having changed nothing.
  */
 export async function augmentWithGraphitiEdges(
   graph: DocGraph,
@@ -587,46 +627,76 @@ export async function augmentWithGraphitiEdges(
 
   try {
     const entityNames = await withDeadline(
-      (async () => {
+      async (signal) => {
         const ordered = [...graph.nodes.values()].sort((a, b) => a.pos - b.pos)
         const query = ordered
           .map((n) => n.text)
           .join(' ')
           .slice(0, GRAPHITI_QUERY_MAX_CHARS)
-        const matching = await search(query, GRAPHITI_SEARCH_LIMIT)
+        const matching = await search(query, GRAPHITI_SEARCH_LIMIT, signal)
         const names = new Set<string>()
         for (const node of matching.slice(0, GRAPHITI_SUBGRAPH_CAP)) {
+          // The deadline may already have fired — never start a zombie call.
+          if (signal.aborted) throw new Error('graphiti timeout')
           names.add(node.name)
-          const sub = await subgraph(node.uuid, 2)
+          const sub = await subgraph(node.uuid, 2, signal)
           for (const gn of sub.nodes) names.add(gn.name)
         }
         return names
-      })(),
+      },
       timeoutMs,
     )
 
     const ordered = [...graph.nodes.values()].sort((a, b) => a.pos - b.pos)
-    const edgeKeys = new Set(graph.edges.map((e) => `${e.from}${e.to}${e.type}`))
+    const edgeKeys = new Set(graph.edges.map((e) => `${e.from} ${e.to} ${e.type}`))
     let added = false
+    let processedEntities = 0
+    let addedEdges = 0
+    let entityCapHit = false
+    let edgeCapHit = false
     for (const rawName of entityNames) {
       const name = rawName?.trim()
       if (!name || name.length < GRAPHITI_MIN_ENTITY_LENGTH) continue
       if (TERM_STOPWORDS.has(name.toLowerCase())) continue
+      if (processedEntities >= GRAPHITI_MAX_ENTITIES_PER_BUILD) {
+        entityCapHit = true
+        break
+      }
+      processedEntities++
       const containing = ordered
         .filter((n) => containsTerm(n.text, name))
         .slice(0, GRAPHITI_MAX_BLOCKS_PER_ENTITY)
       if (containing.length < 2) continue
-      for (let i = 0; i < containing.length; i++) {
+      outer: for (let i = 0; i < containing.length; i++) {
         for (let j = i + 1; j < containing.length; j++) {
           const from = containing[i].blockId
           const to = containing[j].blockId
-          const key = `${from}${to}references`
-          if (edgeKeys.has(key)) continue
+          // Direction-normalized dedupe: check BOTH orientations so a graphiti
+          // pair can never shadow-duplicate a reversed deterministic term edge.
+          const key = `${from} ${to} references`
+          const reverseKey = `${to} ${from} references`
+          if (edgeKeys.has(key) || edgeKeys.has(reverseKey)) continue
+          if (addedEdges >= GRAPHITI_MAX_EDGES_PER_BUILD) {
+            edgeCapHit = true
+            break outer
+          }
           edgeKeys.add(key)
           graph.edges.push({ from, to, type: 'references', source: 'graphiti', evidence: name })
           added = true
+          addedEdges++
         }
       }
+      if (edgeCapHit) break
+    }
+    if (entityCapHit) {
+      console.warn(
+        `docGraph: graphiti entity cap hit — processed ${GRAPHITI_MAX_ENTITIES_PER_BUILD} entities, remainder skipped`,
+      )
+    }
+    if (edgeCapHit) {
+      console.warn(
+        `docGraph: graphiti edge cap hit — added ${GRAPHITI_MAX_EDGES_PER_BUILD} edges, remainder skipped`,
+      )
     }
     if (added) graph.adjacency = buildAdjacency(graph.edges)
     graph.graphitiApplied = true
@@ -844,24 +914,42 @@ export async function getDocGraph(
   return promise
 }
 
-/** BFS over the undirected adjacency: blockId → hop distance (0 = the block itself). */
+export interface NeighborhoodEntry {
+  /** BFS hop distance (0 = the block itself). */
+  hop: number
+  /**
+   * Best (lowest) SOURCE_PRIORITY among the edges that connected the block at
+   * its discovery hop — a block reachable through a deterministic edge ranks
+   * ahead of one reachable only through a graphiti co-mention at the same hop.
+   * 0 for the seed block itself.
+   */
+  sourceRank: number
+}
+
+/** BFS over the undirected adjacency: blockId → { hop, sourceRank }. */
 export function getNeighborhood(
   graph: DocGraph,
   blockId: string,
   hops: number,
-): Map<string, number> {
-  const dist = new Map<string, number>()
+): Map<string, NeighborhoodEntry> {
+  const dist = new Map<string, NeighborhoodEntry>()
   if (!graph.nodes.has(blockId)) return dist
-  dist.set(blockId, 0)
+  dist.set(blockId, { hop: 0, sourceRank: 0 })
   let frontier = [blockId]
   for (let hop = 1; hop <= hops && frontier.length; hop++) {
     const next: string[] = []
     for (const id of frontier) {
       for (const edge of graph.adjacency.get(id) ?? []) {
         const neighbor = edge.from === id ? edge.to : edge.from
-        if (!dist.has(neighbor)) {
-          dist.set(neighbor, hop)
+        const rank = SOURCE_PRIORITY[edge.source]
+        const existing = dist.get(neighbor)
+        if (!existing) {
+          dist.set(neighbor, { hop, sourceRank: rank })
           next.push(neighbor)
+        } else if (existing.hop === hop && rank < existing.sourceRank) {
+          // Another edge reaches the same block at its discovery hop with a
+          // higher-precision source — keep the best rank.
+          existing.sourceRank = rank
         }
       }
     }
@@ -874,6 +962,9 @@ export function getNeighborhood(
  * BFS shortest path over the undirected adjacency, as the ordered edge list
  * walked from `fromBlockId` to `toBlockId`. Returns [] when the endpoints are
  * the same block, null when either endpoint is unknown or no path exists.
+ * Each node's edges are walked in SOURCE_PRIORITY order (stable sort), so on
+ * equal-length paths the "why this proposal?" line surfaces the
+ * higher-precision evidence (deterministic/llm/embedding before graphiti).
  * Pure — powers the "why this proposal?" affordance.
  */
 export function findEdgePath(
@@ -884,13 +975,16 @@ export function findEdgePath(
   if (!graph.nodes.has(fromBlockId) || !graph.nodes.has(toBlockId)) return null
   if (fromBlockId === toBlockId) return []
 
+  const bySourcePriority = (edges: DocGraphEdge[]): DocGraphEdge[] =>
+    [...edges].sort((a, b) => SOURCE_PRIORITY[a.source] - SOURCE_PRIORITY[b.source])
+
   const cameFrom = new Map<string, { via: DocGraphEdge; prev: string }>()
   const visited = new Set([fromBlockId])
   let frontier = [fromBlockId]
   while (frontier.length) {
     const next: string[] = []
     for (const id of frontier) {
-      for (const edge of graph.adjacency.get(id) ?? []) {
+      for (const edge of bySourcePriority(graph.adjacency.get(id) ?? [])) {
         const far = edge.from === id ? edge.to : edge.from
         if (visited.has(far)) continue
         visited.add(far)

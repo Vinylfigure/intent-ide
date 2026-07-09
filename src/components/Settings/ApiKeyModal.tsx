@@ -37,7 +37,9 @@ export function ApiKeyModal() {
   const mustRatio = calibrationRatio('must')
   const likelyRatio = calibrationRatio('probably')
   const optionalRatio = calibrationRatio('optional')
-  const mustMiscalibrated = mustRatio.total > 0 && mustRatio.accepted / mustRatio.total < 0.7
+  // Hint only once there is a real sample — a single early rejection out of
+  // one or two decisions is noise, not miscalibration.
+  const mustMiscalibrated = mustRatio.total >= 5 && mustRatio.accepted / mustRatio.total < 0.7
 
   const [provider, setProvider] = useState<LLMProvider>(llmConfig.provider)
   const [apiKey, setApiKey] = useState(llmConfig.apiKey)
@@ -258,7 +260,8 @@ export function ApiKeyModal() {
                 Share anonymous review stats (no document content)
                 <span className="block text-xs text-muted">
                   Sends only severity and accept/reject counts for cascade proposals —
-                  never document text or identifiers. Off by default.
+                  never document text or identifiers. Off by default. If you connect an
+                  analytics client, its standard metadata applies.
                 </span>
               </span>
             </label>
