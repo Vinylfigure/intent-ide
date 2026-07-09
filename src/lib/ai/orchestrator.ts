@@ -73,7 +73,7 @@ const PROPOSE_EDIT_TOOL = {
 }
 
 const CASCADE_SYSTEM =
-  'You keep a document internally consistent. You are given a primary edit and a set of document blocks, each listed as [blockId] text. Find blocks that become inconsistent, outdated, or contradictory because of the primary edit and call propose_edit once for each. Only edit listed blocks; reference them by their block_id. Copy target_text verbatim from the block. Never propose an edit to the primary block itself. Cite your evidence: source_block_id plus a verbatim quoted_text showing the conflict. If nothing needs to change, call nothing.'
+  'You keep a document internally consistent. You are given a primary edit and a set of document blocks, each listed as [blockId] text — optionally with a (§ Heading › Subheading) prefix locating the block in the document outline. Find blocks that become inconsistent, outdated, or contradictory because of the primary edit and call propose_edit once for each. Only edit listed blocks; reference them by their block_id. Copy target_text verbatim from the block. Never propose an edit to the primary block itself. Cite your evidence: source_block_id plus a verbatim quoted_text showing the conflict. If nothing needs to change, call nothing.'
 
 function newId(): string {
   try {
@@ -313,7 +313,14 @@ export async function proposeCascadeEdits(
     `- Now: "${primary.newText}"`,
     '',
     'CANDIDATE BLOCKS (the only blocks you may edit):',
-    ...sent.map((c) => `[${c.blockId}] ${c.text}`),
+    // Heading context comes from the graph node (build-time outline snapshot);
+    // block TEXT is always the live-doc resolve above, never the snapshot.
+    ...sent.map((c) => {
+      const headingPath = graph.nodes.get(c.blockId)?.headingPath ?? []
+      return headingPath.length
+        ? `[${c.blockId}] (§ ${headingPath.join(' › ')}) ${c.text}`
+        : `[${c.blockId}] ${c.text}`
+    }),
   ].join('\n')
 
   let toolCalls: { name: string; input: unknown }[]
