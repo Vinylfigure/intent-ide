@@ -1,16 +1,14 @@
 /**
- * Graphiti MCP Client — HTTP transport to local knowledge graph.
+ * Graphiti MCP Client — talks to the local knowledge graph through the
+ * same-origin /api/graphiti proxy (which forwards the MCP `tools/call`
+ * envelope to GRAPHITI_MCP_URL, default http://localhost:8000/mcp/).
  *
  * IMPORTANT: The MCP server must be started via `graphiti_mcp_server.py`
  * in the /mcp_server directory, NOT the standard REST API server in /server.
  * The REST server exposes different endpoints and will return SSE 404 errors.
  *
  * Start with: python graphiti_mcp_server.py --transport sse
- * Default endpoint: http://localhost:8000/mcp/
  */
-
-const GRAPHITI_MCP_URL =
-  process.env.GRAPHITI_MCP_URL ?? "http://localhost:8000/mcp/"
 
 export interface Episode {
   name: string
@@ -48,13 +46,10 @@ async function mcpCall<T>(
   args: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<T> {
-  const response = await fetch(GRAPHITI_MCP_URL, {
+  const response = await fetch("/api/graphiti", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      method: "tools/call",
-      params: { name: toolName, arguments: args },
-    }),
+    body: JSON.stringify({ toolName, args }),
     ...(signal ? { signal } : {}),
   })
   if (!response.ok) {
