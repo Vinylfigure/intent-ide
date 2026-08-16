@@ -10,8 +10,13 @@ import { useToastStore } from '@/stores/toastStore'
 import { useFlowStore } from '@/stores/flowStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import {
+  createAnnotationPlugin,
+  annotationPluginKey,
+} from '@/lib/prosemirror/plugins/annotationPlugin'
+import {
   captureAnnotationFromText,
   captureAndResolveInBackground,
+  markUserActivated,
 } from '../pipeline'
 
 /**
@@ -171,7 +176,9 @@ function mountEditor(): EditorView {
     schema.node('paragraph', null, [schema.text(PARA_1)]),
     schema.node('paragraph', null, [schema.text(PARA_2)]),
   ])
-  const state = EditorState.create({ schema, doc })
+  // The annotation decoration plugin is mounted so decoration-refresh behavior
+  // (mapped anchors across classify) is observable via annotationPluginKey.
+  const state = EditorState.create({ schema, doc, plugins: [createAnnotationPlugin()] })
   const view: EditorView = new EditorView(host, {
     state,
     dispatchTransaction(transaction) {
@@ -353,8 +360,12 @@ describe('(f) flow-state answer buffering', () => {
 
   async function runScenario(opts: {
     type: 'ask' | 'edit'
-    deactivate: boolean
     bufferEnabled: boolean
+    /** User moves on: setActive(null) before the answer lands. */
+    deactivate?: boolean
+    /** User deliberately opens the captured card (markUserActivated). */
+    userActivate?: boolean
+    notify?: 'panel' | 'quiet'
   }) {
     useFlowStore.getState().setBufferAnswersEnabled(opts.bufferEnabled)
     let release!: () => void
@@ -367,16 +378,43 @@ describe('(f) flow-state answer buffering', () => {
     const id = captureAndResolveInBackground(opts.type, 'scenario input', FROM, TO, {
       suggestedType: opts.type,
       skipClassify: true,
+      ...(opts.notify ? { notify: opts.notify } : {}),
     })!
     expect(useAnnotationStore.getState().activeAnnotationId).toBe(id)
     if (opts.deactivate) {
       // User moves on before the answer lands.
       useAnnotationStore.getState().setActive(null)
     }
+    if (opts.userActivate) {
+      // User clicks the card — what AnnotationCard's handleClick records.
+      markUserActivated(id)
+    }
     release()
     await waitFor(() => getAnnotation(id).status === 'resolved')
     return { id, calls }
   }
+
+  it('H1 core journey: a quiet-captured ask is held at finalize even though capture kept it active', async () => {
+    // No setActive(null) workaround — capture's own setActive must NOT count
+    // as the user watching the card (capture-driven vs user-driven activation).
+    const { id, calls } = await runScenario({
+      type: 'ask',
+      bufferEnabled: true,
+      notify: 'quiet',
+    })
+    expect(useAnnotationStore.getState().activeAnnotationId).toBe(id)
+    expect(useFlowStore.getState().heldAnswers[id]).toBeDefined()
+    // Status is still resolved — buffering suppresses presentation, not existence.
+    expect(getAnnotation(id).status).toBe('resolved')
+    expect(getAnnotation(id).resolution?.content).toBe(STREAMED_ANSWER)
+    expect(calls.some((c) => c.url.includes('/api/resolve') && c.body?.stream)).toBe(true)
+
+    // Click-through: AnnotationCard's handleClick releases the hold and clears
+    // the capture-activation mark.
+    markUserActivated(id)
+    useFlowStore.getState().revealAnswer(id)
+    expect(useFlowStore.getState().heldAnswers[id]).toBeUndefined()
+  })
 
   it('ask + buffering + inactive card → heldAnswers entry (streaming SSE path)', async () => {
     const { id, calls } = await runScenario({ type: 'ask', deactivate: true, bufferEnabled: true })
@@ -411,9 +449,96 @@ describe('(f) flow-state answer buffering', () => {
     expect(useFlowStore.getState().heldAnswers[id]).toBeUndefined()
   })
 
-  it('active card never holds', async () => {
-    const { id } = await runScenario({ type: 'ask', deactivate: false, bufferEnabled: true })
+  it('a genuinely user-activated card (markUserActivated) is never held', async () => {
+    const { id } = await runScenario({ type: 'ask', userActivate: true, bufferEnabled: true })
+    expect(useAnnotationStore.getState().activeAnnotationId).toBe(id)
     expect(useFlowStore.getState().heldAnswers[id]).toBeUndefined()
+  })
+})
+
+describe('(h) finalize survives a shrunken doc (stale anchor)', () => {
+  it('anchor beyond a shrunken doc: resolution survives, status resolved, no hold, no error toast', async () => {
+    useFlowStore.getState().setBufferAnswersEnabled(true)
+    let release!: () => void
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const { stub } = makeFetchStub({ resolveGate: gate })
+    vi.stubGlobal('fetch', stub)
+
+    // Anchor inside paragraph 2.
+    const para2Start = PARA_1.length + 2 // para1 node = 1 + text + 1
+    const from = para2Start + 5
+    const to = para2Start + 15
+    const id = captureAndResolveInBackground('ask', 'about paragraph two', from, to, {
+      suggestedType: 'ask',
+      skipClassify: true,
+      notify: 'quiet',
+    })!
+
+    // While the resolve streams, the doc shrinks below the anchor: delete
+    // paragraph 2 entirely.
+    view.dispatch(view.state.tr.delete(para2Start, view.state.doc.content.size))
+    expect(view.state.doc.content.size).toBeLessThan(from)
+
+    release()
+    await waitFor(() => getAnnotation(id).status === 'resolved')
+
+    // The streamed answer survived — before the fix, getBlockText's unclamped
+    // resolve threw inside the hold branch and the catch discarded it.
+    expect(getAnnotation(id).resolution?.content).toBe(STREAMED_ANSWER)
+    expect(getAnnotation(id).status).toBe('resolved')
+    // No hold against a vanished anchor, and no background-failure toast.
+    expect(useFlowStore.getState().heldAnswers[id]).toBeUndefined()
+    expect(useToastStore.getState().toasts).toHaveLength(0)
+  })
+})
+
+describe('(i) decoration refresh after classify uses the mapped anchor', () => {
+  it('typing before the anchor during classify: the re-typed decoration sits at the mapped range', async () => {
+    let releaseClassify!: () => void
+    const classifyGate = new Promise<void>((r) => {
+      releaseClassify = r
+    })
+    const { stub } = makeFetchStub({ classifyGate, classifyType: 'dig' })
+    vi.stubGlobal('fetch', stub)
+
+    const from = 5
+    const to = 10
+    const id = captureAndResolveInBackground('ask', 'what is this', from, to)!
+
+    // Plugin holds the decoration at the captured range.
+    let pluginState = annotationPluginKey.getState(view.state)!
+    expect(pluginState.anchors.get(id)).toMatchObject({ from, to, type: 'ask' })
+
+    // While classify is in flight, the user types BEFORE the anchor — the
+    // plugin maps the anchor forward by the inserted length.
+    const INSERT = 'XYZ '
+    view.dispatch(view.state.tr.insertText(INSERT, 1))
+    pluginState = annotationPluginKey.getState(view.state)!
+    expect(pluginState.anchors.get(id)).toMatchObject({
+      from: from + INSERT.length,
+      to: to + INSERT.length,
+    })
+
+    releaseClassify()
+    await waitFor(() => getAnnotation(id).status === 'resolved')
+    expect(getAnnotation(id).type).toBe('dig')
+
+    // The classify type-change refresh must have re-decorated at the MAPPED
+    // range, not the stale stored anchor (from/to at capture time).
+    pluginState = annotationPluginKey.getState(view.state)!
+    expect(pluginState.anchors.get(id)).toMatchObject({
+      from: from + INSERT.length,
+      to: to + INSERT.length,
+      type: 'dig',
+    })
+    const deco = pluginState.decorations
+      .find()
+      .find((d) => (d.spec as { annotationId?: string }).annotationId === id)
+    expect(deco).toBeDefined()
+    expect(deco!.from).toBe(from + INSERT.length)
+    expect(deco!.to).toBe(to + INSERT.length)
   })
 })
 

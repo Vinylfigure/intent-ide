@@ -96,6 +96,12 @@ function splitIntoBlocks(body: string): string[] {
  * Lazily load the @streamdown/mermaid plugin only when the body actually
  * carries a mermaid fence — the mermaid bundle is heavy and most answers
  * never need it.
+ *
+ * innerHTML constraint note: mermaid renders its diagrams by writing SVG via
+ * its own internal innerHTML. This is the SANCTIONED exception to the
+ * project's no-innerHTML rule — the library runs with securityLevel:'strict'
+ * (below), which sanitizes the diagram source and disables script/click
+ * payloads, and no project code touches innerHTML directly.
  */
 function useMermaidPlugin(body: string, isStreaming: boolean): DiagramPlugin | undefined {
   const hasMermaid = useMemo(() => extractMermaidFence(body) !== null, [body])

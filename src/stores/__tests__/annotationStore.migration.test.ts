@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { mapLegacyType, normalizeProposedEdit } from '@/lib/annotations/types'
+import { finalizeInterruptedAnnotations } from '@/stores/annotationStore'
 import type { Annotation, AnnotationType, ProposedEdit, Resolution } from '@/lib/annotations/types'
 
 // migrateAnnotations is not exported from annotationStore — it is a private
@@ -229,6 +230,42 @@ describe('migrateAnnotations — edge cases', () => {
     migrateAnnotations(input)
     // The spread in migrateAnnotations creates new objects; original unchanged
     expect(input[0].type).toBe(originalType)
+  })
+})
+
+// ── Interrupted in-flight statuses are finalized on rehydrate ─────────────────
+
+describe('finalizeInterruptedAnnotations — zombie in-flight statuses', () => {
+  const IN_FLIGHT = ['pending', 'classified', 'resolving'] as const
+
+  for (const status of IN_FLIGHT) {
+    it(`a persisted '${status}' annotation with no resolution becomes resolved with an interruption notice`, () => {
+      const input = [makeAnnotation({ type: 'ask', status, resolution: null, resolvedAt: null })]
+      const [result] = finalizeInterruptedAnnotations(input)
+      expect(result.status).toBe('resolved')
+      expect(result.resolution).not.toBeNull()
+      expect(result.resolution?.type).toBe('ask')
+      expect(result.resolution?.content).toContain('interrupted before it finished')
+      expect(result.resolution?.suggestedEdit).toBeNull()
+      expect(result.resolution?.actions).toEqual([])
+      expect(result.resolvedAt).not.toBeNull()
+    })
+  }
+
+  it('an interrupted annotation that already carries a resolution keeps it (only the status flips)', () => {
+    const resolution = makeResolution('dig')
+    const input = [makeAnnotation({ type: 'dig', status: 'resolving', resolution })]
+    const [result] = finalizeInterruptedAnnotations(input)
+    expect(result.status).toBe('resolved')
+    expect(result.resolution).toBe(resolution)
+  })
+
+  it('resolved / applied / dismissed annotations are untouched', () => {
+    for (const status of ['resolved', 'applied', 'dismissed'] as const) {
+      const input = [makeAnnotation({ type: 'ask', status, resolvedAt: 1234 })]
+      const [result] = finalizeInterruptedAnnotations(input)
+      expect(result).toEqual(input[0])
+    }
   })
 })
 

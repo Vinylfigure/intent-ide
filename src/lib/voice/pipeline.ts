@@ -12,7 +12,7 @@ import { classifyAnnotation } from '@/lib/ai/classifier'
 import { focusPluginKey } from '@/lib/prosemirror/plugins/focusInferencePlugin'
 import {
   addAnnotationDecoration,
-  removeAnnotationDecoration,
+  updateAnnotationDecorationType,
 } from '@/lib/prosemirror/plugins/annotationPlugin'
 import { inferScope, getBlockText } from '@/lib/prosemirror/helpers'
 import { useFlowStore } from '@/stores/flowStore'
@@ -129,6 +129,26 @@ interface CreateAnnotationOptions {
 const captureOptionsById = new Map<string, CreateAnnotationOptions>()
 
 /**
+ * Ids whose activation was CAPTURE-driven (the setActive in
+ * captureAnnotationFromText keeps AnnotationCard's cascade-reveal effect
+ * alive), as opposed to USER-driven. The flow-state hold gate treats a
+ * capture-activated card as "the user is not watching this card stream" —
+ * otherwise capture's own setActive would defeat answer buffering in the
+ * core quiet-capture journey. Any user activation clears the mark via
+ * markUserActivated.
+ */
+const captureActivated = new Set<string>()
+
+/**
+ * Record that the user deliberately activated this annotation (card click,
+ * map marker, parent/child badge). Clears the capture-activation mark so the
+ * flow-state hold gate knows the user is actually watching this card.
+ */
+export function markUserActivated(id: string): void {
+  captureActivated.delete(id)
+}
+
+/**
  * Fire-and-forget capture: synchronously create the annotation shell
  * (status 'pending'), decorate it, and register it with the stores. All
  * LLM work (classify + resolve) happens later in resolveCapturedAnnotation.
@@ -191,8 +211,11 @@ export function captureAnnotationFromText(
   addAnnotationDecoration(view, annotation.id, from, to, provisionalType)
 
   // Keep the card active — AnnotationCard's cascade-reveal effect is gated on
-  // isActive, so decorated review surfaces depend on this.
+  // isActive, so decorated review surfaces depend on this. Mark it as
+  // CAPTURE-driven activation so the flow-state hold gate can tell it apart
+  // from the user deliberately opening the card (markUserActivated).
   annotationStore.setActive(annotation.id)
+  captureActivated.add(annotation.id)
 
   // Signal the panel to scroll to it — unless the caller asked for quiet
   // capture (no mid-reading attention grab).
@@ -244,9 +267,12 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
     }
 
     if (classifiedType !== provisionalType) {
-      // Refresh decoration + verbosity for the corrected type
-      removeAnnotationDecoration(view, id)
-      addAnnotationDecoration(view, id, annotation.anchor.from, annotation.anchor.to, classifiedType)
+      // Refresh decoration + verbosity for the corrected type. The plugin's
+      // 'update' action re-decorates at its CURRENT (transaction-mapped)
+      // anchor — re-adding at the stored anchor.from/to here would destroy
+      // the mapped position if the user typed above the anchor while the
+      // classify round-trip was in flight.
+      updateAnnotationDecorationType(view, id, classifiedType)
       annotationStore.update(id, {
         type: classifiedType,
         status: 'classified',
@@ -304,17 +330,30 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
 
     // Flow-state answer buffering (PRD Event Segmentation): when an ask/dig
     // answer finishes while the user is NOT watching this card stream, hold
-    // its PRESENTATION until a reading breakpoint. Status still becomes
+    // its PRESENTATION until a reading breakpoint. "Not watching" means the
+    // card is inactive OR only capture-activated (capture's own setActive is
+    // not user attention — see captureActivated). Status still becomes
     // 'resolved' below — buffering suppresses presentation, never existence.
-    const finalType = current.type
-    if (
-      (finalType === 'ask' || finalType === 'dig') &&
-      useFlowStore.getState().bufferAnswersEnabled &&
-      useAnnotationStore.getState().activeAnnotationId !== id
-    ) {
-      const blockText = getBlockText(view.state, current.anchor.from)
-      useFlowStore.getState().holdAnswer(id, answerDwellMs(blockText))
+    // The whole hold decision fails open: any error (e.g. a stale anchor in a
+    // shrunken doc) skips holding but must never discard the resolution.
+    try {
+      const finalType = current.type
+      if (
+        (finalType === 'ask' || finalType === 'dig') &&
+        useFlowStore.getState().bufferAnswersEnabled &&
+        (useAnnotationStore.getState().activeAnnotationId !== id || captureActivated.has(id)) &&
+        // Never hold against a vanished anchor (doc shrank below it during
+        // resolution): the breakpoint poll would insta-reveal anyway, so
+        // reveal directly instead of a meaningless hold.
+        current.anchor.from <= view.state.doc.content.size
+      ) {
+        const blockText = getBlockText(view.state, current.anchor.from)
+        useFlowStore.getState().holdAnswer(id, answerDwellMs(blockText))
+      }
+    } catch {
+      // Fail open: no hold, but the streamed resolution still finalizes below.
     }
+    captureActivated.delete(id)
 
     annotationStore.update(id, {
       status: 'resolved',
@@ -330,6 +369,7 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
   } catch (err) {
     // Background failures must never be silent: finalize the card with an
     // error message and raise a toast.
+    captureActivated.delete(id)
     const annotationStore = useAnnotationStore.getState()
     annotationStore.addMessage(id, {
       id: generateId(),

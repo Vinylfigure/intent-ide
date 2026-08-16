@@ -2,7 +2,7 @@
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Annotation, ConversationMessage } from '@/lib/annotations/types'
+import type { Annotation, ConversationMessage, Resolution } from '@/lib/annotations/types'
 import { mapLegacyType, normalizeProposedEdit } from '@/lib/annotations/types'
 import { useDocumentStore } from '@/stores/documentStore'
 
@@ -22,6 +22,35 @@ function migrateAnnotations(annotations: Annotation[]): Annotation[] {
         }
       : null,
   }))
+}
+
+/**
+ * Rehydration repair for interrupted background resolves: 'pending',
+ * 'classified' and 'resolving' are in-flight statuses owned by a live
+ * resolveCapturedAnnotation call — after a reload no such call exists, so a
+ * persisted in-flight annotation would show "Thinking..." forever. Finalize it
+ * as resolved, attaching a minimal error resolution when none exists (same
+ * finalize-with-error shape as the pipeline's background-failure path).
+ */
+export function finalizeInterruptedAnnotations(annotations: Annotation[]): Annotation[] {
+  const IN_FLIGHT = new Set(['pending', 'classified', 'resolving'])
+  return annotations.map((a) => {
+    if (!IN_FLIGHT.has(a.status)) return a
+    const resolution: Resolution =
+      a.resolution ?? {
+        type: a.type,
+        content:
+          'This annotation was interrupted before it finished. Ask again if you still need it.',
+        suggestedEdit: null,
+        actions: [],
+      }
+    return {
+      ...a,
+      status: 'resolved' as const,
+      resolution,
+      resolvedAt: a.resolvedAt ?? Date.now(),
+    }
+  })
 }
 
 interface AnnotationState {
@@ -83,7 +112,9 @@ export const useAnnotationStore = create<AnnotationState>()(
       name: 'intent-ide-annotations',
       onRehydrateStorage: () => (state) => {
         if (state) {
-          state.annotations = migrateAnnotations(state.annotations)
+          state.annotations = finalizeInterruptedAnnotations(
+            migrateAnnotations(state.annotations)
+          )
         }
       },
     }

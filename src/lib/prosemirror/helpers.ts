@@ -27,9 +27,15 @@ export function inferScope(state: EditorState, from: number, to: number): Scope 
   return 'paragraph'
 }
 
-// Get the text content of the block containing a position
+// Get the text content of the block containing a position. The position is
+// clamped to the document (mirroring answerBreakpointPos in answerReveal.ts):
+// stored anchors can outlive a shrinking doc, and an unclamped resolve would
+// throw a RangeError. A clamped position that lands between blocks (depth 0)
+// has no containing block — return '' rather than the whole document.
 export function getBlockText(state: EditorState, pos: number): string {
-  const $pos = state.doc.resolve(pos)
+  const clamped = Math.max(0, Math.min(pos, state.doc.content.size))
+  const $pos = state.doc.resolve(clamped)
+  if ($pos.depth === 0) return ''
   const start = $pos.start($pos.depth)
   const end = $pos.end($pos.depth)
   return state.doc.textBetween(start, end)

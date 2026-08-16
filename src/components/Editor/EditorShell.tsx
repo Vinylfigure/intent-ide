@@ -13,6 +13,7 @@ import { scheduleDocGraphRebuild, cancelScheduledDocGraphRebuild } from '@/lib/g
 import { useChangesStore } from '@/stores/changesStore'
 import { recordCommit } from '@/lib/history/commits'
 import {
+  acceptSettledOffer,
   observeTransaction,
   resetDirectEditBaseline,
   settleDirectEdits,
@@ -56,10 +57,11 @@ export function EditorShell() {
       // "settled" point — diff human-touched blocks against the baseline and
       // offer a dependency check via the quiet chip. Deterministic graph only
       // (zero network); errors are swallowed — an offer must never break saves.
+      // acceptSettledOffer drops offers stamped for a document that is no
+      // longer active (settle can resolve AFTER a doc switch's clearOffer) and
+      // clears the store on a null settle so a stale chip never lingers.
       settleDirectEdits(view.state)
-        .then((offer) => {
-          if (offer) useDirectEditOfferStore.getState().setOffer(offer)
-        })
+        .then(acceptSettledOffer)
         .catch(() => {})
     }, AUTOSAVE_DELAY)
   }, [])

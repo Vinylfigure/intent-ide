@@ -9,6 +9,9 @@ import { NextRequest, NextResponse } from 'next/server'
  * The REST server exposes different endpoints and will return SSE 404 errors.
  *
  * Request:  POST { toolName: string, args: Record<string, unknown> }
+ *   toolName must be on ALLOWED_TOOLS (the exact set graphitiClient.ts uses) —
+ *   the proxy is same-origin reachable, so it must not forward arbitrary MCP
+ *   tool invocations to the local server. Unknown tools → 400.
  * Response: { result } on success, or an error status:
  *   501 { reason: 'disabled' } — production deploy without GRAPHITI_MCP_URL
  *                                (there is no local graph stack to reach).
@@ -18,6 +21,18 @@ import { NextRequest, NextResponse } from 'next/server'
  * All graph traffic is best-effort in the client (cascade checks, episode
  * ingestion), so failures here degrade to "fewer edges", never a broken UI.
  */
+
+/**
+ * The exact MCP tools src/lib/mcp/graphitiClient.ts invokes — keep the two in
+ * sync when the client grows a call.
+ */
+const ALLOWED_TOOLS = new Set([
+  'add_episode',
+  'search_nodes',
+  'search_facts',
+  'invalidate_edge',
+  'get_entity_subgraph',
+])
 
 export async function POST(request: NextRequest) {
   const configuredUrl = process.env.GRAPHITI_MCP_URL
@@ -35,6 +50,10 @@ export async function POST(request: NextRequest) {
 
   if (typeof toolName !== 'string' || !toolName) {
     return NextResponse.json({ error: 'toolName is required' }, { status: 400 })
+  }
+
+  if (!ALLOWED_TOOLS.has(toolName)) {
+    return NextResponse.json({ error: `Unknown tool: ${toolName}` }, { status: 400 })
   }
 
   try {

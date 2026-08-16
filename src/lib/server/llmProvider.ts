@@ -30,6 +30,11 @@ export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
 /**
  * Normalize the x-provider header. Anything outside the four known providers
  * falls back to 'claude' — the same default an absent header gets.
+ *
+ * NOTE: this is a deliberate behavior change from the pre-provider-module
+ * inline routes, where an unknown x-provider value fell through to the
+ * OpenAI-compatible branch. Unknown now means "treat as the default provider
+ * (claude)", matching what an absent header does.
  */
 export function normalizeServerProvider(raw: string): ServerProvider {
   return SERVER_PROVIDERS.includes(raw) ? (raw as ServerProvider) : 'claude'

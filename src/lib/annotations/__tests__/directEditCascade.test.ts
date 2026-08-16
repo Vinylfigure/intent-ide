@@ -6,6 +6,8 @@ import { blockTextRange } from '@/lib/prosemirror/blockIds'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useChangesStore } from '@/stores/changesStore'
 import { useToastStore } from '@/stores/toastStore'
+import { useDocumentStore } from '@/stores/documentStore'
+import { useDirectEditOfferStore } from '@/stores/directEditOfferStore'
 import type { ProposedEdit } from '../types'
 import type { DirectEditOffer } from '../directEditTrigger'
 import { runDirectEditCascade, type ProposeCascadesFn } from '../directEditCascade'
@@ -25,6 +27,7 @@ const DOC = schema.node('doc', null, [
 function offerFor(doc: PMNode): DirectEditOffer {
   const range = blockTextRange(doc, 'b1', AFTER_TEXT)!
   return {
+    documentId: 'doc-A',
     blockId: 'b1',
     blockText: AFTER_TEXT,
     beforeText: BEFORE_TEXT,
@@ -63,6 +66,8 @@ beforeEach(() => {
   useAnnotationStore.getState().clear()
   useChangesStore.getState().clear()
   useToastStore.setState({ toasts: [] })
+  useDocumentStore.setState({ activeDocumentId: 'doc-A' })
+  useDirectEditOfferStore.getState().clearOffer()
 })
 
 afterEach(() => {
@@ -147,5 +152,63 @@ describe('runDirectEditCascade', () => {
     const toasts = useToastStore.getState().toasts
     expect(toasts).toHaveLength(1)
     expect(toasts[0].message).toBe('No dependent changes needed')
+  })
+
+  it('propose resolving AFTER a doc switch creates no annotation (aborts + clears the offer)', async () => {
+    const state = EditorState.create({ schema, doc: DOC })
+    const offer = offerFor(state.doc)
+    useDirectEditOfferStore.getState().setOffer(offer)
+
+    // The doc switch happens while the (long) propose round-trip is in flight.
+    const propose = vi.fn(async () => {
+      useDocumentStore.setState({ activeDocumentId: 'doc-B' })
+      return [fakeCascade(state.doc)]
+    })
+    await runDirectEditCascade({ state }, offer, propose as unknown as ProposeCascadesFn)
+
+    expect(propose).toHaveBeenCalledTimes(1)
+    expect(useAnnotationStore.getState().annotations).toHaveLength(0)
+    expect(useChangesStore.getState().changeSets).toHaveLength(0)
+    expect(useDirectEditOfferStore.getState().offer).toBeNull()
+    const toasts = useToastStore.getState().toasts
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].message).toBe('Document changed — check cancelled')
+  })
+
+  it('Check on a drifted block makes ZERO propose calls and withdraws the offer', async () => {
+    const state = EditorState.create({ schema, doc: DOC })
+    const offer = offerFor(state.doc)
+    useDirectEditOfferStore.getState().setOffer(offer)
+
+    // The block kept changing after the offer was computed.
+    const range = blockTextRange(state.doc, 'b1', '$75,000')!
+    const drifted = state.apply(state.tr.replaceWith(range.from, range.to, schema.text('$80,000')))
+
+    const propose = vi.fn(async () => [fakeCascade(state.doc)])
+    await runDirectEditCascade({ state: drifted }, offer, propose as unknown as ProposeCascadesFn)
+
+    expect(propose).not.toHaveBeenCalled()
+    expect(useAnnotationStore.getState().annotations).toHaveLength(0)
+    expect(useDirectEditOfferStore.getState().offer).toBeNull()
+    const toasts = useToastStore.getState().toasts
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].message).toBe('This section changed — offer withdrawn')
+  })
+
+  it('Check on a vanished block makes ZERO propose calls and withdraws the offer', async () => {
+    // Only b2 remains — the offered block is gone entirely.
+    const shrunk = schema.node('doc', null, [
+      p('b2', 'Marketing may spend at most ten percent of the Total Budget in any quarter.'),
+    ])
+    const state = EditorState.create({ schema, doc: shrunk })
+    const offer = offerFor(DOC)
+    useDirectEditOfferStore.getState().setOffer(offer)
+
+    const propose = vi.fn(async () => [])
+    await runDirectEditCascade({ state }, offer, propose as unknown as ProposeCascadesFn)
+
+    expect(propose).not.toHaveBeenCalled()
+    expect(useDirectEditOfferStore.getState().offer).toBeNull()
+    expect(useToastStore.getState().toasts[0]?.message).toBe('This section changed — offer withdrawn')
   })
 })

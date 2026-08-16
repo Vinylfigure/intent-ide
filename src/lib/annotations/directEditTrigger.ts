@@ -6,6 +6,8 @@ import { blockIdPluginKey } from '@/lib/prosemirror/plugins/blockIdPlugin'
 import { changeTrackingPluginKey } from '@/lib/prosemirror/plugins/changeTrackingPlugin'
 import { getDocGraph, getNeighborhood } from '@/lib/graphrag/docGraph'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useDocumentStore } from '@/stores/documentStore'
+import { useDirectEditOfferStore } from '@/stores/directEditOfferStore'
 
 /**
  * Direct-edit cascade trigger (Flow v1 P4, issue #17).
@@ -25,6 +27,13 @@ import { useSettingsStore } from '@/stores/settingsStore'
  */
 
 export interface DirectEditOffer {
+  /**
+   * Document the offer was computed against, stamped at settle entry. Settle
+   * and the post-consent cascade both await across possible doc switches —
+   * consumers must drop the offer when this no longer matches the active
+   * document (see acceptSettledOffer / runDirectEditCascade).
+   */
+  documentId: string
   blockId: string
   /** The block's CURRENT (post-edit) text. */
   blockText: string
@@ -61,13 +70,11 @@ export function resetDirectEditBaseline(doc: PMNode): void {
  * history$, blockId stamps, change-tracking tags, addToHistory:false state
  * loads; if that skip list changes, update BOTH places), plus the AI apply
  * stamp so applying an AI cascade never re-offers a cascade on itself.
- *
- * FOLLOW-UP: two legacy AI-write sites dispatch WITHOUT the AI_APPLY_META
- * stamp — ResolutionActions' single-suggestedEdit apply / content-insert paths
- * and ConversationThread's per-message apply. Those files are outside this
- * change's ownership; an edit applied through them can surface a spurious
- * (dismissible) direct-edit offer — accepted v1 behavior. Stamp them with
- * AI_APPLY_META when they are next touched.
+ * Every AI-write dispatch carries AI_APPLY_META — the batched apply
+ * (applyProposedEdits), ResolutionActions' single-suggestedEdit apply and
+ * content-insert paths, and ConversationThread's per-message apply. A new
+ * AI-write site MUST stamp the meta too, or its edits will surface spurious
+ * direct-edit offers.
  */
 function shouldSkip(tr: Transaction): boolean {
   return Boolean(
@@ -125,6 +132,9 @@ export async function settleDirectEdits(state: EditorState): Promise<DirectEditO
   const doc = state.doc
   const touched = humanTouchedBlockIds
   const prior = baseline
+  // Stamp the settle-time document — the graph await below can race a doc
+  // switch, and the offer must carry the document it was computed against.
+  const documentId = useDocumentStore.getState().activeDocumentId ?? 'unknown'
 
   // Every settle starts the next window fresh, whatever we return.
   baseline = snapshot(doc)
@@ -159,11 +169,28 @@ export async function settleDirectEdits(state: EditorState): Promise<DirectEditO
   if (!live || !live.node.isTextblock) return null
 
   return {
+    documentId,
     blockId: best.blockId,
     blockText: best.text,
     beforeText: best.beforeText,
     from: live.pos + 1,
     to: live.pos + 1 + live.node.content.size,
     dependentCount,
+  }
+}
+
+/**
+ * Resolution-time sink for a settled offer (EditorShell's autosave callback).
+ * ALWAYS writes the store from the settle result: a real offer for the still-
+ * active document is surfaced; a null settle or an offer stamped for another
+ * document (settle resolved after a doc switch) CLEARS any offer instead of
+ * leaving a stale chip up.
+ */
+export function acceptSettledOffer(offer: DirectEditOffer | null): void {
+  const store = useDirectEditOfferStore.getState()
+  if (offer && offer.documentId === useDocumentStore.getState().activeDocumentId) {
+    store.setOffer(offer)
+  } else {
+    store.clearOffer()
   }
 }

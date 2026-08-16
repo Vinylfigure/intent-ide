@@ -7,7 +7,10 @@ import { blockIdPluginKey } from '@/lib/prosemirror/plugins/blockIdPlugin'
 import { changeTrackingPluginKey } from '@/lib/prosemirror/plugins/changeTrackingPlugin'
 import { AI_APPLY_META } from '@/lib/prosemirror/applyProposedEdits'
 import { invalidateDocGraphCache } from '@/lib/graphrag/docGraph'
+import { useDocumentStore } from '@/stores/documentStore'
+import { useDirectEditOfferStore } from '@/stores/directEditOfferStore'
 import {
+  acceptSettledOffer,
   observeTransaction,
   resetDirectEditBaseline,
   settleDirectEdits,
@@ -57,6 +60,8 @@ beforeEach(() => {
   invalidateDocGraphCache()
   vi.stubGlobal('fetch', fetchSpy)
   fetchSpy.mockClear()
+  useDocumentStore.setState({ activeDocumentId: 'doc-A' })
+  useDirectEditOfferStore.getState().clearOffer()
 })
 
 afterEach(() => {
@@ -80,6 +85,8 @@ describe('settleDirectEdits — offer path', () => {
     expect(o.dependentCount).toBeGreaterThan(0)
     // from/to span the block's CURRENT content.
     expect(state.doc.textBetween(o.from, o.to)).toBe(o.blockText)
+    // The offer carries the settle-time document id.
+    expect(o.documentId).toBe('doc-A')
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
@@ -124,6 +131,23 @@ describe('settleDirectEdits — skip contract (changeTrackingPlugin parity + AI 
       expect(fetchSpy).not.toHaveBeenCalled()
     })
   }
+
+  it('a single AI replaceWith stamped with AI_APPLY_META (ResolutionActions / ConversationThread apply shape) records no human touch', async () => {
+    // These two apply sites dispatch one plain replaceWith (not the batched
+    // applyProposedEdits path) — the stamp alone must keep them out of the
+    // direct-edit offer.
+    const state = stateOf(fixtureDoc())
+    resetDirectEditBaseline(state.doc)
+
+    const range = blockTextRange(state.doc, 'b1', '$50,000')!
+    const tr = state.tr.replaceWith(range.from, range.to, schema.text('$99,000'))
+    tr.setMeta(AI_APPLY_META, true)
+    const next = state.apply(tr)
+    observeTransaction(tr, next.doc)
+
+    expect(await settleDirectEdits(next)).toBeNull()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
 
   it('mixed session: AI-stamped change in b2 + human change in b1 → offer only for b1', async () => {
     let state = stateOf(fixtureDoc())
@@ -189,5 +213,40 @@ describe('settleDirectEdits — graph gating and reset', () => {
     state = humanEdit(state, 'b1', '$75,000', '$50,000') // hand-reverted
 
     expect(await settleDirectEdits(state)).toBeNull()
+  })
+})
+
+describe('acceptSettledOffer — doc-switch race + stale-offer invalidation', () => {
+  async function settledOffer(): Promise<DirectEditOffer> {
+    let state = stateOf(fixtureDoc())
+    resetDirectEditBaseline(state.doc)
+    state = humanEdit(state, 'b1', '$50,000', '$75,000')
+    const offer = await settleDirectEdits(state)
+    expect(offer).not.toBeNull()
+    return offer as DirectEditOffer
+  }
+
+  it('surfaces an offer stamped for the still-active document', async () => {
+    const offer = await settledOffer()
+    acceptSettledOffer(offer)
+    expect(useDirectEditOfferStore.getState().offer).toBe(offer)
+  })
+
+  it('a settle resolving AFTER a doc switch does not surface its offer (and clears any lingering one)', async () => {
+    const offer = await settledOffer() // stamped doc-A
+    // The user switches documents before the async settle result lands.
+    useDocumentStore.setState({ activeDocumentId: 'doc-B' })
+    acceptSettledOffer(offer)
+    expect(useDirectEditOfferStore.getState().offer).toBeNull()
+  })
+
+  it('a null settle clears a previously surfaced offer instead of leaving it up (stale-offer invalidation)', async () => {
+    const offer = await settledOffer()
+    acceptSettledOffer(offer)
+    expect(useDirectEditOfferStore.getState().offer).not.toBeNull()
+
+    // Next settle window produces nothing — the old chip must come down.
+    acceptSettledOffer(null)
+    expect(useDirectEditOfferStore.getState().offer).toBeNull()
   })
 })

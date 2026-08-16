@@ -83,7 +83,7 @@ describe('POST /api/graphiti — envelope forwarding', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const { POST } = await loadRoute()
-    await POST(postRequest({ toolName: 'get_status' }))
+    await POST(postRequest({ toolName: 'search_facts' }))
     const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1]
     expect(JSON.parse(init.body as string).params.arguments).toEqual({})
   })
@@ -98,6 +98,38 @@ describe('POST /api/graphiti — envelope forwarding', () => {
       expect(res.status).toBe(400)
     }
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a toolName outside the graphitiClient allowlist with 400 before any upstream call', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await loadRoute()
+    for (const toolName of ['get_status', 'delete_all_episodes', 'tools/list', 'shutdown']) {
+      const res = await POST(postRequest({ toolName, args: {} }))
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('Unknown tool')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('forwards every tool graphitiClient.ts actually uses', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ result: null }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await loadRoute()
+    const clientTools = [
+      'add_episode',
+      'search_nodes',
+      'search_facts',
+      'invalidate_edge',
+      'get_entity_subgraph',
+    ]
+    for (const toolName of clientTools) {
+      const res = await POST(postRequest({ toolName, args: {} }))
+      expect(res.status).toBe(200)
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(clientTools.length)
   })
 })
 

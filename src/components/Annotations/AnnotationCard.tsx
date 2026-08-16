@@ -19,6 +19,7 @@ import { CascadeList } from './CascadeList'
 import { ConversationThread } from './ConversationThread'
 import { FollowUpInput } from './FollowUpInput'
 import { continueThread, streamResolveAnnotation } from '@/lib/ai/resolver'
+import { markUserActivated } from '@/lib/voice/pipeline'
 import { generateId } from '@/lib/utils/id'
 import type { Annotation, AnnotationType, ConversationMessage } from '@/lib/annotations/types'
 import { ANNOTATION_COLORS, ANNOTATION_LABELS, ANNOTATION_DESCRIPTIONS, getDefaultVerbosity } from '@/lib/annotations/types'
@@ -255,8 +256,10 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
 
   const handleClick = () => {
     // Click-through-early: interacting with the card always releases a held
-    // answer (no-op when nothing is held).
+    // answer (no-op when nothing is held) AND clears the capture-activation
+    // mark — this click is user attention, not capture plumbing.
     revealAnswer(annotation.id)
+    markUserActivated(annotation.id)
     setActive(isActive ? null : annotation.id)
     if (!isActive) {
       scrollToAnchor()
@@ -346,7 +349,7 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
       {/* Parent/child badges */}
       {annotation.parentId && (
         <button
-          onClick={(e) => { e.stopPropagation(); setActive(annotation.parentId!) }}
+          onClick={(e) => { e.stopPropagation(); markUserActivated(annotation.parentId!); setActive(annotation.parentId!) }}
           className="mt-1 text-[10px] font-mono text-accent hover:underline"
         >
           parent thread
@@ -357,7 +360,7 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
           {annotation.childIds.map((childId) => (
             <button
               key={childId}
-              onClick={(e) => { e.stopPropagation(); setActive(childId) }}
+              onClick={(e) => { e.stopPropagation(); markUserActivated(childId); setActive(childId) }}
               className="text-[10px] font-mono text-accent hover:underline"
             >
               child

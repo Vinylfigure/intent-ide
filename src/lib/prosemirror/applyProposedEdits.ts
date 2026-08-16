@@ -27,6 +27,8 @@ export { findTextInDoc } from './blockIds'
 export const AI_APPLY_META = 'intent-ide:ai-apply'
 
 export interface AppliedEdit {
+  /** The proposed edit's id — lets callers attribute ledger rows precisely. */
+  id: string
   from: number
   to: number
   newText: string
@@ -51,6 +53,13 @@ export function applyProposedEdits(view: EditorView, acceptedIds: string[]): App
     const a = anchors.get(id)
     if (!a) return { ok: false, reason: `Proposed edit ${id} no longer exists.` }
 
+    // No-op edits (targetText === newText — e.g. the direct-edit cascade's
+    // pre-rejected primary placeholder, or a proposal that matches the text
+    // verbatim) are excluded from the transaction AND from `applied`, so they
+    // never fabricate change entries or audit rows. They are NOT a validation
+    // failure — accepting one is harmless.
+    if (a.targetText === a.newText) continue
+
     const safeFrom = Math.min(a.from, doc.content.size)
     const safeTo = Math.min(a.to, doc.content.size)
     const current = safeFrom <= safeTo ? doc.textBetween(safeFrom, safeTo) : ''
@@ -59,7 +68,7 @@ export function applyProposedEdits(view: EditorView, acceptedIds: string[]): App
     // they bypass fingerprint validation entirely (and render no decoration).
     // Known limitation; do not rely on validation for insertion placement.
     if (current === a.targetText) {
-      resolved.push({ from: safeFrom, to: safeTo, newText: a.newText, targetText: a.targetText, blockId: a.blockId ?? null })
+      resolved.push({ id, from: safeFrom, to: safeTo, newText: a.newText, targetText: a.targetText, blockId: a.blockId ?? null })
       continue
     }
 
@@ -75,8 +84,11 @@ export function applyProposedEdits(view: EditorView, acceptedIds: string[]): App
         reason: `Could not safely place an edit — the text "${a.targetText.slice(0, 40)}…" has changed. Re-run the annotation.`,
       }
     }
-    resolved.push({ from: found.from, to: found.to, newText: a.newText, targetText: a.targetText, blockId: a.blockId ?? null })
+    resolved.push({ id, from: found.from, to: found.to, newText: a.newText, targetText: a.targetText, blockId: a.blockId ?? null })
   }
+
+  // All accepted ids were no-ops → nothing to dispatch, nothing applied.
+  if (resolved.length === 0) return { ok: true, applied: [] }
 
   // Apply descending by `from` so each replace leaves earlier positions valid.
   const ordered = [...resolved].sort((x, y) => y.from - x.from)

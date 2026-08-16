@@ -5,6 +5,8 @@ import { useAnnotationStore } from '@/stores/annotationStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { useChangesStore } from '@/stores/changesStore'
 import { useToastStore } from '@/stores/toastStore'
+import { useDirectEditOfferStore } from '@/stores/directEditOfferStore'
+import { findBlockById } from '@/lib/prosemirror/blockIds'
 import { generateId } from '@/lib/utils/id'
 import type { Annotation, ResolutionAction, SuggestedEdit } from './types'
 import type { DirectEditOffer } from './directEditTrigger'
@@ -42,6 +44,20 @@ export async function runDirectEditCascade(
   propose: ProposeCascadesFn = proposeCascadeEdits,
 ): Promise<void> {
   const config = useSettingsStore.getState().llmConfig
+  // The document this offer was computed against, captured at ENTRY — the
+  // propose await below can race a doc switch, and reading activeDocumentId
+  // after it would stamp doc-A data with doc-B's id.
+  const documentId = offer.documentId
+
+  // Check-time revalidation, BEFORE any network: the offer chip can sit while
+  // the user keeps editing. If the offered block vanished or its text drifted
+  // from the offered snapshot, the offer is stale — withdraw it quietly.
+  const liveBlock = findBlockById(view.state.doc, offer.blockId)
+  if (!liveBlock || liveBlock.node.textContent !== offer.blockText) {
+    useDirectEditOfferStore.getState().clearOffer()
+    useToastStore.getState().addToast('This section changed — offer withdrawn', 'info')
+    return
+  }
 
   // The user's own applied edit, replayed as the cascade's primary. The live
   // doc already holds the NEW text at this range, hence primaryBefore below.
@@ -57,12 +73,20 @@ export async function runDirectEditCascade(
     primaryBefore: offer.beforeText,
   })
 
+  // Doc-switch guard: the propose round-trip is long. If the active document
+  // changed underneath it, the cascades were computed against a document that
+  // is no longer on screen — abort rather than attach doc-A proposals to doc-B.
+  if (useDocumentStore.getState().activeDocumentId !== documentId) {
+    useDirectEditOfferStore.getState().clearOffer()
+    useToastStore.getState().addToast('Document changed — check cancelled', 'info')
+    return
+  }
+
   if (cascades.length === 0) {
     useToastStore.getState().addToast('No dependent changes needed', 'info')
     return
   }
 
-  const documentId = useDocumentStore.getState().activeDocumentId ?? 'unknown'
   const now = Date.now()
 
   // Primary edit is a no-op placeholder (targetText === newText === current
