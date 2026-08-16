@@ -10,6 +10,7 @@ import { runMADS } from './mads'
 import { logResolutionAudit } from '@/lib/audit/auditLogger'
 import { primaryProposedEdit, proposeCascadeEdits } from './orchestrator'
 import { pickUtilityModel } from './modelCapabilities'
+import { providerHeaders } from './providerHeaders'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { getDefaultVerbosity } from '@/lib/annotations/types'
 import type { Annotation, ConversationMessage, Resolution, ResolutionAction, SuggestedEdit, Scope, Verbosity } from '@/lib/annotations/types'
@@ -227,10 +228,7 @@ ${annotation.type === 'edit'
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'x-provider': config.provider,
-        'x-model': config.model,
-        ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+        ...providerHeaders(config),
       },
       body: JSON.stringify({ messages, maxTokens: effectiveMaxTokens, temperature: agentConfig.temperature, logprobs: true }),
     })
@@ -390,10 +388,7 @@ ${annotation.type === 'edit'
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'x-provider': config.provider,
-        'x-model': config.model,
-        ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+        ...providerHeaders(config),
       },
       body: JSON.stringify({
         messages,
@@ -568,10 +563,7 @@ ${annotation.type === 'edit'
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'x-provider': config.provider,
-        'x-model': config.model,
-        ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+        ...providerHeaders(config),
       },
       body: JSON.stringify({ messages, maxTokens: effectiveMaxTokens, temperature: agentConfig.temperature }),
     })
@@ -634,10 +626,7 @@ ${annotation.conversation.map((msg) => `${msg.role === 'user' ? 'User' : 'Agent'
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'x-provider': config.provider,
-        'x-model': config.model,
-        ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+        ...providerHeaders(config),
       },
       body: JSON.stringify({ messages, maxTokens: 500, temperature: 0.2 }),
     })
@@ -692,10 +681,7 @@ async function maybeCompactContext(): Promise<void> {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'x-provider': config.provider,
-        'x-model': compactionModel,
-        ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+        ...providerHeaders({ ...config, model: compactionModel }),
       },
       body: JSON.stringify({
         messages: [{ role: 'user', content: prompt }],

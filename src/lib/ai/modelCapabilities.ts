@@ -30,3 +30,38 @@ export function modelRejectsSampling(model: string): boolean {
 export function pickUtilityModel(config: { provider: string; model: string }): string {
   return config.provider === 'claude' ? 'claude-haiku-4-5' : config.model
 }
+
+export interface ProviderCapabilities {
+  /** Token-level logprobs on chat completions (entropy/uncertainty overlay). */
+  logprobs: boolean
+  /** An embeddings API reachable through /api/embed. */
+  embeddings: boolean
+  /** Whisper voice transcription usable with this provider's key. */
+  voiceTranscription: boolean
+}
+
+/**
+ * What each provider can do, for capability-aware UI (disable-with-reason
+ * instead of silently inert controls).
+ *
+ * - claude: no logprobs; embeddings only via a base-URL proxy override; its
+ *   key cannot call Whisper but a separate OpenAI key can (so transcription
+ *   is available).
+ * - openrouter: unified chat API only — no logprobs surface, no embeddings
+ *   proxy.
+ * - ollama: local — embeddings yes, but no hosted Whisper without an OpenAI
+ *   key (the UI treats transcription as unavailable by default).
+ */
+export function providerCapabilities(provider: string, baseUrl?: string): ProviderCapabilities {
+  switch (provider) {
+    case 'openai':
+      return { logprobs: true, embeddings: true, voiceTranscription: true }
+    case 'openrouter':
+      return { logprobs: false, embeddings: false, voiceTranscription: true }
+    case 'ollama':
+      return { logprobs: false, embeddings: true, voiceTranscription: false }
+    case 'claude':
+    default:
+      return { logprobs: false, embeddings: !!baseUrl, voiceTranscription: true }
+  }
+}

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { modelRejectsSampling, pickUtilityModel } from '@/lib/ai/modelCapabilities'
+import {
+  modelRejectsSampling,
+  pickUtilityModel,
+  providerCapabilities,
+} from '@/lib/ai/modelCapabilities'
 
 // modelRejectsSampling(model) is true when the (case-insensitive) id contains
 // one of the sampling-rejecting frontier families: opus-4-7, opus-4-8, fable-5,
@@ -129,5 +133,74 @@ describe('pickUtilityModel', () => {
   it('keeps the selected model for non-Claude providers (no cheaper sibling assumed)', () => {
     expect(pickUtilityModel({ provider: 'openai', model: 'gpt-4o' })).toBe('gpt-4o')
     expect(pickUtilityModel({ provider: 'ollama', model: 'llama3.2' })).toBe('llama3.2')
+  })
+
+  it('keeps the selected model for openrouter slugs and unknown providers', () => {
+    expect(
+      pickUtilityModel({ provider: 'openrouter', model: 'anthropic/claude-sonnet-4.6' }),
+    ).toBe('anthropic/claude-sonnet-4.6')
+    expect(pickUtilityModel({ provider: 'groq', model: 'mixtral-8x7b' })).toBe('mixtral-8x7b')
+  })
+})
+
+// ── modelRejectsSampling on OpenRouter-style slugs ────────────────────────────
+
+describe('modelRejectsSampling — openrouter slugs', () => {
+  it('matches rejecting families embedded in vendor-prefixed slugs', () => {
+    expect(modelRejectsSampling('anthropic/claude-opus-4-8')).toBe(true)
+    expect(modelRejectsSampling('anthropic/claude-fable-5')).toBe(true)
+  })
+
+  it('does not match sampling-accepting or non-Claude slugs', () => {
+    expect(modelRejectsSampling('anthropic/claude-sonnet-4.6')).toBe(false)
+    expect(modelRejectsSampling('meta-llama/llama-3.3-70b-instruct')).toBe(false)
+    expect(modelRejectsSampling('deepseek/deepseek-chat')).toBe(false)
+  })
+})
+
+// ── providerCapabilities ──────────────────────────────────────────────────────
+
+describe('providerCapabilities', () => {
+  it('claude: no logprobs, embeddings only behind a base-URL proxy, transcription available', () => {
+    expect(providerCapabilities('claude')).toEqual({
+      logprobs: false,
+      embeddings: false,
+      voiceTranscription: true,
+    })
+    expect(providerCapabilities('claude', 'https://proxy.example.com')).toEqual({
+      logprobs: false,
+      embeddings: true,
+      voiceTranscription: true,
+    })
+  })
+
+  it('openai: everything available', () => {
+    expect(providerCapabilities('openai')).toEqual({
+      logprobs: true,
+      embeddings: true,
+      voiceTranscription: true,
+    })
+  })
+
+  it('openrouter: chat only — no logprobs, no embeddings, transcription via a separate key', () => {
+    expect(providerCapabilities('openrouter')).toEqual({
+      logprobs: false,
+      embeddings: false,
+      voiceTranscription: true,
+    })
+    // A base-URL override does not unlock embeddings on OpenRouter.
+    expect(providerCapabilities('openrouter', 'https://openrouter.ai/api/v1').embeddings).toBe(false)
+  })
+
+  it('ollama: local embeddings, no hosted transcription', () => {
+    expect(providerCapabilities('ollama')).toEqual({
+      logprobs: false,
+      embeddings: true,
+      voiceTranscription: false,
+    })
+  })
+
+  it('treats unknown providers like claude (the server-side fallback)', () => {
+    expect(providerCapabilities('groq')).toEqual(providerCapabilities('claude'))
   })
 })
