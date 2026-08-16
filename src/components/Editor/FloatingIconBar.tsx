@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import { useEditorStore } from '@/stores/editorStore'
-import { createAnnotationFromText } from '@/lib/voice/pipeline'
+import { captureAndResolveInBackground } from '@/lib/voice/pipeline'
 import { AnnotationComposer } from '@/components/Annotations/AnnotationComposer'
 
 const BAR_HEIGHT = 48
@@ -61,9 +61,10 @@ export function FloatingIconBar() {
       <AnnotationComposer
         mode="selection"
         className="w-[360px]"
-        onSubmit={async ({ text, suggestedIntent }) => {
-          await createAnnotationFromText(suggestedIntent ?? 'ask', text, contextMenu.from, contextMenu.to, {
+        onSubmit={({ text, suggestedIntent }) => {
+          captureAndResolveInBackground(suggestedIntent ?? 'ask', text, contextMenu.from, contextMenu.to, {
             suggestedType: suggestedIntent,
+            notify: 'quiet',
           })
           clearContextMenu()
         }}

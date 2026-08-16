@@ -5,7 +5,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useChangesStore } from '@/stores/changesStore'
 import { generateId } from '@/lib/utils/id'
-import { createAnnotationFromText } from '@/lib/voice/pipeline'
+import { captureAndResolveInBackground } from '@/lib/voice/pipeline'
 import type { ConversationMessage, SuggestedEdit } from '@/lib/annotations/types'
 import { AgentMarkdown } from '@/components/ui/AgentMarkdown'
 import { AnnotationComposer } from './AnnotationComposer'
@@ -79,7 +79,7 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                     const parentAnn = useAnnotationStore.getState().getById(annotationId)
                     const from = parentAnn?.anchor.from ?? 0
                     const to = parentAnn?.anchor.to ?? 0
-                    createAnnotationFromText(suggestedIntent ?? 'dig', transcript, from, to, {
+                    captureAndResolveInBackground(suggestedIntent ?? 'dig', transcript, from, to, {
                       parentId: annotationId,
                       suggestedType: suggestedIntent,
                     })
@@ -125,7 +125,7 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                             const $pos = view.state.doc.resolve(selection.from)
                             return $pos.end($pos.depth)
                           })()
-                          await createAnnotationFromText(suggestedIntent ?? 'dig', text, from, to, {
+                          captureAndResolveInBackground(suggestedIntent ?? 'dig', text, from, to, {
                             parentId: annotationId || null,
                             suggestedType: suggestedIntent,
                           })
