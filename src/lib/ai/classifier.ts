@@ -1,4 +1,5 @@
 import type { LLMConfig } from './client'
+import { providerHeaders } from './providerHeaders'
 import type { AnnotationType } from '@/lib/annotations/types'
 
 const VALID_TYPES: AnnotationType[] = ['ask', 'edit', 'dig', 'flag']
@@ -32,10 +33,7 @@ export async function classifyAnnotation(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'x-provider': config.provider,
-        'x-model': config.model,
-        ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+        ...providerHeaders(config),
       },
       body: JSON.stringify({ transcript, anchoredText, suggestedType: suggestedType ?? null }),
     })

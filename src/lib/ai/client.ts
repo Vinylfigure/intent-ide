@@ -1,13 +1,10 @@
 import { addEstimate } from './spendEstimate'
+import { providerHeaders } from './providerHeaders'
+import type { LLMConfig } from '@/stores/settingsStore'
 
-export type LLMProvider = 'claude' | 'openai' | 'ollama'
-
-export interface LLMConfig {
-  provider: LLMProvider
-  apiKey: string
-  model: string
-  baseUrl?: string
-}
+// Provider/config types live in the settings store; re-exported here so
+// existing `from './client'` type importers keep compiling unchanged.
+export type { LLMProvider, LLMConfig } from '@/stores/settingsStore'
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant'
@@ -39,10 +36,7 @@ export async function callLLM(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'x-provider': config.provider,
-      'x-model': config.model,
-      ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+      ...providerHeaders(config),
     },
     body,
   })
@@ -84,10 +78,7 @@ export async function callLLMWithLogprobs(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'x-provider': config.provider,
-      'x-model': config.model,
-      ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+      ...providerHeaders(config),
     },
     body,
   })
@@ -115,10 +106,7 @@ export async function* streamLLM(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'x-provider': config.provider,
-      'x-model': config.model,
-      ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+      ...providerHeaders(config),
     },
     body,
   })
