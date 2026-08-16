@@ -21,8 +21,10 @@ test.describe('Intent IDE E2E', () => {
     await page.goto('/')
 
     // 2. Dismiss the "Load Document" modal by pasting text and clicking Load
+    // (the modal defaults to 'blank' mode since Phase 8D — select the Paste tab first)
     const modal = page.locator('.fixed.inset-0')
     if (await modal.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await modal.locator('button', { hasText: 'Paste' }).first().click()
       const textarea = modal.locator('textarea')
       await textarea.fill('Test document for e2e validation.')
       await modal.locator('button', { hasText: 'Load Document' }).click()
