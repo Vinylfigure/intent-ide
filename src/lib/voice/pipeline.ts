@@ -14,7 +14,9 @@ import {
   addAnnotationDecoration,
   removeAnnotationDecoration,
 } from '@/lib/prosemirror/plugins/annotationPlugin'
-import { inferScope } from '@/lib/prosemirror/helpers'
+import { inferScope, getBlockText } from '@/lib/prosemirror/helpers'
+import { useFlowStore } from '@/stores/flowStore'
+import { answerDwellMs } from '@/lib/annotations/answerReveal'
 import { streamResolveAnnotation } from '@/lib/ai/resolver'
 import { ingestAnnotationEpisode } from '@/lib/graphrag/episodeIngestion'
 import { generateId } from '@/lib/utils/id'
@@ -278,6 +280,21 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
       content: resolution.content,
       suggestedEdit: resolution.suggestedEdit,
     })
+
+    // Flow-state answer buffering (PRD Event Segmentation): when an ask/dig
+    // answer finishes while the user is NOT watching this card stream, hold
+    // its PRESENTATION until a reading breakpoint. Status still becomes
+    // 'resolved' below — buffering suppresses presentation, never existence.
+    const finalType = current.type
+    if (
+      (finalType === 'ask' || finalType === 'dig') &&
+      useFlowStore.getState().bufferAnswersEnabled &&
+      useAnnotationStore.getState().activeAnnotationId !== id
+    ) {
+      const blockText = getBlockText(view.state, current.anchor.from)
+      useFlowStore.getState().holdAnswer(id, answerDwellMs(blockText))
+    }
+
     annotationStore.update(id, {
       status: 'resolved',
       resolution,

@@ -12,6 +12,8 @@ import {
 } from '@/lib/prosemirror/plugins/proposedChangePlugin'
 import { readLinePluginKey } from '@/lib/prosemirror/plugins/readLinePlugin'
 import { partitionCascadeReveal, cascadeBreakpointPos, pollCascadeReveal } from '@/lib/annotations/cascadeReveal'
+import { answerBreakpointPos, shouldRevealAnswer } from '@/lib/annotations/answerReveal'
+import { useFlowStore } from '@/stores/flowStore'
 import { ResolutionActions } from './ResolutionActions'
 import { CascadeList } from './CascadeList'
 import { ConversationThread } from './ConversationThread'
@@ -61,6 +63,13 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
   const view = useEditorStore((s) => s.view)
   const [showBadgeDropdown, setShowBadgeDropdown] = useState(false)
 
+  // Flow-state answer buffering: while this card's answer is held, keep
+  // presenting it as "Thinking..." and hide the conversation/resolution body.
+  const heldEntry = useFlowStore((s) => s.heldAnswers[annotation.id])
+  const held = !!heldEntry
+  const revealAnswer = useFlowStore((s) => s.revealAnswer)
+  const [showAnswerReadyChip, setShowAnswerReadyChip] = useState(false)
+
   // Decoration review lifecycle (PRD Read-Line + Cascade): while this card is the
   // active one and its resolution carries multi-region edits still under review,
   // "call out" those regions in the editor; clear them once it deactivates or the
@@ -108,6 +117,33 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
       clearProposedEdits(view)
     }
   }, [isActive, annotation.status, reviewEdits, view])
+
+  // Sibling effect to the cascade-reveal poll above (do NOT merge them): while
+  // this card's ANSWER is held, poll the read-line high-water mark against the
+  // anchor block's end; with no reading signal at all, fall back to the dwell
+  // timer. On reveal, flash a transient "Answer ready" chip.
+  useEffect(() => {
+    if (!heldEntry || !view) return
+    const timer = setInterval(() => {
+      const highWaterMark = readLinePluginKey.getState(view.state)?.highWaterMark ?? 0
+      const breakpointPos = answerBreakpointPos(view.state.doc, annotation.anchor)
+      const msSinceHeld = Date.now() - heldEntry.heldAt
+      if (
+        shouldRevealAnswer({ highWaterMark, breakpointPos, msSinceHeld, dwellMs: heldEntry.dwellMs })
+      ) {
+        useFlowStore.getState().revealAnswer(annotation.id)
+        setShowAnswerReadyChip(true)
+      }
+    }, 500)
+    return () => clearInterval(timer)
+  }, [heldEntry, view, annotation.id, annotation.anchor])
+
+  // Auto-clear the transient chip after the fade animation (~4s).
+  useEffect(() => {
+    if (!showAnswerReadyChip) return
+    const timeout = setTimeout(() => setShowAnswerReadyChip(false), 4000)
+    return () => clearTimeout(timeout)
+  }, [showAnswerReadyChip])
 
   const handleBadgeOverride = async (newType: AnnotationType) => {
     setShowBadgeDropdown(false)
@@ -218,6 +254,9 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
   }, [view, annotation.anchor])
 
   const handleClick = () => {
+    // Click-through-early: interacting with the card always releases a held
+    // answer (no-op when nothing is held).
+    revealAnswer(annotation.id)
     setActive(isActive ? null : annotation.id)
     if (!isActive) {
       scrollToAnchor()
@@ -278,9 +317,16 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
             </div>
           )}
         </div>
-        <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${STATUS_STYLES[annotation.status] ?? 'bg-stone-100 text-stone-700'}`}>
-          {STATUS_LABELS[annotation.status] || annotation.status}
-        </span>
+        <div className="flex items-center gap-1.5">
+          {showAnswerReadyChip && (
+            <span className="answer-ready-chip">Answer ready</span>
+          )}
+          {/* While the answer is held, present the resolving chip — the
+              annotation IS resolved, but its presentation is buffered. */}
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${STATUS_STYLES[held ? 'resolving' : annotation.status] ?? 'bg-stone-100 text-stone-700'}`}>
+            {held ? STATUS_LABELS.resolving : STATUS_LABELS[annotation.status] || annotation.status}
+          </span>
+        </div>
       </div>
 
       {/* Transcript */}
@@ -320,8 +366,8 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
         </div>
       )}
 
-      {/* Verbosity toggle (when active and resolved) */}
-      {isActive && annotation.resolution && (
+      {/* Verbosity toggle (when active and resolved; hidden while the answer is held) */}
+      {isActive && !held && annotation.resolution && (
         <div className="mt-2 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           <span className="text-[10px] font-mono text-muted-foreground mr-1">Length:</span>
           {(['concise', 'normal', 'detailed'] as const).map((v) => (
@@ -368,8 +414,8 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
         </div>
       )}
 
-      {/* Inline provocation callout (when MADS raised an unresolved objection) */}
-      {isActive && annotation.resolution?.provocation && (
+      {/* Inline provocation callout (when MADS raised an unresolved objection; hidden while held) */}
+      {isActive && !held && annotation.resolution?.provocation && (
         <div className="mt-3 mx-1 p-3 border border-amber-300 bg-amber-50 rounded-xl shadow-sm">
           <div className="flex items-start gap-2">
             <span className="text-amber-600 text-xs font-bold shrink-0">⚠</span>
@@ -393,8 +439,8 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
       {/* Cascade review list — navigable "affects N sections" (when active) */}
       {isActive && <CascadeList annotation={annotation} />}
 
-      {/* Conversation thread (when active and has conversation messages) */}
-      {isActive && annotation.conversation && annotation.conversation.length > 0 && (
+      {/* Conversation thread (when active and has conversation messages; hidden while the answer is held) */}
+      {isActive && !held && annotation.conversation && annotation.conversation.length > 0 && (
         <div className="mt-3 pt-3 border-t border-border/70" onClick={(e) => e.stopPropagation()}>
           <ConversationThread messages={annotation.conversation} annotationId={annotation.id} isStreaming={annotation.status === 'resolving'} />
           {annotation.resolution && <ResolutionActions annotation={annotation} />}
@@ -406,8 +452,8 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
         </div>
       )}
 
-      {/* Resolution content (when active, resolved, and no conversation — backward compatibility) */}
-      {isActive && annotation.resolution && (!annotation.conversation || annotation.conversation.length === 0) && (
+      {/* Resolution content (when active, resolved, and no conversation — backward compatibility; hidden while the answer is held) */}
+      {isActive && !held && annotation.resolution && (!annotation.conversation || annotation.conversation.length === 0) && (
         <div className="mt-3 pt-3 border-t border-border/70" onClick={(e) => e.stopPropagation()}>
           <div className="text-sm text-ink leading-relaxed">
             <AgentMarkdown content={annotation.resolution.content} />

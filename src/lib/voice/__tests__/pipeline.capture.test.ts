@@ -7,6 +7,7 @@ import { useAnnotationStore } from '@/stores/annotationStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { useToastStore } from '@/stores/toastStore'
+import { useFlowStore } from '@/stores/flowStore'
 import {
   captureAnnotationFromText,
   captureAndResolveInBackground,
@@ -189,6 +190,7 @@ beforeEach(() => {
   resolverControl.streamOverride = null
   useAnnotationStore.getState().clear()
   useToastStore.setState({ toasts: [] })
+  useFlowStore.setState({ bufferAnswersEnabled: true, heldAnswers: {} })
   useDocumentStore.setState({ activeDocumentId: 'doc-test' })
   view = mountEditor()
   useEditorStore.getState().setView(view)
@@ -323,6 +325,80 @@ describe('background failure', () => {
     expect(lastAgent?.content).toContain('resolver exploded')
     expect(useToastStore.getState().toasts.length).toBeGreaterThan(0)
     expect(useToastStore.getState().toasts[0].type).toBe('error')
+  })
+})
+
+describe('(f) flow-state answer buffering', () => {
+  // Both-paths rule: the fetch stub serves BOTH /api/resolve shapes exactly
+  // like the e2e interceptors — the ask scenarios exercise the streaming SSE
+  // shape (ask/dig are MADS-'simple' and always stream), while the edit
+  // scenario routes through MADS and exercises the non-stream transcript
+  // shape. An ask/dig annotation can never reach the MADS path (see
+  // classifyComplexity in mads.ts), so the shapes split across types.
+
+  async function runScenario(opts: {
+    type: 'ask' | 'edit'
+    deactivate: boolean
+    bufferEnabled: boolean
+  }) {
+    useFlowStore.getState().setBufferAnswersEnabled(opts.bufferEnabled)
+    let release!: () => void
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const { stub, calls } = makeFetchStub({ resolveGate: gate })
+    vi.stubGlobal('fetch', stub)
+
+    const id = captureAndResolveInBackground(opts.type, 'scenario input', FROM, TO, {
+      suggestedType: opts.type,
+      skipClassify: true,
+    })!
+    expect(useAnnotationStore.getState().activeAnnotationId).toBe(id)
+    if (opts.deactivate) {
+      // User moves on before the answer lands.
+      useAnnotationStore.getState().setActive(null)
+    }
+    release()
+    await waitFor(() => getAnnotation(id).status === 'resolved')
+    return { id, calls }
+  }
+
+  it('ask + buffering + inactive card → heldAnswers entry (streaming SSE path)', async () => {
+    const { id, calls } = await runScenario({ type: 'ask', deactivate: true, bufferEnabled: true })
+    expect(useFlowStore.getState().heldAnswers[id]).toBeDefined()
+    expect(useFlowStore.getState().heldAnswers[id].dwellMs).toBeGreaterThanOrEqual(2000)
+    // Status is still resolved — buffering suppresses presentation, not existence.
+    expect(getAnnotation(id).status).toBe('resolved')
+    expect(getAnnotation(id).resolution?.content).toBe(STREAMED_ANSWER)
+    // Proves the SSE-shaped stub served this resolution.
+    expect(calls.some((c) => c.url.includes('/api/resolve') && c.body?.stream)).toBe(true)
+  })
+
+  it('edit type is never held (MADS transcript path)', async () => {
+    const { id, calls } = await runScenario({ type: 'edit', deactivate: true, bufferEnabled: true })
+    expect(useFlowStore.getState().heldAnswers[id]).toBeUndefined()
+    expect(getAnnotation(id).status).toBe('resolved')
+    // Proves the MADS-shaped stub served this resolution (three sequential
+    // non-stream transcript calls, ending with the Judge).
+    const madsCalls = calls.filter(
+      (c) =>
+        c.url.includes('/api/resolve') &&
+        !c.body?.stream &&
+        (c.body?.messages ?? []).some((m: { content: string }) =>
+          m.content.includes('Issue your verdict'),
+        ),
+    )
+    expect(madsCalls.length).toBe(1)
+  })
+
+  it('toggle off never holds', async () => {
+    const { id } = await runScenario({ type: 'ask', deactivate: true, bufferEnabled: false })
+    expect(useFlowStore.getState().heldAnswers[id]).toBeUndefined()
+  })
+
+  it('active card never holds', async () => {
+    const { id } = await runScenario({ type: 'ask', deactivate: false, bufferEnabled: true })
+    expect(useFlowStore.getState().heldAnswers[id]).toBeUndefined()
   })
 })
 

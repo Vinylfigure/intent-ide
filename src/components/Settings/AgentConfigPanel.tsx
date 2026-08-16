@@ -9,6 +9,7 @@ import {
 import type { AnnotationType } from '@/lib/annotations/types'
 import { ANNOTATION_LABELS } from '@/lib/annotations/types'
 import { generateId } from '@/lib/utils/id'
+import { useFlowStore } from '@/stores/flowStore'
 
 const BUILTIN_TYPES: AnnotationType[] = [
   'ask',
@@ -42,6 +43,9 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
   const addCustomType = useAgentConfigStore((s) => s.addCustomType)
   const removeCustomType = useAgentConfigStore((s) => s.removeCustomType)
   const updateCustomType = useAgentConfigStore((s) => s.updateCustomType)
+
+  const bufferAnswersEnabled = useFlowStore((s) => s.bufferAnswersEnabled)
+  const setBufferAnswersEnabled = useFlowStore((s) => s.setBufferAnswersEnabled)
 
   const [section, setSection] = useState<'builtin' | 'custom'>('builtin')
   const [activeType, setActiveType] = useState<AnnotationType>('ask')
@@ -345,6 +349,27 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
               )}
             </div>
           )}
+
+          {/* Flow — presentation pacing preferences */}
+          <div className="mt-6 pt-4 border-t border-border">
+            <h3 className="text-xs font-mono uppercase tracking-wider text-muted mb-2">
+              Flow
+            </h3>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                checked={bufferAnswersEnabled}
+                onChange={(e) => setBufferAnswersEnabled(e.target.checked)}
+                className="accent-accent"
+              />
+              Buffer answers until a reading breakpoint
+            </label>
+            <p className="mt-1.5 text-xs text-muted leading-relaxed">
+              When an answer finishes while you are reading elsewhere, keep it
+              as &ldquo;Thinking...&rdquo; until you reach the end of the
+              annotated paragraph instead of interrupting mid-read.
+            </p>
+          </div>
         </div>
       </div>
     </div>
