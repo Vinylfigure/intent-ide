@@ -19,6 +19,13 @@ export { findTextInDoc } from './blockIds'
  * by `from` so earlier positions stay valid.
  */
 
+/**
+ * Transaction meta stamped on every AI-driven batched apply. The direct-edit
+ * cascade trigger (src/lib/annotations/directEditTrigger.ts) skips stamped
+ * transactions so applying an AI cascade never re-offers a cascade on itself.
+ */
+export const AI_APPLY_META = 'intent-ide:ai-apply'
+
 export interface AppliedEdit {
   from: number
   to: number
@@ -74,6 +81,7 @@ export function applyProposedEdits(view: EditorView, acceptedIds: string[]): App
   // Apply descending by `from` so each replace leaves earlier positions valid.
   const ordered = [...resolved].sort((x, y) => y.from - x.from)
   let tr = view.state.tr
+  tr.setMeta(AI_APPLY_META, true)
   for (const e of ordered) {
     tr = e.newText
       ? tr.replaceWith(e.from, e.to, view.state.schema.text(e.newText))
