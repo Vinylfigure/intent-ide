@@ -1,0 +1,33 @@
+# Fleet status sweep — runs scripts/fleet-status.sh on a cron.
+#
+# Declared in .github/loops.yaml (loop: fleet-status). The run goes red exactly
+# when the script finds red findings (e.g. L-047 stale claude/* branches), so a
+# failing workflow badge means "the fleet needs operator attention", not "flaky
+# infra".
+name: Fleet status
+
+on:
+  schedule:
+    - cron: "17 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: read
+  contents: read
+
+concurrency:
+  group: fleet-status
+  cancel-in-progress: false
+
+jobs:
+  fleet-status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run fleet status sweep
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/fleet-status.sh

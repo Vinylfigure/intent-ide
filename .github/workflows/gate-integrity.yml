@@ -1,0 +1,80 @@
+# Gate integrity — protects the machinery and the test suite from silent edits.
+#
+# Fails any PR whose diff against its base:
+#   * modifies .github/workflows/** (the CI gates themselves), or
+#   * deletes test files (src/**/__tests__/**, tests/**), or
+#   * adds skipped tests (.skip( / xit( / xdescribe( on added lines),
+# unless the PR carries the `machinery-change` label — the explicit,
+# operator-visible way to say "yes, this PR is allowed to touch the machinery".
+# Adding or removing the label re-triggers the check.
+name: Gate integrity
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Allow via machinery-change label
+        id: gate
+        if: contains(github.event.pull_request.labels.*.name, 'machinery-change')
+        run: echo "PR carries the 'machinery-change' label — machinery edits are explicitly allowed."
+
+      - uses: actions/checkout@v5
+        if: "!contains(github.event.pull_request.labels.*.name, 'machinery-change')"
+        with:
+          fetch-depth: 0
+
+      - name: Check diff against base
+        if: "!contains(github.event.pull_request.labels.*.name, 'machinery-change')"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          fail=0
+
+          merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          echo "Comparing $merge_base...$HEAD_SHA"
+
+          # 1. Workflow modifications.
+          workflow_changes="$(git diff --name-only "$merge_base" "$HEAD_SHA" -- '.github/workflows/**' || true)"
+          if [[ -n "$workflow_changes" ]]; then
+            echo "::error::PR modifies workflow files without the 'machinery-change' label:"
+            echo "$workflow_changes"
+            fail=1
+          fi
+
+          # 2. Deleted test files.
+          deleted_tests="$(git diff --name-only --diff-filter=D "$merge_base" "$HEAD_SHA" \
+            -- 'src/**/__tests__/**' 'tests/**' || true)"
+          if [[ -n "$deleted_tests" ]]; then
+            echo "::error::PR deletes test files without the 'machinery-change' label:"
+            echo "$deleted_tests"
+            fail=1
+          fi
+
+          # 3. Newly skipped tests: .skip( / xit( / xdescribe( on ADDED lines
+          #    in test files.
+          skipped="$(git diff --unified=0 "$merge_base" "$HEAD_SHA" \
+              -- 'src/**/__tests__/**' 'tests/**' '**/*.test.*' '**/*.spec.*' \
+            | grep -E '^\+' | grep -v '^\+\+\+' \
+            | grep -En '\.skip\(|\bxit\(|\bxdescribe\(' || true)"
+          if [[ -n "$skipped" ]]; then
+            echo "::error::PR adds skipped tests (.skip(/xit(/xdescribe() without the 'machinery-change' label:"
+            echo "$skipped"
+            fail=1
+          fi
+
+          if [[ "$fail" -ne 0 ]]; then
+            echo "::error::Gate integrity failed. If this machinery/test change is intentional, add the 'machinery-change' label to the PR."
+            exit 1
+          fi
+          echo "Gate integrity clean: no workflow edits, no deleted tests, no new skips."
