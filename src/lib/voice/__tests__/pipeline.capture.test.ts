@@ -8,6 +8,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useFlowStore } from '@/stores/flowStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import {
   captureAnnotationFromText,
   captureAndResolveInBackground,
@@ -27,6 +28,17 @@ import {
 // force streamResolveAnnotation to throw (background-failure path).
 const resolverControl = vi.hoisted(() => ({
   streamOverride: null as null | (() => Promise<never>),
+}))
+
+// jsdom HAS a window, so the mermaid guard runs real validation here — mock
+// the mermaid module so no real (heavy) parser loads and parsing always fails.
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    parse: vi.fn(async () => {
+      throw new Error('Parse error: bad node')
+    }),
+  },
 }))
 
 vi.mock('@/lib/ai/resolver', async (importOriginal) => {
@@ -191,6 +203,9 @@ beforeEach(() => {
   useAnnotationStore.getState().clear()
   useToastStore.setState({ toasts: [] })
   useFlowStore.setState({ bufferAnswersEnabled: true, heldAnswers: {} })
+  // Session history leaks prompt text between tests (fetch-call content
+  // assertions branch on it) — start each test clean.
+  useSessionStore.getState().reset()
   useDocumentStore.setState({ activeDocumentId: 'doc-test' })
   view = mountEditor()
   useEditorStore.getState().setView(view)
@@ -399,6 +414,57 @@ describe('(f) flow-state answer buffering', () => {
   it('active card never holds', async () => {
     const { id } = await runScenario({ type: 'ask', deactivate: false, bufferEnabled: true })
     expect(useFlowStore.getState().heldAnswers[id]).toBeUndefined()
+  })
+})
+
+describe('(g) mermaid guard on resolution content', () => {
+  it('an invalid fence triggers exactly one retry, then degrades to a plain fence', async () => {
+    const INVALID_DIAGRAM = 'Here is the flow:\n\n```mermaid\ngrph BROKEN\n```\n\nOne caption.'
+    // The generic non-stream branch (used by continueThread for the retry)
+    // serves the SAME invalid-fence content, so the retry also fails to
+    // validate and the ORIGINAL content is degraded.
+    const { stub, calls } = makeFetchStub({ streamText: INVALID_DIAGRAM })
+    vi.stubGlobal('fetch', stub)
+
+    const id = captureAndResolveInBackground('dig', 'diagram this', FROM, TO, {
+      suggestedType: 'dig',
+      skipClassify: true,
+    })!
+    await waitFor(() => getAnnotation(id).status === 'resolved')
+
+    const retries = calls.filter(
+      (c) =>
+        c.url.includes('/api/resolve') &&
+        (c.body?.messages ?? []).some((m: { content: string }) =>
+          m.content.includes('The mermaid diagram failed to parse: Parse error: bad node'),
+        ),
+    )
+    expect(retries).toHaveLength(1)
+
+    const content = getAnnotation(id).resolution?.content ?? ''
+    expect(content).not.toContain('```mermaid')
+    expect(content).toContain('```\ngrph BROKEN\n```')
+    expect(content).toContain('Here is the flow:')
+    // Presentation-layer message carries the degraded content too.
+    const lastAgent = [...getAnnotation(id).conversation].reverse().find((m) => m.role === 'agent')
+    expect(lastAgent?.content).toBe(content)
+  })
+
+  it('content without a fence never touches the guard (no retry calls)', async () => {
+    const { stub, calls } = makeFetchStub()
+    vi.stubGlobal('fetch', stub)
+    const id = captureAndResolveInBackground('ask', 'plain answer', FROM, TO, {
+      suggestedType: 'ask',
+      skipClassify: true,
+    })!
+    await waitFor(() => getAnnotation(id).status === 'resolved')
+    expect(getAnnotation(id).resolution?.content).toBe(STREAMED_ANSWER)
+    const retries = calls.filter((c) =>
+      (c.body?.messages ?? []).some((m: { content: string }) =>
+        m.content.includes('failed to parse'),
+      ),
+    )
+    expect(retries).toHaveLength(0)
   })
 })
 

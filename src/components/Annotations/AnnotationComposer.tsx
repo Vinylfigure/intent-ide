@@ -14,15 +14,38 @@ interface AnnotationComposerProps {
   parentAnnotationId?: string | null
   suggestedIntent?: SuggestedIntent | null
   mode: 'selection' | 'thread' | 'inline'
-  onSubmit: (payload: { text: string; suggestedIntent: AnnotationType | null }) => Promise<void> | void
+  onSubmit: (payload: {
+    text: string
+    suggestedIntent: AnnotationType | null
+    /** One-click actions preset the intent — skip the LLM classify round-trip. */
+    skipClassify?: boolean
+  }) => Promise<void> | void
   onCancel?: () => void
   className?: string
 }
 
-const QUICK_ACTIONS: Array<{ label: string; value: SuggestedIntent }> = [
-  { label: 'Dig deeper', value: 'dig' },
-  { label: "What's this mean?", value: 'ask' },
-  { label: 'Edit this', value: 'edit' },
+/**
+ * One-click actions: a single tap submits a canned prompt with a preset
+ * intent (skipClassify) — no typing required. Typed text keeps the classic
+ * classify flow.
+ */
+const QUICK_ACTIONS: Array<{ label: string; intent: SuggestedIntent; prompt: string }> = [
+  {
+    label: 'Explain this',
+    intent: 'ask',
+    prompt: 'Explain this passage in plain language.',
+  },
+  {
+    label: 'Give an example',
+    intent: 'dig',
+    prompt: 'Give one concrete example that illustrates this passage.',
+  },
+  {
+    label: 'Diagram this',
+    intent: 'dig',
+    prompt:
+      'Diagram the structure or flow described in this passage. Respond with a single ```mermaid fenced code block (flowchart or sequence diagram), followed by at most one sentence of caption.',
+  },
 ]
 
 export function AnnotationComposer({
@@ -67,6 +90,17 @@ export function AnnotationComposer({
     setIsSubmitting(true)
     try {
       await onSubmit({ text, suggestedIntent: activeIntent })
+      setValue('')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleQuickAction = async (action: (typeof QUICK_ACTIONS)[number]) => {
+    if (isSubmitting) return
+    setIsSubmitting(true)
+    try {
+      await onSubmit({ text: action.prompt, suggestedIntent: action.intent, skipClassify: true })
       setValue('')
     } finally {
       setIsSubmitting(false)
@@ -126,23 +160,21 @@ export function AnnotationComposer({
       </div>
 
       <div className="flex flex-wrap gap-1 px-3 pb-2">
-        {QUICK_ACTIONS.map((action) => {
-          const isActive = activeIntent === action.value
-          return (
-            <button
-              key={action.value}
-              onClick={() => setActiveIntent((prev) => prev === action.value ? null : action.value)}
-              className="px-2 py-1 text-[10px] font-mono rounded-full border transition-colors"
-              style={{
-                borderColor: isActive ? ANNOTATION_COLORS[action.value] : 'rgba(140,130,120,0.35)',
-                color: isActive ? ANNOTATION_COLORS[action.value] : undefined,
-                backgroundColor: isActive ? `${ANNOTATION_COLORS[action.value]}14` : undefined,
-              }}
-            >
-              {action.label}
-            </button>
-          )
-        })}
+        {QUICK_ACTIONS.map((action) => (
+          <button
+            key={action.label}
+            onClick={() => handleQuickAction(action)}
+            disabled={isSubmitting}
+            title={`${action.label} — one click, no typing needed`}
+            className="px-2 py-1 text-[10px] font-mono rounded-full border transition-colors hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed"
+            style={{
+              borderColor: `${ANNOTATION_COLORS[action.intent]}59`,
+              color: ANNOTATION_COLORS[action.intent],
+            }}
+          >
+            {action.label}
+          </button>
+        ))}
 
         {onCancel && (
           <button

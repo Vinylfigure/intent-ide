@@ -73,7 +73,7 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                   content={message.content}
                   isStreaming={isStreaming && message.role === 'agent' && message.id === messages[messages.length - 1]?.id}
                   interactive={!!annotationId && !isStreaming}
-                  onDrill={({ transcript, suggestedIntent }) => {
+                  onDrill={({ transcript, suggestedIntent, skipClassify }) => {
                     if (!annotationId) return
                     // Use the parent's anchor positions for the child
                     const parentAnn = useAnnotationStore.getState().getById(annotationId)
@@ -82,6 +82,7 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                     captureAndResolveInBackground(suggestedIntent ?? 'dig', transcript, from, to, {
                       parentId: annotationId,
                       suggestedType: suggestedIntent,
+                      skipClassify,
                     })
                     useToastStore.getState().addToast('Sub-annotation created', 'success')
                   }}
@@ -117,7 +118,7 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                       <AnnotationComposer
                         mode="inline"
                         className="shadow-none"
-                        onSubmit={async ({ text, suggestedIntent }) => {
+                        onSubmit={async ({ text, suggestedIntent, skipClassify }) => {
                           if (!view) return
                           const selection = view.state.selection
                           const from = selection.from
@@ -128,6 +129,7 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                           captureAndResolveInBackground(suggestedIntent ?? 'dig', text, from, to, {
                             parentId: annotationId || null,
                             suggestedType: suggestedIntent,
+                            skipClassify,
                           })
                           useToastStore.getState().addToast('Sub-annotation created', 'success')
                           setSpinOffMessageId(null)

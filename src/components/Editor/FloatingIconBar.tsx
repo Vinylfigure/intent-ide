@@ -61,10 +61,11 @@ export function FloatingIconBar() {
       <AnnotationComposer
         mode="selection"
         className="w-[360px]"
-        onSubmit={({ text, suggestedIntent }) => {
+        onSubmit={({ text, suggestedIntent, skipClassify }) => {
           captureAndResolveInBackground(suggestedIntent ?? 'ask', text, contextMenu.from, contextMenu.to, {
             suggestedType: suggestedIntent,
             notify: 'quiet',
+            skipClassify,
           })
           clearContextMenu()
         }}

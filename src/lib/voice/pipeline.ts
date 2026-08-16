@@ -17,7 +17,8 @@ import {
 import { inferScope, getBlockText } from '@/lib/prosemirror/helpers'
 import { useFlowStore } from '@/stores/flowStore'
 import { answerDwellMs } from '@/lib/annotations/answerReveal'
-import { streamResolveAnnotation } from '@/lib/ai/resolver'
+import { streamResolveAnnotation, continueThread } from '@/lib/ai/resolver'
+import { extractMermaidFence, ensureRenderableMermaid } from '@/lib/ai/mermaidGuard'
 import { ingestAnnotationEpisode } from '@/lib/graphrag/episodeIngestion'
 import { generateId } from '@/lib/utils/id'
 import { getDefaultVerbosity } from '@/lib/annotations/types'
@@ -274,6 +275,26 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
       // Update the streaming message content as chunks arrive
       annotationStore.updateMessage(id, streamingMessageId, { content: partialContent })
     })
+
+    // Mermaid render guard (single choke point for BOTH the MADS and the
+    // streaming outcomes): if the answer carries a ```mermaid fence, make
+    // sure it actually parses — retry once via the resolver, else degrade
+    // the fence to a plain code block. Best-effort: a guard failure keeps
+    // the original content.
+    if (extractMermaidFence(resolution.content)) {
+      try {
+        resolution.content = await ensureRenderableMermaid(
+          resolution.content,
+          async (parseError) => {
+            const correction = `The mermaid diagram failed to parse: ${parseError}. Reply with either a corrected single \`\`\`mermaid block or plain prose.`
+            const message = await continueThread(current, correction, view.state)
+            return message.content
+          },
+        )
+      } catch {
+        // Keep the original content — never lose an answer to the guard.
+      }
+    }
 
     // Finalize: update message with final content + suggestedEdit, set status
     annotationStore.updateMessage(id, streamingMessageId, {

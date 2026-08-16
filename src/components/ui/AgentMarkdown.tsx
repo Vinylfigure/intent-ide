@@ -1,8 +1,9 @@
 'use client'
 
-import { useMemo, useState, useCallback } from 'react'
-import { Streamdown } from 'streamdown'
+import { useMemo, useState, useCallback, useEffect } from 'react'
+import { Streamdown, type DiagramPlugin } from 'streamdown'
 import { AnnotationComposer } from '@/components/Annotations/AnnotationComposer'
+import { extractMermaidFence } from '@/lib/ai/mermaidGuard'
 import type { AnnotationType } from '@/lib/annotations/types'
 
 interface AgentMarkdownProps {
@@ -15,6 +16,8 @@ interface AgentMarkdownProps {
     blockText: string
     transcript: string
     suggestedIntent: AnnotationType | null
+    /** Preset intent from a one-click action — skip the classify round-trip. */
+    skipClassify?: boolean
   }) => void
 }
 
@@ -55,16 +58,81 @@ function extractBlocks(content: string): ExtractedContent {
   return { reasoning, debateLog, body }
 }
 
-/** Split markdown body into paragraph-level blocks for drill targets */
+/**
+ * Split markdown body into paragraph-level blocks for drill targets.
+ * Fence-aware: blank lines INSIDE a ``` / ~~~ code fence never split, so a
+ * mermaid diagram (or any code block) with internal blank lines stays one
+ * block; an unterminated fence swallows the rest of the body as one block.
+ */
 function splitIntoBlocks(body: string): string[] {
-  // Split on double newlines (paragraph boundaries), filter empties
-  return body.split(/\n{2,}/).map(b => b.trim()).filter(Boolean)
+  const blocks: string[] = []
+  let current: string[] = []
+  let inFence = false
+
+  const flush = () => {
+    const text = current.join('\n').trim()
+    if (text) blocks.push(text)
+    current = []
+  }
+
+  for (const line of body.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence
+      current.push(line)
+      continue
+    }
+    if (!inFence && /^\s*$/.test(line)) {
+      // Blank-line run outside a fence → block boundary (empties are filtered).
+      flush()
+      continue
+    }
+    current.push(line)
+  }
+  flush()
+  return blocks
+}
+
+/**
+ * Lazily load the @streamdown/mermaid plugin only when the body actually
+ * carries a mermaid fence — the mermaid bundle is heavy and most answers
+ * never need it.
+ */
+function useMermaidPlugin(body: string, isStreaming: boolean): DiagramPlugin | undefined {
+  const hasMermaid = useMemo(() => extractMermaidFence(body) !== null, [body])
+  const [plugin, setPlugin] = useState<DiagramPlugin | null>(null)
+
+  useEffect(() => {
+    if (!hasMermaid || plugin) return
+    let cancelled = false
+    import('@streamdown/mermaid')
+      .then((mod) => {
+        if (cancelled) return
+        setPlugin(
+          mod.createMermaidPlugin({
+            config: { startOnLoad: false, securityLevel: 'strict' },
+          }),
+        )
+      })
+      .catch(() => {
+        // Plugin unavailable — fences render as plain code blocks.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [hasMermaid, plugin])
+
+  // While streaming, never attempt a diagram: partial fences must render as
+  // plain code until the stream completes.
+  if (isStreaming || !hasMermaid || !plugin) return undefined
+  return plugin
 }
 
 export function AgentMarkdown({ content, isStreaming = false, interactive = false, onDrill }: AgentMarkdownProps) {
   const { reasoning, debateLog, body } = useMemo(() => extractBlocks(content), [content])
   const blocks = useMemo(() => interactive ? splitIntoBlocks(body) : [], [body, interactive])
   const [composer, setComposer] = useState<{ x: number; y: number; blockText: string } | null>(null)
+  const mermaidPlugin = useMermaidPlugin(body, isStreaming)
+  const plugins = mermaidPlugin ? { mermaid: mermaidPlugin } : undefined
 
   const handleBlockClick = useCallback((e: React.MouseEvent, blockText: string) => {
     if (!interactive || !onDrill) return
@@ -92,7 +160,7 @@ export function AgentMarkdown({ content, isStreaming = false, interactive = fals
             onClick={(e) => handleBlockClick(e, block)}
             className="cursor-pointer rounded px-1 -mx-1 transition-colors hover:bg-accent/5 relative group"
           >
-            <Streamdown mode="static" remend={{}}>
+            <Streamdown mode="static" remend={{}} plugins={plugins}>
               {block}
             </Streamdown>
             <span className="absolute right-0 top-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-mono text-muted-foreground bg-white/80 px-1 rounded">
@@ -104,6 +172,7 @@ export function AgentMarkdown({ content, isStreaming = false, interactive = fals
         <Streamdown
           mode={isStreaming ? 'streaming' : 'static'}
           remend={{}}
+          plugins={plugins}
         >
           {body}
         </Streamdown>
@@ -134,11 +203,12 @@ export function AgentMarkdown({ content, isStreaming = false, interactive = fals
               mode="thread"
               className="w-[360px]"
               suggestedIntent="dig"
-              onSubmit={async ({ text, suggestedIntent }) => {
+              onSubmit={async ({ text, suggestedIntent, skipClassify }) => {
                 onDrill?.({
                   blockText: composer.blockText,
                   transcript: text,
                   suggestedIntent,
+                  skipClassify,
                 })
                 setComposer(null)
               }}
