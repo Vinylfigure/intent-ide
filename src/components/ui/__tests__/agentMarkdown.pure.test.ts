@@ -44,7 +44,30 @@ function extractBlocks(content: string): ExtractedContent {
 }
 
 function splitIntoBlocks(body: string): string[] {
-  return body.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean)
+  const blocks: string[] = []
+  let current: string[] = []
+  let inFence = false
+
+  const flush = () => {
+    const text = current.join('\n').trim()
+    if (text) blocks.push(text)
+    current = []
+  }
+
+  for (const line of body.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence
+      current.push(line)
+      continue
+    }
+    if (!inFence && /^\s*$/.test(line)) {
+      flush()
+      continue
+    }
+    current.push(line)
+  }
+  flush()
+  return blocks
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +159,40 @@ describe('splitIntoBlocks — markdown content', () => {
     expect(result[0]).toBe('Before code.')
     expect(result[1]).toContain('const x = 1')
     expect(result[2]).toBe('After code.')
+  })
+})
+
+describe('splitIntoBlocks — fence awareness', () => {
+  it('a fence containing blank lines stays one block', () => {
+    const input = '```mermaid\ngraph TD\n\n  A --> B\n\n  B --> C\n```'
+    const result = splitIntoBlocks(input)
+    expect(result).toHaveLength(1)
+    expect(result[0]).toBe(input)
+  })
+
+  it('text / fence-with-blank-lines / text → 3 blocks', () => {
+    const fence = '```mermaid\ngraph TD\n\n  A --> B\n```'
+    const input = `Intro.\n\n${fence}\n\nOutro.`
+    const result = splitIntoBlocks(input)
+    expect(result).toHaveLength(3)
+    expect(result[0]).toBe('Intro.')
+    expect(result[1]).toBe(fence)
+    expect(result[2]).toBe('Outro.')
+  })
+
+  it('an unterminated fence swallows the rest as one block', () => {
+    const input = 'Intro.\n\n```mermaid\ngraph TD\n\n  A --> B\n\nNever closed.'
+    const result = splitIntoBlocks(input)
+    expect(result).toHaveLength(2)
+    expect(result[0]).toBe('Intro.')
+    expect(result[1]).toBe('```mermaid\ngraph TD\n\n  A --> B\n\nNever closed.')
+  })
+
+  it('~~~ fences are respected too', () => {
+    const input = 'Before.\n\n~~~\nline one\n\nline two\n~~~\n\nAfter.'
+    const result = splitIntoBlocks(input)
+    expect(result).toHaveLength(3)
+    expect(result[1]).toBe('~~~\nline one\n\nline two\n~~~')
   })
 })
 
