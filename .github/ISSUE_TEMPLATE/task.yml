@@ -1,0 +1,29 @@
+name: Task
+description: A ready work item for the fleet — must carry a runnable "done means" check.
+labels: ["task:"]
+body:
+  - type: textarea
+    id: done-means
+    attributes:
+      label: Done means
+      description: The runnable/observable check that closes this — a command, test, or observable behavior a session can verify without asking anyone.
+      placeholder: "e.g. `npm run test -- semantic-commit` passes and the modal renders the diff preview"
+    validations:
+      required: true
+  - type: textarea
+    id: discovered-from
+    attributes:
+      label: Discovered from
+      description: Where this task came from — a PR, an incident, a dashboard finding, a conversation.
+    validations:
+      required: false
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P1 — do next
+        - P2 — soon
+        - P3 — whenever
+    validations:
+      required: false

@@ -5,6 +5,17 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-08-16] Fleet-Autonomy Machinery (branch `claude/fleet-status-machinery`)
+
+Instantiated the Janus-style fleet-autonomy machinery — repo-level automation plumbing only, zero `src/` changes, 731-test suite untouched.
+
+### Added
+- **`.github/loops.yaml`:** git source of truth for expected automations (detect-only; `enabled: false` = declarative kill switch). Declares `work-loop` (routine, not armed — issue #23) and `fleet-status` (github-action, enabled).
+- **`.github/workflows/fleet-status.yml` + `scripts/fleet-status.sh`:** cron `17 */4 * * *` sweep — idempotent label vocabulary, aging/overdue ladder on `question:` issues and `claude/*` PRs (never closes; owner comment clears), L-047 stale-branch detector, and a single "Status dashboard" issue rewritten in place. Exits non-zero iff red findings; `--dry-run` supported for stubbed-`gh` testing.
+- **`.github/workflows/gate-integrity.yml`:** fails PRs that touch `.github/workflows/**`, delete test files, or add `.skip(`/`xit(`/`xdescribe(` — unless labeled `machinery-change`.
+- **`.github/ISSUE_TEMPLATE/`:** `task.yml` (required "Done means"), `question.yml`, `config.yml` (blank issues allowed).
+- **`.github/CODEOWNERS`:** `/.github/` owned by @Vinylfigure.
+
 ## [2026-07-09] Cascade v2 Complete (Waves B, C, D — PRs #9-#12)
 
 The Cascade v2 roadmap is CLOSED. After Waves A + E (PRs #5/#6), the final three waves landed as **PR #9** (Wave D3+D4: e2e + README), **PR #10** (Wave B: scale/recall), **PR #11** (Wave C: trust/flow-state UX), and **PR #12** (Wave D1+D2 finale: Graphiti bridge, consolidation, telemetry). Process record: **five waves, five pre-PR adversarial Troublemaker reviews, five NO-MERGE verdicts — every HIGH finding fixed with regression tests before anything was pushed.** Worktrees ran A∥E then B∥D3+D4 in parallel; B∥C was deliberately serialized (`docGraph.ts` overlap).

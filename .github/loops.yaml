@@ -1,0 +1,46 @@
+# loops.yaml — git source of truth for the automations this repo EXPECTS to run.
+#
+# Why this file exists:
+#   Scheduled automations (Routines, GitHub Actions crons) live outside the
+#   repo, so git alone cannot tell you what is supposed to be running. This
+#   file declares the expected fleet so drift is detectable: an automation
+#   running that is not declared here, or declared here but not running, is a
+#   finding for the status dashboard — never something silently tolerated.
+#
+# Semantics:
+#   - `enabled: false` is a DECLARATIVE KILL SWITCH: the loop is designed and
+#     documented but must not be armed. Arming it is an explicit operator act,
+#     recorded in `armed_by` (and usually tracked in an issue — see `notes`).
+#   - This file is DETECT-ONLY. Nothing here starts or stops anything;
+#     `scripts/fleet-status.sh` merely reads it and reports each loop's
+#     declared state on the "Status dashboard" issue.
+#
+# Schema (one entry per loop):
+#   name:      unique loop identifier
+#   schedule:  5-field cron, UTC
+#   driver:    what fires it — `routine` (Claude Routine) | `github-action`
+#   skill:     (driver: routine)        the skill each firing invokes
+#   workflow:  (driver: github-action)  the workflow file under .github/workflows/
+#   enabled:   whether the loop SHOULD currently be running (see kill switch above)
+#   armed_by:  what actually arms it (workflow file, Routine id) — null until armed
+#   owner:     the human accountable for the loop
+#   notes:     free text — arming status, tracking issue, caveats
+
+loops:
+  - name: work-loop
+    schedule: "17 */4 * * *"
+    driver: routine
+    skill: work-loop
+    enabled: false
+    armed_by: null
+    owner: Vinylfigure
+    notes: "arming tracked in issue #23"
+
+  - name: fleet-status
+    schedule: "17 */4 * * *"
+    driver: github-action
+    workflow: fleet-status.yml
+    enabled: true
+    armed_by: .github/workflows/fleet-status.yml
+    owner: Vinylfigure
+    notes: "regenerates the Status dashboard issue in place; exits red on L-047 findings"

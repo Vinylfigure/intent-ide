@@ -1,0 +1,11 @@
+name: Question
+description: A question blocking autonomous work — an operator answer unblocks the fleet.
+labels: ["question:"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What needs an operator decision or answer, and what is blocked until it lands.
+    validations:
+      required: true
