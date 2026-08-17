@@ -1,4 +1,5 @@
 import type { LLMConfig } from '@/lib/ai/client'
+import { providerHeaders } from '@/lib/ai/providerHeaders'
 
 export async function generateDocument(
   prompt: string,
@@ -8,10 +9,7 @@ export async function generateDocument(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'x-provider': config.provider,
-      'x-model': config.model,
-      ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+      ...providerHeaders(config),
     },
     body: JSON.stringify({ prompt }),
   })

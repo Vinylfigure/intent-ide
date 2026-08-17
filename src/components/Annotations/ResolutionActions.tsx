@@ -19,7 +19,7 @@ import {
   restoreCommitReview,
   type CommitStatusSnapshot,
 } from '@/lib/annotations/commitStatusSnapshot'
-import { applyProposedEdits } from '@/lib/prosemirror/applyProposedEdits'
+import { AI_APPLY_META, applyProposedEdits } from '@/lib/prosemirror/applyProposedEdits'
 import { recordCascadeDecision } from '@/lib/telemetry/cascadeCalibration'
 import {
   createModalDecisionBuffer,
@@ -166,7 +166,9 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
       // Calibration telemetry: each APPLIED cascade edit (metadata only;
       // primary edits carry no calibration signal). 'applied' is a distinct
       // action from the accepted/rejected status changes, so no status guard.
-      const appliedIds = new Set(ids)
+      // Keyed on result.applied (not the accepted ids) so no-op edits that
+      // were skipped by applyProposedEdits never record an 'applied' event.
+      const appliedIds = new Set(result.applied.map((ap) => ap.id))
       for (const e of proposed) {
         if (e.relation !== 'cascade' || !appliedIds.has(e.id)) continue
         recordCascadeDecision({
@@ -199,15 +201,25 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         useChangesStore.getState().updateChangeSetStatus(changeSetId, 'approved')
       }
       updateAnnotation(annotation.id, { status: 'applied' })
-      recordApplyCommit(
-        result.applied
-          .map((ap) => ap.blockId)
-          .filter((blockId): blockId is string => Boolean(blockId)),
-      )
-      useToastStore.getState().addToast(
-        `Applied ${result.applied.length} change${result.applied.length > 1 ? 's' : ''}`,
-        'success',
-      )
+      // Every accepted edit may have been a no-op (applied is empty): the doc
+      // did not change, so record no version commit and say so — a "0 changes"
+      // success toast or an empty ledger commit would fabricate history.
+      if (result.applied.length > 0) {
+        recordApplyCommit(
+          result.applied
+            .map((ap) => ap.blockId)
+            .filter((blockId): blockId is string => Boolean(blockId)),
+        )
+        useToastStore.getState().addToast(
+          `Applied ${result.applied.length} change${result.applied.length > 1 ? 's' : ''}`,
+          'success',
+        )
+      } else {
+        useToastStore.getState().addToast(
+          'No changes were needed — the text already matches',
+          'info',
+        )
+      }
       setShowDiffModal(false)
       setPendingHandler(null)
       return
@@ -227,12 +239,14 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     // Resolve the touched block before the positions shift under the apply.
     const editedBlockId = blockIdAtPos(view.state.doc, edit.from)
 
-    // Apply the edit to the document
+    // Apply the edit to the document. AI_APPLY_META keeps the direct-edit
+    // cascade trigger from re-offering a cascade on this AI-driven write.
     const tr = view.state.tr.replaceWith(
       edit.from,
       edit.to,
       view.state.schema.text(edit.newText)
     )
+    tr.setMeta(AI_APPLY_META, true)
     view.dispatch(tr)
 
     // Record the change
@@ -358,6 +372,8 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
             view.state.schema.text(annotation.resolution.content.slice(0, 500))
           )
           const tr = view.state.tr.insert(insertPos, newPara)
+          // AI content insert — stamped so it never triggers a direct-edit offer.
+          tr.setMeta(AI_APPLY_META, true)
           view.dispatch(tr)
 
           useChangesStore.getState().addEntry({

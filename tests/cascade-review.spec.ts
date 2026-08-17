@@ -76,7 +76,7 @@ const SINGLE_AGENT_OUTPUT = `SUGGESTED EDIT:\n${PRIMARY_NEW_TEXT}\n\nREASON:\nRe
 async function interceptLlmEndpoints(page: Page) {
   // Graphiti MCP ingestion is best-effort fire-and-forget; abort it so runs
   // never depend on whether a local graph stack happens to be up.
-  await page.route('http://localhost:8000/**', (route) => route.abort())
+  await page.route('**/api/graphiti', (route) => route.abort())
 
   await page.route('**/api/classify', (route) =>
     route.fulfill({ json: { type: 'edit' } }),

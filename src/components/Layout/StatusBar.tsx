@@ -5,6 +5,15 @@ import { useAnnotationStore } from '@/stores/annotationStore'
 import { useChangesStore } from '@/stores/changesStore'
 import { useDocGraphStore } from '@/stores/docGraphStore'
 
+/** Chip state for annotations still being classified/resolved in the background. */
+function inFlightChip(count: number): { label: string; title: string } | null {
+  if (count === 0) return null
+  return {
+    label: `${count} thinking…`,
+    title: `${count} annotation${count > 1 ? 's are' : ' is'} being classified and resolved in the background.`,
+  }
+}
+
 /** Chip state for the document-map (doc graph) build lifecycle. */
 function graphChip(
   status: 'idle' | 'building' | 'ready',
@@ -38,11 +47,18 @@ export function StatusBar() {
   const model = useSettingsStore((s) => s.llmConfig.model)
   const hasKeys = useSettingsStore((s) => s.llmConfig.apiKey.length > 0)
   const annotationCount = useAnnotationStore((s) => s.annotations.length)
+  const inFlightCount = useAnnotationStore(
+    (s) =>
+      s.annotations.filter(
+        (a) => a.status === 'pending' || a.status === 'classified' || a.status === 'resolving',
+      ).length,
+  )
   const changeSetCount = useChangesStore((s) => s.changeSets.length)
   const changeCount = useChangesStore((s) => s.entries.filter((e) => !e.undone).length)
   const graphStatus = useDocGraphStore((s) => s.status)
   const graph = useDocGraphStore((s) => s.graph)
   const chip = graphChip(graphStatus, graph)
+  const thinkingChip = inFlightChip(inFlightCount)
 
   return (
     <div className="flex items-center justify-between px-4 py-2 border-t border-border/70 bg-white/70 backdrop-blur-sm text-xs font-mono text-muted">
@@ -53,6 +69,11 @@ export function StatusBar() {
         {chip && (
           <span className="status-chip px-2.5 py-1 rounded-full" title={chip.title}>
             {chip.label}
+          </span>
+        )}
+        {thinkingChip && (
+          <span className="status-chip px-2.5 py-1 rounded-full" title={thinkingChip.title}>
+            {thinkingChip.label}
           </span>
         )}
       </div>

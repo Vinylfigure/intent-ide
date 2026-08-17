@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { normalizeServerProvider, readProviderCtx } from '@/lib/server/llmProvider'
 
 /**
  * Provider-agnostic embeddings endpoint backing the doc graph's paraphrase-
@@ -6,24 +7,33 @@ import { NextRequest, NextResponse } from 'next/server'
  * (x-provider / x-api-key / x-base-url), plus x-embed-model for the embedding
  * model. Anthropic has NO embeddings API: provider 'claude' without a baseUrl
  * override returns 501 {reason:'unsupported'} and the client treats it as a
- * silent no-op — the graph just gets fewer edges.
+ * silent no-op — the graph just gets fewer edges. OpenRouter does not proxy an
+ * embeddings API either, so it returns the same 501.
  *
  * Request:  POST { texts: string[] }
  * Response: { vectors: number[][] } (one vector per input text, same order)
  */
 
 export async function POST(request: NextRequest) {
-  const apiKey = request.headers.get('x-api-key') || ''
-  const provider = request.headers.get('x-provider') || 'claude'
-  const baseUrl = request.headers.get('x-base-url') || ''
-  const embedModel = request.headers.get('x-embed-model') || ''
+  // Embeddings-support gates run BEFORE the generic guards so the client's
+  // silent no-op contract (501 {reason:'unsupported'}) holds even when no API
+  // key is configured.
+  const rawProvider = normalizeServerProvider(request.headers.get('x-provider') || 'claude')
+  const rawBaseUrl = request.headers.get('x-base-url') || ''
 
-  if (provider === 'claude' && !baseUrl) {
+  if (rawProvider === 'claude' && !rawBaseUrl) {
     return NextResponse.json({ reason: 'unsupported' }, { status: 501 })
   }
-  if (provider !== 'ollama' && !apiKey) {
-    return NextResponse.json({ error: 'No API key provided' }, { status: 401 })
+  if (rawProvider === 'openrouter') {
+    return NextResponse.json({ reason: 'unsupported' }, { status: 501 })
   }
+
+  const parsed = readProviderCtx(request)
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error }, { status: parsed.status })
+  }
+  const { provider, apiKey, baseUrl } = parsed.ctx
+  const embedModel = request.headers.get('x-embed-model') || ''
 
   try {
     const { texts }: { texts: string[] } = await request.json()

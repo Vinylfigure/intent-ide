@@ -214,6 +214,17 @@ export interface CascadeOptions {
    * When false the judge stage is skipped entirely — severities stay derived.
    */
   judgeEnabled?: boolean
+  /**
+   * Text the primary range held BEFORE the edit. Callers whose primary edit is
+   * ALREADY APPLIED (direct-edit cascade trigger) must pass this: for them the
+   * live doc at primary.from..to holds the NEW text, so reading "before" from
+   * the doc would invert the prompt's Was:/Now: lines AND break verbatim-
+   * conflict severity derivation (before === after ⇒ no changed tokens ⇒ a
+   * provable contradiction downgrades to 'probably'). When omitted, the live
+   * doc text at the primary range is the before text (un-applied edits —
+   * the default resolver path, byte-identical to prior behavior).
+   */
+  primaryBefore?: string
 }
 
 /** User toggle for the citation-verification judge (settings store, default true). */
@@ -332,10 +343,12 @@ export async function proposeCascadeEdits(
   const sent = candidates.slice(0, maxBlocks)
   const sentIds = new Set(sent.map((c) => c.blockId))
 
-  const primaryBefore = doc.textBetween(
-    Math.min(primary.from, doc.content.size),
-    Math.min(primary.to, doc.content.size),
-  )
+  const primaryBefore =
+    opts.primaryBefore ??
+    doc.textBetween(
+      Math.min(primary.from, doc.content.size),
+      Math.min(primary.to, doc.content.size),
+    )
 
   const userPrompt = [
     `PRIMARY EDIT (in block [${primaryBlockId}], just applied or about to apply):`,

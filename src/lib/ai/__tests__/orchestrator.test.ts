@@ -799,6 +799,81 @@ describe('proposeCascadeEdits — relevance judge gating must', () => {
   })
 })
 
+describe('proposeCascadeEdits — primaryBefore (already-applied primary edits)', () => {
+  // Direct-edit trigger scenario: the human ALREADY typed the change, so the
+  // live doc's primary range holds the NEW text. b1 defines "Launch Date"
+  // (deterministic edge to b2); b2 still verbatim-contains the STALE date.
+  const APPLIED_DOC = docOf(
+    p('b1', '"Launch Date" means June 1, 2026.'),
+    p('b2', 'The beta program ends on March 1, 2026, just before the Launch Date.'),
+  )
+  /** Primary whose range covers the already-applied new text (no-op replace). */
+  const appliedPrimary = (): SuggestedEdit =>
+    primaryEditFor(APPLIED_DOC, 'b1', 'June 1, 2026', 'June 1, 2026')
+
+  const CONFLICT_PROPOSAL = {
+    name: 'propose_edit',
+    input: {
+      block_id: 'b2',
+      target_text: 'ends on March 1, 2026',
+      new_text: 'ends on June 1, 2026',
+      reason: 'stale date',
+      source_block_id: 'b1',
+      quoted_text: 'June 1, 2026', // verbatim in the LIVE b1
+      edge_type: 'contradicts',
+    },
+  }
+
+  it('the prompt Was:/Now: lines use opts.primaryBefore, not the live doc text', async () => {
+    const state = stateOf(APPLIED_DOC)
+    const captured: StructuredRequest[] = []
+    await proposeCascadeEdits(state, appliedPrimary(), CONFIG, {
+      graph: buildDeterministicGraph(APPLIED_DOC),
+      callStructured: scripted([], captured),
+      primaryBefore: 'March 1, 2026',
+    })
+    const prompt = captured[0].messages.map((m) => m.content).join('\n')
+    expect(prompt).toContain('- Was: "March 1, 2026"')
+    expect(prompt).toContain('- Now: "June 1, 2026"')
+  })
+
+  it('without primaryBefore the live doc is read as before — Was === Now (the inversion this option exists to fix)', async () => {
+    const state = stateOf(APPLIED_DOC)
+    const captured: StructuredRequest[] = []
+    await proposeCascadeEdits(state, appliedPrimary(), CONFIG, {
+      graph: buildDeterministicGraph(APPLIED_DOC),
+      callStructured: scripted([], captured),
+    })
+    const prompt = captured[0].messages.map((m) => m.content).join('\n')
+    expect(prompt).toContain('- Was: "June 1, 2026"')
+    expect(prompt).not.toContain('- Was: "March 1, 2026"')
+  })
+
+  it('severity derivation uses primaryBefore: the stale-date conflict still yields must', async () => {
+    const state = stateOf(APPLIED_DOC)
+    const edits = await proposeCascadeEdits(state, appliedPrimary(), CONFIG, {
+      graph: buildDeterministicGraph(APPLIED_DOC),
+      callStructured: scripted([CONFLICT_PROPOSAL]),
+      judge: confirmAllJudge,
+      primaryBefore: 'March 1, 2026',
+    })
+    expect(edits).toHaveLength(1)
+    // b2 verbatim-contains the pre-edit "March 1, 2026" → provable conflict.
+    expect(edits[0].severity).toBe('must')
+  })
+
+  it('regression contrast: without primaryBefore the same conflict degrades to probably (before === after ⇒ no changed tokens)', async () => {
+    const state = stateOf(APPLIED_DOC)
+    const edits = await proposeCascadeEdits(state, appliedPrimary(), CONFIG, {
+      graph: buildDeterministicGraph(APPLIED_DOC),
+      callStructured: scripted([CONFLICT_PROPOSAL]),
+      judge: confirmAllJudge,
+    })
+    expect(edits).toHaveLength(1)
+    expect(edits[0].severity).toBe('probably')
+  })
+})
+
 describe('severity primitives', () => {
   it('extractChangedTokens finds figures, quoted phrases, and removed words', () => {
     const tokens = extractChangedTokens(

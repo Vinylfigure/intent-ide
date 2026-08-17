@@ -3,7 +3,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type LLMProvider = 'claude' | 'openai' | 'ollama'
+export type LLMProvider = 'claude' | 'openai' | 'openrouter' | 'ollama'
 
 export interface LLMConfig {
   provider: LLMProvider
@@ -31,6 +31,12 @@ export const PROVIDER_MODELS: Record<LLMProvider, { label: string; value: string
     { label: 'GPT-4o mini', value: 'gpt-4o-mini' },
     { label: 'GPT-4 Turbo', value: 'gpt-4-turbo' },
   ],
+  openrouter: [
+    { label: 'Claude Sonnet 4.6 (Recommended)', value: 'anthropic/claude-sonnet-4.6' },
+    { label: 'GPT-4o', value: 'openai/gpt-4o' },
+    { label: 'Llama 3.3 70B Instruct', value: 'meta-llama/llama-3.3-70b-instruct' },
+    { label: 'DeepSeek Chat', value: 'deepseek/deepseek-chat' },
+  ],
   ollama: [
     { label: 'llama3.2', value: 'llama3.2' },
     { label: 'llama3.1', value: 'llama3.1' },
@@ -44,8 +50,13 @@ export const PROVIDER_MODELS: Record<LLMProvider, { label: string; value: string
 export const PROVIDER_DEFAULT_MODEL: Record<LLMProvider, string> = {
   claude: 'claude-sonnet-4-6',
   openai: 'gpt-4o',
+  openrouter: 'anthropic/claude-sonnet-4.6',
   ollama: 'llama3.2',
 }
+
+// Providers the current build knows how to talk to. Anything else found in a
+// persisted snapshot (renamed/retired provider ids) is reset on rehydrate.
+const VALID_PROVIDERS = new Set<string>(['claude', 'openai', 'openrouter', 'ollama'])
 
 // Claude model IDs currently offered. Anything else stored in localStorage from
 // an older build (retired models, date-suffixed aliases, prior Opus variants) is
@@ -67,6 +78,7 @@ export function normalizeClaudeModel(model: string): string {
 export const PROVIDER_BASE_URLS: Record<LLMProvider, string | undefined> = {
   claude: undefined,
   openai: undefined,
+  openrouter: 'https://openrouter.ai/api/v1',
   ollama: 'http://localhost:11434',
 }
 
@@ -133,6 +145,14 @@ export const useSettingsStore = create<SettingsState>()(
     {
       name: 'intent-ide-settings',
       onRehydrateStorage: () => (state) => {
+        // Unknown persisted provider (renamed/retired id) → reset provider AND
+        // model to the Claude defaults — never silently a pricier model.
+        if (state && !VALID_PROVIDERS.has(state.llmConfig.provider)) {
+          state.setLLMConfig({
+            provider: 'claude',
+            model: PROVIDER_DEFAULT_MODEL.claude,
+          })
+        }
         // Migrate stale Claude model IDs persisted by older builds.
         if (state && state.llmConfig.provider === 'claude') {
           const normalized = normalizeClaudeModel(state.llmConfig.model)

@@ -443,3 +443,30 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
     *   Worktree discipline confirmed: A∥E and B∥D3+D4 ran safely in parallel worktrees; B∥C was deliberately SERIALIZED because both touch `docGraph.ts` — parallelize by file-overlap analysis, not by wave count.
     *   Final verification at close: 579 unit tests + 10 skipped on the finale branch (`main` matches post-merge); cascade e2e green; ingestion e2e requires local FalkorDB (pre-existing).
 *   **Approval:** Human verified.
+
+**[2026-08-16 00:00:00 UTC] - VISION_AUDIT**
+*   **Action:** Full vision-vs-implementation audit + prior-art research (three parallel investigations); Flow v1 roadmap defined and filed as GitHub issues for autonomous execution.
+*   **Agent:** Claude Code (audit + two web-research subagents + one adversarial stress-test subagent).
+*   **Context:** Founder restated the two core scenarios (flow-state reading Q&A with breakpoint-timed answers; direct-edit cascade on policy documents) and asked for an extensive audit against them, due-diligence research on prior art, and adversarial stress-tests of the dependency-graph approach and a Janus-style solution.
+*   **Decisions Logged:**
+    *   **Two documented claims corrected (previously overstated):** (1) the cascade pipeline fires only on annotation-driven AI edits — direct typing never triggers it, so the founder's primary policy scenario is unimplemented; (2) the Graphiti lane is unreachable in any deployed configuration (browser-side calls default to localhost; `GRAPHITI_MCP_URL` lacks the `NEXT_PUBLIC_` prefix) — the shipping self-reference capability is the in-browser docGraph.
+    *   **Research verdicts:** highlight-to-explain popups are commodity (Chrome Ask Gemini, Perplexity Comet, Dia, AI2 Semantic Reader); defer-to-breakpoint delivery of ANSWERS while reading is unshipped and unpublished anywhere — it is the defensible core, on validated theory (Iqbal & Bailey 2008/2010). Within-document semantic cascade editing is open white space (EditPropBench: best systems miss ~30% of implicit updates; closest players Harvey and LEDGER).
+    *   **Dependency-graph stress test:** LEDGER's 56→76% headline used a baseline structurally forbidden from cascading — not a fair graph-vs-whole-doc comparison; the graph's proven value is deterministic validators + collateral-damage bounds + long-doc/cheap-model regimes; cost advantage collapses at 2–50k tokens under prompt caching. Settling 5-arm ablation defined; evidence-based prior: whole-doc editing + deterministic verification (arm D) wins at policy-doc scale. Further docGraph investment is gated on this ablation.
+    *   **Novel mechanism adopted into the roadmap (from Janus):** Document Invariant Ledger + doc-CI — capture user-declared facts as runnable assertions at semantic-commit time; regression-test every DocCommit against the accumulated ledger; failing fact = cascade flag with a named invariant. Converges with ablation arm D.
+    *   Flow v1 wave defined (P1 fire-and-forget capture, P2 breakpoint-buffered answers, P3 one-click actions + mermaid, P4 direct-edit cascade trigger, P5 provider cleanup) — details in progress.md §3; each item filed as a self-contained GitHub issue.
+*   **Approval:** Human approved the plan (plan-mode review, 2026-08-16).
+
+**[2026-08-16 00:00:00 UTC] - ARCHITECTURE_CHANGE**
+*   **Action:** Flow v1 wave implemented and landed (issues #14-#18): fire-and-forget capture, breakpoint-buffered answers, one-click actions + mermaid, direct-edit cascade trigger, provider layer cleanup.
+*   **Agent:** Three parallel worktree implementers + adversarial reviewer + fix pass / Claude Code.
+*   **Context:** Executes the Flow v1 roadmap from the same-day vision audit. Tracks built in parallel worktrees with strict file ownership (A: P1-P3 serialized; B: P4; C: P5), merged C→B→A.
+*   **Decisions Logged:**
+    *   **Pre-push adversarial review: NO-MERGE, 3 HIGH + 6 MEDIUM, all fixed with regression tests before push.** H1: capture's auto-setActive made answer buffering unreachable in the flagship flow — fixed by distinguishing capture-driven from user-driven activation (captureActivated/markUserActivated). H2: direct-edit offer + cascade run doc-switch races — documentId stamped at settle and guarded at both async resolution points. H3: unclamped getBlockText could throw at finalize and discard a streamed answer — clamped + fail-open hold decision.
+    *   **Standing rule recorded:** flow-state features need at least one test walking the UNINSTRUMENTED user path — H1 survived 711 green tests because the tests hand-called setActive(null), encoding the workaround rather than the journey.
+    *   `AI_APPLY_META` now stamps every AI-driven apply dispatch (batched, single-edit, per-message) so the direct-edit tracker never attributes AI edits to the human.
+    *   `/api/graphiti` proxy is production-gated (501 unless GRAPHITI_MCP_URL set) and tool-allowlisted to the client's exact call set — replacing the unreachable browser→localhost lane with a governed server lane.
+    *   No-op proposed edits (targetText === newText) are excluded from apply transactions, applied[], and ledger rows — an Article-12 ledger must never record a non-change.
+    *   Provider layer: one server module (`llmProvider.ts`) with byte-compatible route contracts; OpenRouter added; silent capability loss replaced with visible notes; interrupted in-flight annotation statuses repaired on rehydrate.
+    *   Pre-existing bug fixed en route: ingestion e2e test 1 broken since the Phase 8D modal redesign (spec never selected the Paste tab).
+    *   **Verification at close: 731 unit + 10 skipped; typecheck/lint clean; cascade-review e2e green; ingestion test 1 green (FalkorDB test still requires local infra).**
+*   **Approval:** Human approved the wave plan (plan-mode, 2026-08-16); review fixes verified by gates.

@@ -5,6 +5,7 @@ import { addConflictDecoration, clearAllConflictDecorations } from '@/lib/prosem
 import { generateId } from '@/lib/utils/id'
 import { IMPACT_ANALYSIS_PROMPT, IMPACT_ANALYSIS_WITH_REWRITES_PROMPT } from './prompts'
 import type { LLMMessage } from './client'
+import { providerHeaders } from './providerHeaders'
 
 export interface AnalysisConflict {
   text: string
@@ -126,10 +127,7 @@ export async function runImpactAnalysis(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'x-provider': config.provider,
-      'x-model': config.model,
-      ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+      ...providerHeaders(config),
     },
     body: JSON.stringify({ messages, maxTokens: 1500, temperature: 0.2 }),
   })

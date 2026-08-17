@@ -5,7 +5,8 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useChangesStore } from '@/stores/changesStore'
 import { generateId } from '@/lib/utils/id'
-import { createAnnotationFromText } from '@/lib/voice/pipeline'
+import { AI_APPLY_META } from '@/lib/prosemirror/applyProposedEdits'
+import { captureAndResolveInBackground } from '@/lib/voice/pipeline'
 import type { ConversationMessage, SuggestedEdit } from '@/lib/annotations/types'
 import { AgentMarkdown } from '@/components/ui/AgentMarkdown'
 import { AnnotationComposer } from './AnnotationComposer'
@@ -30,11 +31,14 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
   const handleApplyEdit = (edit: SuggestedEdit) => {
     if (!view) return
 
+    // AI_APPLY_META keeps the direct-edit cascade trigger from re-offering a
+    // cascade on this AI-driven per-message apply.
     const tr = view.state.tr.replaceWith(
       edit.from,
       edit.to,
       view.state.schema.text(edit.newText)
     )
+    tr.setMeta(AI_APPLY_META, true)
     view.dispatch(tr)
 
     useChangesStore.getState().addEntry({
@@ -73,15 +77,16 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                   content={message.content}
                   isStreaming={isStreaming && message.role === 'agent' && message.id === messages[messages.length - 1]?.id}
                   interactive={!!annotationId && !isStreaming}
-                  onDrill={({ transcript, suggestedIntent }) => {
+                  onDrill={({ transcript, suggestedIntent, skipClassify }) => {
                     if (!annotationId) return
                     // Use the parent's anchor positions for the child
                     const parentAnn = useAnnotationStore.getState().getById(annotationId)
                     const from = parentAnn?.anchor.from ?? 0
                     const to = parentAnn?.anchor.to ?? 0
-                    createAnnotationFromText(suggestedIntent ?? 'dig', transcript, from, to, {
+                    captureAndResolveInBackground(suggestedIntent ?? 'dig', transcript, from, to, {
                       parentId: annotationId,
                       suggestedType: suggestedIntent,
+                      skipClassify,
                     })
                     useToastStore.getState().addToast('Sub-annotation created', 'success')
                   }}
@@ -117,7 +122,7 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                       <AnnotationComposer
                         mode="inline"
                         className="shadow-none"
-                        onSubmit={async ({ text, suggestedIntent }) => {
+                        onSubmit={async ({ text, suggestedIntent, skipClassify }) => {
                           if (!view) return
                           const selection = view.state.selection
                           const from = selection.from
@@ -125,9 +130,10 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                             const $pos = view.state.doc.resolve(selection.from)
                             return $pos.end($pos.depth)
                           })()
-                          await createAnnotationFromText(suggestedIntent ?? 'dig', text, from, to, {
+                          captureAndResolveInBackground(suggestedIntent ?? 'dig', text, from, to, {
                             parentId: annotationId || null,
                             suggestedType: suggestedIntent,
+                            skipClassify,
                           })
                           useToastStore.getState().addToast('Sub-annotation created', 'success')
                           setSpinOffMessageId(null)

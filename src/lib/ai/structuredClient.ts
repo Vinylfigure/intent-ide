@@ -1,5 +1,6 @@
 import type { LLMConfig } from '@/stores/settingsStore'
 import { addEstimate } from '@/lib/ai/spendEstimate'
+import { providerHeaders } from '@/lib/ai/providerHeaders'
 
 /**
  * Injectable client for the provider-agnostic `/api/structured` tool-calling
@@ -101,10 +102,7 @@ export const fetchStructured: CallStructuredFn = async (req, config) => {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'x-provider': config.provider,
-      'x-model': config.model,
-      ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+      ...providerHeaders(config),
     },
     body,
   })

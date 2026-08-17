@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { normalizeClaudeModel } from '@/stores/settingsStore'
 
 // normalizeClaudeModel maps a possibly-stale stored Claude model id to a current
@@ -86,5 +86,84 @@ describe('normalizeClaudeModel — idempotency', () => {
       const once = normalizeClaudeModel(c)
       expect(normalizeClaudeModel(once)).toBe(once)
     }
+  })
+})
+
+// ── Rehydrate migrations (onRehydrateStorage) ─────────────────────────────────
+//
+// Seed the persisted zustand snapshot into a stubbed localStorage, then import
+// the store module fresh so persist rehydrates synchronously and the
+// onRehydrateStorage migrations run.
+
+async function loadStoreWithPersisted(llmConfig: Record<string, unknown>) {
+  const backing = new Map<string, string>([
+    [
+      'intent-ide-settings',
+      JSON.stringify({
+        state: {
+          llmConfig,
+          whisperApiKey: '',
+          embeddingsEnabled: true,
+          judgeEnabled: true,
+          telemetryEnabled: false,
+        },
+        version: 0,
+      }),
+    ],
+  ])
+  vi.stubGlobal('localStorage', {
+    getItem: (k: string) => backing.get(k) ?? null,
+    setItem: (k: string, v: string) => void backing.set(k, v),
+    removeItem: (k: string) => void backing.delete(k),
+  })
+  vi.resetModules()
+  return import('@/stores/settingsStore')
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('onRehydrateStorage — provider migrations', () => {
+  it('resets an unknown persisted provider to the Claude defaults (provider AND model)', async () => {
+    const { useSettingsStore } = await loadStoreWithPersisted({
+      provider: 'groq',
+      apiKey: 'gsk-old',
+      model: 'mixtral-8x7b',
+    })
+    const { llmConfig } = useSettingsStore.getState()
+    expect(llmConfig.provider).toBe('claude')
+    expect(llmConfig.model).toBe('claude-sonnet-4-6')
+  })
+
+  it('never resolves an unknown provider to a pricier Claude model', async () => {
+    const { useSettingsStore } = await loadStoreWithPersisted({
+      provider: 'anthropic-legacy',
+      apiKey: '',
+      model: 'claude-opus-4-8',
+    })
+    const { llmConfig } = useSettingsStore.getState()
+    expect(llmConfig.provider).toBe('claude')
+    expect(llmConfig.model).toBe('claude-sonnet-4-6')
+  })
+
+  it('a persisted openrouter config survives rehydrate untouched', async () => {
+    const persisted = {
+      provider: 'openrouter',
+      apiKey: 'sk-or-abc',
+      model: 'anthropic/claude-sonnet-4.6',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    }
+    const { useSettingsStore } = await loadStoreWithPersisted(persisted)
+    expect(useSettingsStore.getState().llmConfig).toMatchObject(persisted)
+  })
+
+  it('still normalizes stale Claude model ids on rehydrate', async () => {
+    const { useSettingsStore } = await loadStoreWithPersisted({
+      provider: 'claude',
+      apiKey: 'k',
+      model: 'claude-3-5-sonnet-20241022',
+    })
+    expect(useSettingsStore.getState().llmConfig.model).toBe('claude-sonnet-4-6')
   })
 })

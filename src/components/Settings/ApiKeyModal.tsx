@@ -8,7 +8,7 @@ import {
   PROVIDER_DEFAULT_MODEL,
   PROVIDER_BASE_URLS,
 } from '@/stores/settingsStore'
-import { modelRejectsSampling } from '@/lib/ai/modelCapabilities'
+import { modelRejectsSampling, providerCapabilities } from '@/lib/ai/modelCapabilities'
 import { getSessionEstimate } from '@/lib/ai/spendEstimate'
 import { useCascadeCalibrationStore } from '@/stores/cascadeCalibrationStore'
 
@@ -65,6 +65,7 @@ export function ApiKeyModal() {
   const presetModels = PROVIDER_MODELS[provider]
   const isCustomModel = customModel.length > 0 || !presetModels.some((m) => m.value === model)
   const effectiveModel = customModel || model
+  const caps = providerCapabilities(provider, baseUrl || undefined)
 
   const handleSave = () => {
     setLLMConfig({
@@ -73,9 +74,9 @@ export function ApiKeyModal() {
       model: effectiveModel,
       baseUrl: baseUrl || undefined,
     })
-    if (provider !== 'ollama') {
-      setWhisperKey(wKey || apiKey)
-    }
+    // Ollama has no provider key to fall back to — persist the Whisper key
+    // verbatim (empty disables voice).
+    setWhisperKey(provider === 'ollama' ? wKey : wKey || apiKey)
     setShow(false)
   }
 
@@ -91,8 +92,8 @@ export function ApiKeyModal() {
           {/* Provider */}
           <div>
             <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">Provider</label>
-            <div className="grid grid-cols-3 gap-2">
-              {(['claude', 'openai', 'ollama'] as LLMProvider[]).map((p) => (
+            <div className="grid grid-cols-4 gap-2">
+              {(['claude', 'openai', 'openrouter', 'ollama'] as LLMProvider[]).map((p) => (
                 <button
                   key={p}
                   onClick={() => handleProviderChange(p)}
@@ -102,13 +103,19 @@ export function ApiKeyModal() {
                       : 'border-border text-muted hover:text-ink hover:border-ink/30'
                   }`}
                 >
-                  {p === 'claude' ? 'Claude' : p === 'openai' ? 'OpenAI' : 'Ollama'}
+                  {p === 'claude' ? 'Claude' : p === 'openai' ? 'OpenAI' : p === 'openrouter' ? 'OpenRouter' : 'Ollama'}
                 </button>
               ))}
             </div>
             {provider === 'ollama' && (
               <p className="mt-2 text-xs text-annotation-correction">
                 Ollama runs locally — no API key required. Make sure Ollama is running.
+              </p>
+            )}
+            {provider === 'claude' && (
+              <p className="mt-2 text-xs text-muted">
+                Claude does not expose token-level uncertainty (logprobs), so the
+                per-token confidence overlay is unavailable.
               </p>
             )}
           </div>
@@ -121,7 +128,7 @@ export function ApiKeyModal() {
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder={provider === 'claude' ? 'sk-ant-api03-...' : 'sk-proj-...'}
+                placeholder={provider === 'claude' ? 'sk-ant-api03-...' : provider === 'openrouter' ? 'sk-or-...' : 'sk-proj-...'}
                 className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
               />
             </div>
@@ -169,8 +176,8 @@ export function ApiKeyModal() {
             )}
           </div>
 
-          {/* Base URL — shown for Ollama or custom */}
-          {(provider === 'ollama' || baseUrl) && (
+          {/* Base URL — shown for Ollama, OpenRouter (pre-filled default), or custom */}
+          {(provider === 'ollama' || provider === 'openrouter' || baseUrl) && (
             <div>
               <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
                 Base URL {provider === 'ollama' ? '' : '(optional)'}
@@ -178,28 +185,33 @@ export function ApiKeyModal() {
               <input
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="http://localhost:11434"
+                placeholder={provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'http://localhost:11434'}
                 className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
               />
             </div>
           )}
 
-          {/* Whisper key — hidden for Ollama */}
-          {provider !== 'ollama' && (
-            <div>
-              <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
-                Whisper Key <span className="normal-case font-sans text-muted/70">(voice transcription, defaults to above key)</span>
-              </label>
-              <input
-                type="password"
-                value={wKey}
-                onChange={(e) => setWKey(e.target.value)}
-                placeholder="Leave empty to use the key above"
-                className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
-              />
-              <p className="mt-1 text-xs text-muted">Whisper requires an OpenAI API key regardless of your LLM provider.</p>
-            </div>
-          )}
+          {/* Whisper key — shown for all providers */}
+          <div>
+            <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
+              Whisper Key{' '}
+              <span className="normal-case font-sans text-muted/70">
+                (voice transcription{provider === 'ollama' ? '' : ', defaults to above key'})
+              </span>
+            </label>
+            <input
+              type="password"
+              value={wKey}
+              onChange={(e) => setWKey(e.target.value)}
+              placeholder={provider === 'ollama' ? 'sk-proj-... (OpenAI key)' : 'Leave empty to use the key above'}
+              className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
+            />
+            <p className="mt-1 text-xs text-muted">
+              {provider === 'ollama'
+                ? 'Voice transcription requires an OpenAI Whisper key even with Ollama; leave empty to disable voice.'
+                : 'Whisper requires an OpenAI API key regardless of your LLM provider.'}
+            </p>
+          </div>
 
           {/* AI data & spend */}
           <div className="pt-4 border-t border-border space-y-3">
@@ -221,10 +233,11 @@ export function ApiKeyModal() {
               </span>
             </label>
 
-            <label className="flex items-start gap-2.5 cursor-pointer">
+            <label className={`flex items-start gap-2.5 ${caps.embeddings ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}>
               <input
                 type="checkbox"
                 checked={embeddingsEnabled}
+                disabled={!caps.embeddings}
                 onChange={(e) => setEmbeddingsEnabled(e.target.checked)}
                 className="mt-0.5 accent-ink"
               />
@@ -234,6 +247,13 @@ export function ApiKeyModal() {
                   Finds paraphrased duplicates across sections. Requires a provider with an
                   embeddings API (OpenAI or Ollama).
                 </span>
+                {!caps.embeddings && (
+                  <span className="block text-xs text-annotation-correction">
+                    {provider === 'openrouter'
+                      ? 'Unavailable: OpenRouter does not proxy an embeddings API.'
+                      : 'Unavailable: Claude has no embeddings API (set a base URL proxy that serves one to enable).'}
+                  </span>
+                )}
               </span>
             </label>
 
@@ -243,9 +263,10 @@ export function ApiKeyModal() {
               </label>
               <input
                 value={llmConfig.embedModel ?? ''}
+                disabled={!caps.embeddings}
                 onChange={(e) => setLLMConfig({ embedModel: e.target.value || undefined })}
                 placeholder="Default: text-embedding-3-small (OpenAI) / nomic-embed-text (Ollama)"
-                className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
+                className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-60 disabled:cursor-not-allowed"
               />
             </div>
 

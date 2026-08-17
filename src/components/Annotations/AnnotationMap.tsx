@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { useEditorStore } from '@/stores/editorStore'
+import { markUserActivated } from '@/lib/voice/pipeline'
 import { ANNOTATION_COLORS } from '@/lib/annotations/types'
 
 export function AnnotationMap() {
@@ -31,6 +32,8 @@ export function AnnotationMap() {
   }, [visibleAnnotations, docLength, activeId])
 
   const handleClick = (id: string) => {
+    // Map-marker selection is user attention — clear the capture mark.
+    markUserActivated(id)
     setActive(id)
     if (view) {
       const ann = visibleAnnotations.find((a) => a.id === id)

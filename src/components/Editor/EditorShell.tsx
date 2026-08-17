@@ -12,10 +12,18 @@ import { setChangeCallback } from '@/lib/prosemirror/plugins/changeTrackingPlugi
 import { scheduleDocGraphRebuild, cancelScheduledDocGraphRebuild } from '@/lib/graphrag/docGraph'
 import { useChangesStore } from '@/stores/changesStore'
 import { recordCommit } from '@/lib/history/commits'
+import {
+  acceptSettledOffer,
+  observeTransaction,
+  resetDirectEditBaseline,
+  settleDirectEdits,
+} from '@/lib/annotations/directEditTrigger'
+import { useDirectEditOfferStore } from '@/stores/directEditOfferStore'
 import { ConflictTooltip } from './ConflictTooltip'
 import { UncertaintyTooltip } from './UncertaintyTooltip'
 import { ProposedEditControl } from './ProposedEditControl'
 import { FormattingToolbar } from './FormattingToolbar'
+import { DirectEditCascadeChip } from './DirectEditCascadeChip'
 
 const AUTOSAVE_DELAY = 5000 // 5 seconds idle
 
@@ -45,6 +53,16 @@ export function EditorShell() {
           actor: 'human',
         })
       }
+      // Direct-edit cascade trigger (Flow v1 P4): the autosave flush is the
+      // "settled" point — diff human-touched blocks against the baseline and
+      // offer a dependency check via the quiet chip. Deterministic graph only
+      // (zero network); errors are swallowed — an offer must never break saves.
+      // acceptSettledOffer drops offers stamped for a document that is no
+      // longer active (settle can resolve AFTER a doc switch's clearOffer) and
+      // clears the store on a null settle so a stale chip never lingers.
+      settleDirectEdits(view.state)
+        .then(acceptSettledOffer)
+        .catch(() => {})
     }, AUTOSAVE_DELAY)
   }, [])
 
@@ -95,6 +113,10 @@ export function EditorShell() {
       dispatchTransaction(transaction) {
         const newState = view.state.apply(transaction)
         view.updateState(newState)
+        // Direct-edit cascade trigger: record which blocks HUMAN transactions
+        // touched (AI applies, undo/redo, stamps, and state loads are skipped
+        // inside observeTransaction).
+        observeTransaction(transaction, view.state.doc)
         if (transaction.docChanged) {
           debouncedSave(view)
           scheduleDocGraphRebuild(view)
@@ -104,6 +126,8 @@ export function EditorShell() {
 
     viewRef.current = view
     setView(view)
+    // The restored (or empty) mount doc is the first direct-edit baseline.
+    resetDirectEditBaseline(view.state.doc)
 
     return () => {
       // Flush any pending save
@@ -176,6 +200,11 @@ export function EditorShell() {
         // autosaving it under the new document's id.
         tr.setMeta('addToHistory', false)
         view.dispatch(tr)
+        // A document SWITCH also resets the direct-edit baseline: pending
+        // touches belong to the previous document, and any visible offer is
+        // stale against the new one.
+        resetDirectEditBaseline(view.state.doc)
+        useDirectEditOfferStore.getState().clearOffer()
       } catch {
         // keep current document if replacement payload is invalid
       }
@@ -192,6 +221,7 @@ export function EditorShell() {
       <ConflictTooltip />
       <UncertaintyTooltip />
       <ProposedEditControl />
+      <DirectEditCascadeChip />
     </div>
   )
 }

@@ -120,6 +120,24 @@ export function addAnnotationDecoration(
   view.dispatch(tr)
 }
 
+/**
+ * Update an existing annotation decoration's TYPE in place. The plugin's
+ * 'update' action rebuilds the decoration at its CURRENT (transaction-mapped)
+ * anchor, so callers must use this — never remove+add with the stored
+ * anchor.from/to, which would reset a position the plugin already mapped
+ * through intervening edits.
+ */
+export function updateAnnotationDecorationType(
+  view: EditorView,
+  id: string,
+  type: AnnotationType,
+) {
+  const tr = view.state.tr.setMeta(annotationPluginKey, {
+    action: 'update', id, type,
+  } as AnnotationMeta)
+  view.dispatch(tr)
+}
+
 // Helper to remove an annotation decoration
 export function removeAnnotationDecoration(view: EditorView, id: string) {
   const tr = view.state.tr.setMeta(annotationPluginKey, {

@@ -1,4 +1,5 @@
 import type { LLMConfig } from '@/stores/settingsStore'
+import { providerHeaders } from '@/lib/ai/providerHeaders'
 import { addEstimate } from '@/lib/ai/spendEstimate'
 import type { DocGraph, DocGraphEdge } from './docGraph'
 
@@ -71,10 +72,8 @@ export const fetchEmbeddings: EmbedFn = async (texts, config) => {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'x-provider': config.provider,
-      'x-model': config.model,
-      ...(config.baseUrl ? { 'x-base-url': config.baseUrl } : {}),
+      ...providerHeaders(config),
+      // x-embed-model is embed-route-specific, not part of the shared block.
       ...(config.embedModel ? { 'x-embed-model': config.embedModel } : {}),
     },
     body: JSON.stringify({ texts }),
