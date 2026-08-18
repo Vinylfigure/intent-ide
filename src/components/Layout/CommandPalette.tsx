@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useConflictStore } from '@/stores/conflictStore'
+import { useLayoutStore } from '@/stores/layoutStore'
 import { toggleVoiceCapture } from '@/lib/voice/pipeline'
 import { runImpactAnalysis } from '@/lib/ai/impactAnalysis'
 import { clearAllConflictDecorations } from '@/lib/prosemirror/plugins/conflictPlugin'
@@ -23,6 +24,8 @@ export function CommandPalette({ onClose }: CommandPaletteProps) {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const backdropRef = useRef<HTMLDivElement>(null)
+  // Read for the label only — the handler re-reads the live value on click.
+  const answerPlacement = useLayoutStore((s) => s.answerPlacement)
 
   const handleImpactAnalysis = useCallback(
     async (intent: string, withRewrites: boolean) => {
@@ -93,6 +96,17 @@ export function CommandPalette({ onClose }: CommandPaletteProps) {
         },
       },
       {
+        id: 'answer-placement',
+        label:
+          answerPlacement === 'floating'
+            ? 'Answers: dock to sidebar'
+            : 'Answers: float beside the passage',
+        handler: () => {
+          onClose()
+          useLayoutStore.getState().toggleAnswerPlacement()
+        },
+      },
+      {
         id: 'new-doc',
         label: 'New Document',
         handler: () => {
@@ -156,7 +170,7 @@ export function CommandPalette({ onClose }: CommandPaletteProps) {
         },
       },
     ],
-    [onClose]
+    [onClose, answerPlacement]
   )
 
   const filtered = useMemo(() => {

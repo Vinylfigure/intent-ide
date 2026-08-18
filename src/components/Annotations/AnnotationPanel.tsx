@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAnnotationStore } from '@/stores/annotationStore'
+import { useLayoutStore } from '@/stores/layoutStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { AnnotationCard } from './AnnotationCard'
 import { AnnotationMap } from './AnnotationMap'
@@ -29,6 +30,8 @@ export function AnnotationPanel() {
   const annotations = useAnnotationStore((s) => s.annotations)
   const activeId = useAnnotationStore((s) => s.activeAnnotationId)
   const activeDocumentId = useDocumentStore((s) => s.activeDocumentId)
+  const placement = useLayoutStore((s) => s.answerPlacement)
+  const setPlacement = useLayoutStore((s) => s.setAnswerPlacement)
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -107,7 +110,25 @@ export function AnnotationPanel() {
         <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-[0.2em]">
           {annotationCount} review item{annotationCount !== 1 ? 's' : ''}
         </span>
-        <div className="flex gap-1">
+        <div className="flex items-center gap-2">
+          <div className="placement-toggle" role="group" aria-label="Where answers appear">
+            <button
+              onClick={() => setPlacement('sidebar')}
+              aria-pressed={placement === 'sidebar'}
+              title="Answers expand here in the sidebar"
+              className="placement-toggle-btn"
+            >
+              Sidebar
+            </button>
+            <button
+              onClick={() => setPlacement('floating')}
+              aria-pressed={placement === 'floating'}
+              title="Answers float beside the passage they belong to"
+              className="placement-toggle-btn"
+            >
+              Floating
+            </button>
+          </div>
           <button
             onClick={() => setViewMode('list')}
             title="Grouped list view"
@@ -154,6 +175,7 @@ export function AnnotationPanel() {
                       <AnnotationCard
                         annotation={annotation}
                         isActive={annotation.id === activeId}
+                        detailElsewhere={placement === 'floating'}
                       />
                     </div>
                   ))}
