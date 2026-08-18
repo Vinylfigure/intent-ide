@@ -213,20 +213,22 @@ export function DocumentHubSidebar() {
                       e.stopPropagation()
                       startRenameCollection(collection)
                     }}
+                    aria-label="Rename collection"
                     className="p-0.5 text-xs text-ink/45 hover:text-ink"
                     title="Rename collection"
                   >
-                    \u270E
+                    ✎
                   </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
                       deleteCollection(collection.id)
                     }}
+                    aria-label="Delete collection"
                     className="p-0.5 text-xs text-red-400 hover:text-red-600"
                     title="Delete collection"
                   >
-                    \u2715
+                    ✕
                   </button>
                 </div>
               </div>
@@ -353,14 +355,14 @@ function DocumentRow({
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
-          <button onClick={onStartRename} className="w-7 h-7 rounded-full text-xs text-ink/45 hover:text-ink hover:bg-warm transition-colors" title="Rename document">
-            \u270E
+          <button onClick={onStartRename} aria-label="Rename document" className="w-7 h-7 rounded-full text-xs text-ink/45 hover:text-ink hover:bg-warm transition-colors" title="Rename document">
+            ✎
           </button>
-          <button onClick={onDuplicate} className="w-7 h-7 rounded-full text-xs text-ink/45 hover:text-ink hover:bg-warm transition-colors" title="Duplicate document">
-            \u2398
+          <button onClick={onDuplicate} aria-label="Duplicate document" className="w-7 h-7 rounded-full text-xs text-ink/45 hover:text-ink hover:bg-warm transition-colors" title="Duplicate document">
+            ⎘
           </button>
-          <button onClick={onDelete} className="w-7 h-7 rounded-full text-xs text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors" title="Delete document">
-            \u2715
+          <button onClick={onDelete} aria-label="Delete document" className="w-7 h-7 rounded-full text-xs text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors" title="Delete document">
+            ✕
           </button>
         </div>
       </div>

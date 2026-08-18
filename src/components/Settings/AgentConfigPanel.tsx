@@ -84,6 +84,8 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
           <h2 className="font-serif text-xl">Agent Configuration</h2>
           <button
             onClick={onClose}
+            aria-label="Close"
+            title="Close"
             className="text-muted hover:text-ink text-xl leading-none"
           >
             &times;

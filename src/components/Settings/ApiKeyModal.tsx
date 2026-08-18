@@ -85,7 +85,7 @@ export function ApiKeyModal() {
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <h2 className="font-serif text-xl">API Configuration</h2>
-          <button onClick={() => setShow(false)} className="text-muted hover:text-ink text-xl leading-none">&times;</button>
+          <button onClick={() => setShow(false)} aria-label="Close" title="Close" className="text-muted hover:text-ink text-xl leading-none">&times;</button>
         </div>
 
         <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
