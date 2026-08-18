@@ -6,6 +6,7 @@ import { useAnnotationStore } from '@/stores/annotationStore'
 import { useChangesStore } from '@/stores/changesStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { useToastStore } from '@/stores/toastStore'
+import { useInvariantFlagStore } from '@/stores/invariantFlagStore'
 import type { Invariant } from '../captureInvariant'
 import { runAndSurfaceInvariantChecks } from '../invariantCascade'
 
@@ -51,6 +52,7 @@ beforeEach(() => {
   useChangesStore.getState().clear()
   useToastStore.setState({ toasts: [] })
   useDocumentStore.setState({ activeDocumentId: 'doc-A' })
+  useInvariantFlagStore.getState().clear()
 })
 
 afterEach(() => {
@@ -140,7 +142,7 @@ describe('runAndSurfaceInvariantChecks', () => {
     expect(useToastStore.getState().toasts).toHaveLength(0)
   })
 
-  it('degrades to unverified (probably, no evidence) when the declared figure is not a literal substring of the declaring block', async () => {
+  it('degrades to unverified (optional, no evidence) when the declared figure is not a literal substring of the declaring block', async () => {
     // The declaring block spells the figure as "30 dollars"; the captured
     // statement uses "$30" — a different formatting of the same value, which
     // the CHECK correctly treats as equal (normalized numeric comparison),
@@ -160,7 +162,44 @@ describe('runAndSurfaceInvariantChecks', () => {
     expect(annotations).toHaveLength(1)
     const cascade = annotations[0].resolution!.edits![1]
     expect(cascade.evidence).toBeNull()
-    expect(cascade.severity).toBe('probably')
+    expect(cascade.severity).toBe('optional')
+  })
+
+  it('rejects a coincidental substring match ("30" inside "2030") as a verified citation', async () => {
+    const declareText = 'The renewal year is now set to 2030 under the updated policy.'
+    const conflictText = 'Under the new policy, terminations occur within 45 days of notice.'
+    const doc = schema.node('doc', null, [p('b-declare', declareText), p('b-conflict', conflictText)])
+    // "terminations ... 30 days" would word-boundary-verify against neither
+    // block's "2030" — this pins that a bare contiguity match is rejected.
+    stubListInvariants([invariantRecord({ statement: 'terminations are now 30 days' })])
+    const state = EditorState.create({ schema, doc })
+
+    await runAndSurfaceInvariantChecks('doc-A', state)
+
+    const annotations = useAnnotationStore.getState().annotations
+    expect(annotations).toHaveLength(1)
+    const cascade = annotations[0].resolution!.edits![1]
+    expect(cascade.evidence).toBeNull()
+    expect(cascade.severity).toBe('optional')
+  })
+
+  it('dedup survives an unrelated annotationStore.clear() (e.g. starting a new document elsewhere)', async () => {
+    stubListInvariants([invariantRecord()])
+    const state = EditorState.create({ schema, doc: DOC })
+
+    await runAndSurfaceInvariantChecks('doc-A', state)
+    expect(useAnnotationStore.getState().annotations).toHaveLength(1)
+
+    // Simulates DocInputModal.loadDoc()'s unscoped clear when the user
+    // starts an unrelated new document while doc-A stays open elsewhere.
+    useAnnotationStore.getState().clear()
+    expect(useAnnotationStore.getState().annotations).toHaveLength(0)
+
+    await runAndSurfaceInvariantChecks('doc-A', state)
+
+    // Dedup memory lives in invariantFlagStore, not annotationStore, so the
+    // still-unresolved conflict does NOT get re-injected as a duplicate.
+    expect(useAnnotationStore.getState().annotations).toHaveLength(0)
   })
 
   it('never mutates the document even if the caller applies the cascade edit as-is (no-op by construction)', async () => {

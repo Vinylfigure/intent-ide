@@ -28,6 +28,13 @@ import type { Invariant } from './captureInvariant'
  * numbers ("thirty days"), calendar-date fragments, and singular/plural term
  * variants (`containsTerm` is exact-word, not stemmed) are not matched. These
  * make the lane conservative — it can miss a real drift — never the reverse.
+ *
+ * Known remaining false-positive limitation: a statement whose ONLY
+ * substantive term is a single generic word ("the deadline is $500") cannot
+ * be made more specific without new NLP — there is nothing left to require
+ * "all of" once there is only one term. Two-or-more-term statements (the
+ * common case for a real declared fact) are protected; single-term ones are
+ * not, and this is a deliberate reuse-only tradeoff, not an oversight.
  */
 
 export interface InvariantViolation {
@@ -56,13 +63,20 @@ function parseBlockIds(raw: string): string[] {
 }
 
 /**
- * Value-equality for numeric tokens, not string-equality: "$30" and "30" (or
- * "1,200" and "1200") are the same figure once currency symbols and
- * thousands separators are stripped. Comparing raw regex output as strings
- * would false-positive on formatting differences alone.
+ * Value-equality for numeric tokens, not string-equality: "$30", "30", and
+ * "30.00" are the same figure once currency symbols, thousands separators,
+ * and decimal-formatting differences are normalized away via a real numeric
+ * parse. Comparing raw regex output as strings would false-positive on
+ * formatting differences alone (a non-numeric parse — shouldn't happen given
+ * the token came from a digit-anchored regex — falls back to the stripped
+ * string rather than throwing).
  */
 function normalizeNumeric(token: string): string {
-  return token.replace(/[$€£,]/g, '')
+  const isPercent = token.endsWith('%')
+  const stripped = token.replace(/[$€£,%]/g, '')
+  const value = Number(stripped)
+  if (!Number.isFinite(value)) return stripped
+  return isPercent ? `${value}%` : `${value}`
 }
 
 /**
@@ -125,7 +139,11 @@ export function checkInvariants(doc: PMNode, invariants: Invariant[]): Invariant
         evidenceBlockIds,
         conflictBlockId: block.blockId,
         conflictText: blockText,
-        statementNumber: statementNumbers[0],
+        // The LAST numeric token, not the first: a statement phrased as "the
+        // fee increased from $20 to $30" declares $30 as the current value,
+        // and English "from X to Y" / "was X, now Y" phrasing consistently
+        // puts the current figure last.
+        statementNumber: statementNumbers[statementNumbers.length - 1],
         conflictNumber: blockNumbers[differentIdx],
       })
       break

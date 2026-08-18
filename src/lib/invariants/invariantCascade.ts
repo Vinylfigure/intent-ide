@@ -1,14 +1,15 @@
 import type { EditorState } from 'prosemirror-state'
-import { findBlockById, blockTextRange } from '@/lib/prosemirror/blockIds'
+import { findBlockById } from '@/lib/prosemirror/blockIds'
 import { primaryProposedEdit } from '@/lib/ai/orchestrator'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useChangesStore } from '@/stores/changesStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { useToastStore } from '@/stores/toastStore'
+import { useInvariantFlagStore } from '@/stores/invariantFlagStore'
 import { generateId } from '@/lib/utils/id'
 import { listInvariants } from './captureInvariant'
 import { checkInvariants, type InvariantViolation } from './invariantCheckRunner'
-import type { Annotation, CascadeSeverity, CascadeEvidence, ProposedEdit, ResolutionAction } from '@/lib/annotations/types'
+import type { Annotation, CascadeEvidence, ProposedEdit, ResolutionAction } from '@/lib/annotations/types'
 
 /**
  * Document Invariant Ledger — Phase 2 (issue #32): surfaces a failing
@@ -34,26 +35,49 @@ function violationKey(documentId: string, violation: InvariantViolation): string
 }
 
 /**
- * Evidence is only ever set when the declared figure literally verifies
- * against the block that declared it — an unverifiable quote must not claim
- * citation integrity (the same rule `orchestrator.ts`'s `buildEvidence`
- * enforces for every other cascade path: "an uncited proposal can never be
- * `must`"). When the exact statement text drifted from the source block
- * since capture (the modal lets a user edit the captured wording), this
- * degrades to `probably` with no evidence rather than fabricating a citation.
+ * Whole-word verification that `numberToken` literally appears in the given
+ * block's text — the same word-boundary discipline `containsTerm` applies to
+ * subject terms, applied here to the citation itself. A bare contiguity
+ * check (as `blockTextRange` does, by design, for arbitrary quoted phrases)
+ * would let a short token like "30" spuriously "verify" against "2030" or
+ * "$3,000" — a coincidental substring, not a real citation.
+ */
+function verifiesInBlock(blockText: string, numberToken: string): boolean {
+  const idx = blockText.indexOf(numberToken)
+  if (idx === -1) return false
+  const before = idx > 0 ? blockText[idx - 1] : ' '
+  const after = idx + numberToken.length < blockText.length ? blockText[idx + numberToken.length] : ' '
+  return /\W/.test(before) && /\W/.test(after)
+}
+
+/**
+ * Evidence is only ever set when the declared figure literally, word-
+ * boundary-verifies against one of the blocks that declared it — an
+ * unverifiable quote must not claim citation integrity (the same rule
+ * `orchestrator.ts`'s `buildEvidence` enforces for every other cascade path:
+ * "an uncited proposal can never be `must`"). Tries every evidence block, not
+ * just the first, so losing one declaring block doesn't sink an otherwise-
+ * verifiable citation. When nothing verifies (the exact wording drifted from
+ * the source block since capture — the modal lets a user edit the captured
+ * text — or the figure was reformatted), this degrades to NO evidence and
+ * `'optional'` severity, matching `deriveSeverity`'s own convention
+ * elsewhere in the codebase: no locatable citation is a lead, never a must.
  */
 function verifiedEvidence(
   doc: EditorState['doc'],
-  sourceBlockId: string | undefined,
+  evidenceBlockIds: string[],
   statementNumber: string,
-): { evidence: CascadeEvidence | null; severity: CascadeSeverity } {
-  if (sourceBlockId && blockTextRange(doc, sourceBlockId, statementNumber)) {
-    return {
-      evidence: { sourceBlockId, quotedText: statementNumber, edgeType: 'contradicts' },
-      severity: 'must',
+): { evidence: CascadeEvidence | null; severity: 'must' | 'optional' } {
+  for (const sourceBlockId of evidenceBlockIds) {
+    const block = findBlockById(doc, sourceBlockId)
+    if (block && verifiesInBlock(block.node.textContent, statementNumber)) {
+      return {
+        evidence: { sourceBlockId, quotedText: statementNumber, edgeType: 'contradicts' },
+        severity: 'must',
+      }
     }
   }
-  return { evidence: null, severity: 'probably' }
+  return { evidence: null, severity: 'optional' }
 }
 
 function conflictEdit(doc: EditorState['doc'], violation: InvariantViolation): ProposedEdit | null {
@@ -62,7 +86,7 @@ function conflictEdit(doc: EditorState['doc'], violation: InvariantViolation): P
   const from = block.pos + 1
   const to = block.pos + block.node.nodeSize - 1
   const text = block.node.textContent
-  const { evidence, severity } = verifiedEvidence(doc, violation.evidenceBlockIds[0], violation.statementNumber)
+  const { evidence, severity } = verifiedEvidence(doc, violation.evidenceBlockIds, violation.statementNumber)
   return {
     id: generateId(),
     from,
@@ -78,22 +102,24 @@ function conflictEdit(doc: EditorState['doc'], violation: InvariantViolation): P
   }
 }
 
+/** Anchors "why this proposal?" at whichever evidence block still resolves. */
 function primaryAnchor(doc: EditorState['doc'], violation: InvariantViolation): ProposedEdit | null {
-  const blockId = violation.evidenceBlockIds[0]
-  if (!blockId) return null
-  const block = findBlockById(doc, blockId)
-  if (!block) return null
-  const from = block.pos + 1
-  const to = block.pos + block.node.nodeSize - 1
-  const text = block.node.textContent
-  return {
-    ...primaryProposedEdit(
-      { from, to, newText: text, reason: `Declared: "${violation.statement}"` },
-      text,
-      blockId,
-    ),
-    status: 'rejected',
+  for (const blockId of violation.evidenceBlockIds) {
+    const block = findBlockById(doc, blockId)
+    if (!block) continue
+    const from = block.pos + 1
+    const to = block.pos + block.node.nodeSize - 1
+    const text = block.node.textContent
+    return {
+      ...primaryProposedEdit(
+        { from, to, newText: text, reason: `Declared: "${violation.statement}"` },
+        text,
+        blockId,
+      ),
+      status: 'rejected',
+    }
   }
+  return null
 }
 
 /**
@@ -110,11 +136,16 @@ function primaryAnchor(doc: EditorState['doc'], violation: InvariantViolation): 
  *   `directEditCascade.ts`).
  * - Re-flag dedup: the check re-runs on every apply, so without a dedup an
  *   unresolved conflict would re-surface as a brand-new annotation on every
- *   future apply anywhere in the document, forever. One (invariant,
- *   conflicting-block) pair surfaces at most once per document session;
- *   `checkInvariants` naturally stops returning a violation once the
- *   conflict is actually fixed, so a real fix still clears the flag's cause
- *   even though the flag record itself isn't retracted.
+ *   future apply anywhere in the document, forever. Dedup state lives in its
+ *   OWN store (`invariantFlagStore`), not derived from `annotationStore` —
+ *   `DocInputModal.loadDoc()` unconditionally clears `annotationStore` on
+ *   every new-document creation (a pre-existing, out-of-scope behavior), and
+ *   deriving dedup from it would let starting an unrelated document revive
+ *   every other document's already-seen flags. `checkInvariants` naturally
+ *   stops returning a violation once the conflict is actually fixed, so a
+ *   real fix still clears the underlying cause even though the flag record
+ *   itself isn't retracted (Phase 1's ledger has no dismiss/resolve route —
+ *   a named, disclosed follow-up, not silently assumed away).
  */
 export async function runAndSurfaceInvariantChecks(
   documentId: string,
@@ -129,16 +160,16 @@ export async function runAndSurfaceInvariantChecks(
     const violations = checkInvariants(state.doc, invariants)
     if (violations.length === 0) return
 
-    const seen = new Set(useAnnotationStore.getState().annotations.map((a) => a.locationGroupKey))
+    const flagStore = useInvariantFlagStore.getState()
 
     for (const violation of violations) {
       const key = violationKey(documentId, violation)
-      if (seen.has(key)) continue
+      if (flagStore.hasSurfaced(key)) continue
 
       const primary = primaryAnchor(state.doc, violation)
       const cascade = conflictEdit(state.doc, violation)
       // Both anchors must resolve against the live doc, or there is nothing
-      // stable to point the flag at (e.g. the declaring block was since
+      // stable to point the flag at (e.g. every declaring block was since
       // deleted) — skip rather than surface a flag anchored to nothing.
       if (!primary || !cascade) continue
 
@@ -168,6 +199,7 @@ export async function runAndSurfaceInvariantChecks(
 
       useAnnotationStore.getState().add(annotation)
       useChangesStore.getState().ensureChangeSetForAnnotation(annotation)
+      flagStore.markSurfaced(key)
       useToastStore.getState().addToast('A declared fact may no longer hold — see Annotations', 'info')
     }
   } catch (err) {

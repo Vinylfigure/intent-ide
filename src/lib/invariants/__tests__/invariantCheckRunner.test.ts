@@ -133,6 +133,33 @@ describe('checkInvariants', () => {
     expect(violations).toEqual([])
   })
 
+  it('treats "$30" and "$30.00" as the same figure (decimal-format normalization)', () => {
+    const doc = docOf(
+      p('b-declare', 'The cancellation fee is now $30 per the updated policy.'),
+      p('b-other', 'As noted above, the cancellation fee is $30.00, unchanged.'),
+    )
+    const violations = checkInvariants(doc, [
+      invariant({ statement: 'the cancellation fee is now $30', blockIds: JSON.stringify(['b-declare']) }),
+    ])
+    expect(violations).toEqual([])
+  })
+
+  it('prefers the LAST numeric token as the declared figure for a "from X to Y" statement', () => {
+    const doc = docOf(
+      p('b-declare', 'The subscription fee increased from $20 to $30 per the updated policy.'),
+      p('b-conflict', 'Note: the subscription fee increased again to $50 last quarter.'),
+    )
+    const violations = checkInvariants(doc, [
+      invariant({
+        statement: 'the subscription fee increased from $20 to $30',
+        blockIds: JSON.stringify(['b-declare']),
+      }),
+    ])
+    expect(violations).toHaveLength(1)
+    // "$30" (the current value), not "$20" (the superseded value).
+    expect(violations[0].statementNumber).toBe('$30')
+  })
+
   it('flags a genuinely different figure even with currency-symbol formatting differences', () => {
     const doc = docOf(
       p('b-declare', 'The cancellation fee is now $30 per the updated policy.'),
