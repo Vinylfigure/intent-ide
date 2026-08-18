@@ -364,6 +364,7 @@ export function AnnotationCard({
       <button
         onClick={(e) => { e.stopPropagation(); scrollToAnchor() }}
         className="w-full text-left text-xs text-ink/60 bg-warm/40 hover:bg-warm/70 rounded-lg px-2.5 py-1.5 border-l-2 border-accent/30 transition-colors cursor-pointer truncate"
+        aria-label="Scroll to the annotated passage"
         title="Click to scroll to this passage"
       >
         &ldquo;{annotation.anchor.text.slice(0, 50)}{annotation.anchor.text.length > 50 ? '...' : ''}&rdquo;

@@ -27,18 +27,20 @@ export function VoiceButton() {
           ? 'bg-annotation-question text-white'
           : 'bg-ink text-white hover:bg-ink/80'
       }`}
+      aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+      aria-pressed={isRecording}
       title={isRecording ? 'Stop recording (Ctrl+Space)' : 'Start recording (Ctrl+Space)'}
     >
       {isRecording ? (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
         </svg>
       ) : isTranscribing ? (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-spin">
+        <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="animate-spin">
           <circle cx="12" cy="12" r="10" strokeDasharray="60" strokeDashoffset="20" />
         </svg>
       ) : (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
           <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
           <line x1="12" y1="19" x2="12" y2="23" />

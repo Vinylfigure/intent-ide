@@ -171,6 +171,8 @@ export function ProjectSidebar() {
           </button>
           <button
             onClick={() => setShowNewProject(false)}
+            aria-label="Cancel new project"
+            title="Cancel"
             className="px-2 py-1.5 text-xs text-muted hover:text-ink"
           >
             &times;
@@ -226,9 +228,10 @@ export function ProjectSidebar() {
                     startRename(project.id, project.name)
                   }}
                   className="p-0.5 text-xs text-muted hover:text-ink"
+                  aria-label="Rename project"
                   title="Rename project"
                 >
-                  \u270E
+                  ✎
                 </button>
                 <button
                   onClick={(e) => {
@@ -236,9 +239,10 @@ export function ProjectSidebar() {
                     deleteProject(project.id)
                   }}
                   className="p-0.5 text-xs text-red-400 hover:text-red-600"
+                  aria-label="Delete project"
                   title="Delete project"
                 >
-                  \u2715
+                  ✕
                 </button>
               </div>
             </div>
@@ -277,9 +281,10 @@ export function ProjectSidebar() {
                           startRename(doc.id, doc.name)
                         }}
                         className="p-0.5 text-xs text-muted hover:text-ink"
+                        aria-label="Rename document"
                         title="Rename document"
                       >
-                        \u270E
+                        ✎
                       </button>
                       <button
                         onClick={(e) => {
@@ -287,9 +292,10 @@ export function ProjectSidebar() {
                           removeDocument(project.id, doc.id)
                         }}
                         className="p-0.5 text-xs text-red-400 hover:text-red-600"
+                        aria-label="Delete document"
                         title="Delete document"
                       >
-                        \u2715
+                        ✕
                       </button>
                     </div>
                   </div>
