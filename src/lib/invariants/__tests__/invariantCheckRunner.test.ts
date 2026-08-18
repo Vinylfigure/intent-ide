@@ -57,11 +57,13 @@ describe('checkInvariants', () => {
       statement: 'terminations are now 30 days',
       evidenceBlockIds: ['b-declare'],
       conflictBlockId: 'b-conflict',
+      statementNumber: '30',
+      conflictNumber: '45',
     })
     expect(violations[0].conflictText).toContain('45 days')
   })
 
-  it('never flags the invariant\'s own evidence block', () => {
+  it("never flags the invariant's own evidence block", () => {
     const doc = docOf(p('b-declare', 'Terminations are now 30 days, not 45 days, per legal review.'))
     const violations = checkInvariants(doc, [invariant()])
     expect(violations).toEqual([])
@@ -107,5 +109,39 @@ describe('checkInvariants', () => {
     ])
     expect(violations).toHaveLength(1)
     expect(violations[0].invariantId).toBe('inv-1')
+  })
+
+  it('does not false-positive on a two-term statement matching only its shorter, generic term', () => {
+    // "days" alone is not enough evidence of relatedness — requires BOTH
+    // "terminations" and "days" (all terms, since the statement has only 2).
+    const doc = docOf(
+      p('b-declare', 'Terminations are now 30 days per the updated policy.'),
+      p('b-unrelated', 'For terminations effective under state law, see form 12 for filing requirements.'),
+    )
+    const violations = checkInvariants(doc, [invariant()])
+    expect(violations).toEqual([])
+  })
+
+  it('treats "$30" and "30" as the same figure (currency-symbol normalization)', () => {
+    const doc = docOf(
+      p('b-declare', 'The cancellation fee is now $30 per the updated policy.'),
+      p('b-other', 'As noted above, the cancellation fee is 30 dollars, unchanged.'),
+    )
+    const violations = checkInvariants(doc, [
+      invariant({ statement: 'the cancellation fee is now $30', blockIds: JSON.stringify(['b-declare']) }),
+    ])
+    expect(violations).toEqual([])
+  })
+
+  it('flags a genuinely different figure even with currency-symbol formatting differences', () => {
+    const doc = docOf(
+      p('b-declare', 'The cancellation fee is now $30 per the updated policy.'),
+      p('b-conflict', 'Note: the cancellation fee is $50 as of last quarter.'),
+    )
+    const violations = checkInvariants(doc, [
+      invariant({ statement: 'the cancellation fee is now $30', blockIds: JSON.stringify(['b-declare']) }),
+    ])
+    expect(violations).toHaveLength(1)
+    expect(violations[0].conflictBlockId).toBe('b-conflict')
   })
 })

@@ -22,6 +22,12 @@ import type { Invariant } from './captureInvariant'
  * The LLM/NLI entailment lane for semantic (non-deterministic) facts is out
  * of scope for this slice (#20's own phasing) — entailment-kind and
  * inactive rows are silently skipped here, never errored.
+ *
+ * Known false-negative limitations, disclosed rather than silently assumed
+ * away (same discipline as `hasVerbatimConflict`'s own docstring): word-form
+ * numbers ("thirty days"), calendar-date fragments, and singular/plural term
+ * variants (`containsTerm` is exact-word, not stemmed) are not matched. These
+ * make the lane conservative — it can miss a real drift — never the reverse.
  */
 
 export interface InvariantViolation {
@@ -32,6 +38,10 @@ export interface InvariantViolation {
   /** The block whose content no longer agrees with the declared statement. */
   conflictBlockId: string
   conflictText: string
+  /** The specific figure the statement declared (verbatim substring of it). */
+  statementNumber: string
+  /** The specific figure found in the conflicting block (verbatim substring of it). */
+  conflictNumber: string
 }
 
 const NUMERIC_TOKEN_RE = /^[$€£]?\d/
@@ -43,6 +53,16 @@ function parseBlockIds(raw: string): string[] {
   } catch {
     return []
   }
+}
+
+/**
+ * Value-equality for numeric tokens, not string-equality: "$30" and "30" (or
+ * "1,200" and "1200") are the same figure once currency symbols and
+ * thousands separators are stripped. Comparing raw regex output as strings
+ * would false-positive on formatting differences alone.
+ */
+function normalizeNumeric(token: string): string {
+  return token.replace(/[$€£,]/g, '')
 }
 
 /**
@@ -66,15 +86,19 @@ export function checkInvariants(doc: PMNode, invariants: Invariant[]): Invariant
     // Nothing deterministic to check: no figure means no drift to detect, and
     // no subject term means we can't tell WHICH block is even about this fact.
     if (statementNumbers.length === 0 || statementTerms.length === 0) continue
+    const normalizedStatementNumbers = statementNumbers.map(normalizeNumeric)
+
+    // Subject match: for a short (1-2 term) statement — the common case for a
+    // declarative fact like "rent is $2,000/month" — a match on a SINGLE
+    // generic term degenerates the whole check into "any block mentioning
+    // rent with any other number", so require ALL terms. Only once there are
+    // enough terms to make "all" fragile does the check relax to the
+    // longest (most distinctive) half.
+    const bySpecificity = [...statementTerms].sort((a, b) => b.length - a.length)
+    const requiredTerms =
+      bySpecificity.length <= 2 ? bySpecificity : bySpecificity.slice(0, Math.ceil(bySpecificity.length / 2))
 
     const evidenceBlockIds = parseBlockIds(invariant.blockIds)
-
-    // Subject match requires the LONGEST (most distinctive) half of the
-    // statement's terms, not just any one — a lone match on a short generic
-    // word like "days" would false-positive against any unrelated block that
-    // happens to mention a different count of the same unit.
-    const bySpecificity = [...statementTerms].sort((a, b) => b.length - a.length)
-    const requiredTerms = bySpecificity.slice(0, Math.max(1, Math.ceil(bySpecificity.length / 2)))
 
     for (const block of blocks) {
       if (evidenceBlockIds.includes(block.blockId)) continue
@@ -85,22 +109,26 @@ export function checkInvariants(doc: PMNode, invariants: Invariant[]): Invariant
 
       const blockNumbers = extractChangedTokens(blockText, '').filter((t) => NUMERIC_TOKEN_RE.test(t))
       if (blockNumbers.length === 0) continue
+      const normalizedBlockNumbers = blockNumbers.map(normalizeNumeric)
 
       // A block that also cites the declared figure is corroborating, not
       // conflicting (e.g. quoting the same "30 days" for context) — only a
       // DIFFERENT figure with the original nowhere in sight counts as drift.
-      const hasStatementNumber = statementNumbers.some((n) => blockNumbers.includes(n))
-      const hasDifferentNumber = blockNumbers.some((n) => !statementNumbers.includes(n))
-      if (hasDifferentNumber && !hasStatementNumber) {
-        violations.push({
-          invariantId: invariant.id,
-          statement: invariant.statement,
-          evidenceBlockIds,
-          conflictBlockId: block.blockId,
-          conflictText: blockText,
-        })
-        break
-      }
+      const hasStatementNumber = normalizedStatementNumbers.some((n) => normalizedBlockNumbers.includes(n))
+      if (hasStatementNumber) continue
+      const differentIdx = normalizedBlockNumbers.findIndex((n) => !normalizedStatementNumbers.includes(n))
+      if (differentIdx === -1) continue
+
+      violations.push({
+        invariantId: invariant.id,
+        statement: invariant.statement,
+        evidenceBlockIds,
+        conflictBlockId: block.blockId,
+        conflictText: blockText,
+        statementNumber: statementNumbers[0],
+        conflictNumber: blockNumbers[differentIdx],
+      })
+      break
     }
   }
 

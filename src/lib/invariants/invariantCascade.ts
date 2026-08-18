@@ -1,12 +1,14 @@
 import type { EditorState } from 'prosemirror-state'
-import { findBlockById } from '@/lib/prosemirror/blockIds'
+import { findBlockById, blockTextRange } from '@/lib/prosemirror/blockIds'
 import { primaryProposedEdit } from '@/lib/ai/orchestrator'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useChangesStore } from '@/stores/changesStore'
+import { useDocumentStore } from '@/stores/documentStore'
+import { useToastStore } from '@/stores/toastStore'
 import { generateId } from '@/lib/utils/id'
 import { listInvariants } from './captureInvariant'
 import { checkInvariants, type InvariantViolation } from './invariantCheckRunner'
-import type { Annotation, ProposedEdit, ResolutionAction } from '@/lib/annotations/types'
+import type { Annotation, CascadeSeverity, CascadeEvidence, ProposedEdit, ResolutionAction } from '@/lib/annotations/types'
 
 /**
  * Document Invariant Ledger — Phase 2 (issue #32): surfaces a failing
@@ -26,28 +28,53 @@ const FLAG_ACTIONS: ResolutionAction[] = [
   { label: 'Nevermind', kind: 'dismiss', handler: 'dismiss' },
 ]
 
+/** Deterministic key for one (invariant, conflicting block) pair — the dedup unit. */
+function violationKey(documentId: string, violation: InvariantViolation): string {
+  return `${documentId}:invariant:${violation.invariantId}:${violation.conflictBlockId}`
+}
+
+/**
+ * Evidence is only ever set when the declared figure literally verifies
+ * against the block that declared it — an unverifiable quote must not claim
+ * citation integrity (the same rule `orchestrator.ts`'s `buildEvidence`
+ * enforces for every other cascade path: "an uncited proposal can never be
+ * `must`"). When the exact statement text drifted from the source block
+ * since capture (the modal lets a user edit the captured wording), this
+ * degrades to `probably` with no evidence rather than fabricating a citation.
+ */
+function verifiedEvidence(
+  doc: EditorState['doc'],
+  sourceBlockId: string | undefined,
+  statementNumber: string,
+): { evidence: CascadeEvidence | null; severity: CascadeSeverity } {
+  if (sourceBlockId && blockTextRange(doc, sourceBlockId, statementNumber)) {
+    return {
+      evidence: { sourceBlockId, quotedText: statementNumber, edgeType: 'contradicts' },
+      severity: 'must',
+    }
+  }
+  return { evidence: null, severity: 'probably' }
+}
+
 function conflictEdit(doc: EditorState['doc'], violation: InvariantViolation): ProposedEdit | null {
   const block = findBlockById(doc, violation.conflictBlockId)
   if (!block) return null
   const from = block.pos + 1
   const to = block.pos + block.node.nodeSize - 1
   const text = block.node.textContent
+  const { evidence, severity } = verifiedEvidence(doc, violation.evidenceBlockIds[0], violation.statementNumber)
   return {
     id: generateId(),
     from,
     to,
     newText: text,
-    reason: `Conflicts with a declared fact: "${violation.statement}"`,
+    reason: `Declared "${violation.statementNumber}", but this section says "${violation.conflictNumber}": "${violation.statement}"`,
     relation: 'cascade',
     status: 'pending',
     targetText: text,
     blockId: violation.conflictBlockId,
-    severity: 'must',
-    evidence: {
-      sourceBlockId: violation.evidenceBlockIds[0] ?? violation.conflictBlockId,
-      quotedText: violation.statement,
-      edgeType: 'contradicts',
-    },
+    severity,
+    evidence,
   }
 }
 
@@ -74,16 +101,40 @@ function primaryAnchor(doc: EditorState['doc'], violation: InvariantViolation): 
  * editor state and appends one resolved 'flag' annotation per violated
  * invariant. Fire-and-forget: never throws into the caller (a DocCommit
  * write must never be blocked by a check-lane failure).
+ *
+ * Two guards keep this from becoming an unbounded nuisance:
+ * - Doc-switch race: `state` is read from a caller-captured EditorView after
+ *   an async round-trip (`listInvariants`); if the active document changed
+ *   in the meantime, `state` and `documentId` would disagree — abort rather
+ *   than tag a flag with the wrong document's id (same guard as the sibling
+ *   `directEditCascade.ts`).
+ * - Re-flag dedup: the check re-runs on every apply, so without a dedup an
+ *   unresolved conflict would re-surface as a brand-new annotation on every
+ *   future apply anywhere in the document, forever. One (invariant,
+ *   conflicting-block) pair surfaces at most once per document session;
+ *   `checkInvariants` naturally stops returning a violation once the
+ *   conflict is actually fixed, so a real fix still clears the flag's cause
+ *   even though the flag record itself isn't retracted.
  */
 export async function runAndSurfaceInvariantChecks(
   documentId: string,
   state: EditorState,
 ): Promise<void> {
   try {
+    if (useDocumentStore.getState().activeDocumentId !== documentId) return
+
     const invariants = await listInvariants(documentId)
+    if (useDocumentStore.getState().activeDocumentId !== documentId) return
+
     const violations = checkInvariants(state.doc, invariants)
+    if (violations.length === 0) return
+
+    const seen = new Set(useAnnotationStore.getState().annotations.map((a) => a.locationGroupKey))
 
     for (const violation of violations) {
+      const key = violationKey(documentId, violation)
+      if (seen.has(key)) continue
+
       const primary = primaryAnchor(state.doc, violation)
       const cascade = conflictEdit(state.doc, violation)
       // Both anchors must resolve against the live doc, or there is nothing
@@ -95,7 +146,7 @@ export async function runAndSurfaceInvariantChecks(
       const annotation: Annotation = {
         id: generateId(),
         documentId,
-        locationGroupKey: `${documentId}:invariant:${violation.invariantId}:${now}`,
+        locationGroupKey: key,
         type: 'flag',
         status: 'resolved',
         transcript: `Declared fact may no longer hold: "${violation.statement}"`,
@@ -117,6 +168,7 @@ export async function runAndSurfaceInvariantChecks(
 
       useAnnotationStore.getState().add(annotation)
       useChangesStore.getState().ensureChangeSetForAnnotation(annotation)
+      useToastStore.getState().addToast('A declared fact may no longer hold — see Annotations', 'info')
     }
   } catch (err) {
     console.warn('[invariants] Check runner failed:', err)
