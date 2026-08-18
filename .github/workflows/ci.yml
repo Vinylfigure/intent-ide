@@ -41,3 +41,46 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # End-to-end runs as its own job: it needs a browser and a dev server, and a
+  # 45s browser suite should not sit behind (or in front of) the fast checks.
+  # These specs existed for months without CI ever executing them, which is how
+  # the ingestion spec stayed broken from the Phase 8D modal redesign until
+  # someone happened to run it by hand.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: "file:./dev.db"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      # The audit and history routes exercised by the cascade spec are real
+      # server-side SQLite, so the schema has to exist before the suite runs.
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

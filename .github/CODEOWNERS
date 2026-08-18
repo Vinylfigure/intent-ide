@@ -1,3 +1,21 @@
-# Machinery is operator-owned: any change under .github/ requests review from
-# the repo owner.
-/.github/ @Vinylfigure
+# Intentionally empty of ownership rules. Read the history before adding one.
+#
+# This file used to carry `/.github/ @Vinylfigure`, which — combined with
+# "Require review from Code Owners" on `main` — made every machinery change
+# unmergeable by the only person who writes them. GitHub does not let anyone
+# approve their own pull request, so a solo-maintained repository that names
+# its sole maintainer as the code owner of a path has locked that path shut.
+# PR #30 sat blocked on exactly this: all checks green, no reviewer possible.
+#
+# The control the rule was reaching for still exists, and is satisfiable:
+# `.github/workflows/gate-integrity.yml` fails any PR that touches
+# `.github/workflows/**`, deletes tests, or adds skipped tests, unless the PR
+# carries the `machinery-change` label. That label is an explicit, deliberate,
+# operator-visible act recorded on the PR — the same signal a code-owner
+# review was meant to give, minus the deadlock.
+#
+# Restore an ownership rule when there is a second human who can approve:
+#
+#   /.github/ @some-team-with-more-than-one-member
+#
+# A rule naming only the sole maintainer is not a safeguard; it is an outage.

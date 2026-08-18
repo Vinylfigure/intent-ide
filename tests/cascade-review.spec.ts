@@ -257,10 +257,13 @@ test.describe('cascade review flow', () => {
     // 9. History tab shows the real 'apply' version row (kind badge "AI change",
     //    actor "AI + you") written through the real /api/history route. The
     //    commit is fire-and-forget after apply, so poll via Refresh.
-    // dispatchEvent instead of click: with headless font metrics the 5-tab
-    // sidebar row overflows its 320px container and the History tab's hit
-    // area lands under the topbar, so a positional click never lands.
-    await page.getByRole('button', { name: 'History' }).dispatchEvent('click')
+    // History and Audit live behind the sidebar's overflow menu, so open that
+    // first. This replaces a dispatchEvent workaround that existed because the
+    // old five-tab row overflowed its 320px container under headless font
+    // metrics and put the History tab's hit area under the topbar — the very
+    // crowding the overflow menu removes, so a real click works again.
+    await page.getByRole('button', { name: /more panels/i }).click()
+    await page.getByRole('menuitem', { name: 'History' }).click()
     await expect(async () => {
       await page.getByRole('button', { name: 'Refresh' }).click()
       await expect(page.getByText('AI change', { exact: true })).toBeVisible({
