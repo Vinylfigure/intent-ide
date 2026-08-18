@@ -80,3 +80,25 @@ model DocCommit {
   @@index([documentId, createdAt])
   @@index([documentId, parentHash])
 }
+
+/// Document Invariant Ledger — Phase 1 (data model + capture only; see #26).
+/// A user-declared fact, captured at SemanticCommitModal confirm time and
+/// linked to the block(s) that evidence it. The check runner that regression-
+/// tests these against later DocCommits, and CascadeList surfacing of a
+/// failing invariant, are out of scope until a follow-up task lands (#20
+/// steps 2-3); `status` and `checkKind` exist now so that runner has a stable
+/// schema to read, but nothing in this phase writes anything other than
+/// `active`/`deterministic`.
+/// Append-only: no update/delete operations permitted on invariant records.
+model DocInvariant {
+  id                   String   @id @default(cuid())
+  documentId           String
+  statement            String
+  blockIds             String   @default("[]") // JSON string[] — evidence links
+  checkKind            String   @default("deterministic") // 'deterministic' | 'entailment'
+  status               String   @default("active") // reserved for the future check runner
+  provenanceCommitHash String? // DocCommit.hash of the commit that declared this fact
+  createdAt            DateTime @default(now())
+
+  @@index([documentId, createdAt])
+}

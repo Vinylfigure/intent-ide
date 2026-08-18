@@ -29,7 +29,8 @@ import {
 import { showAffectedMode } from '@/lib/annotations/showAffected'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { createCommit } from '@/lib/history/commits'
-import { SemanticCommitModal } from '@/components/Editor/SemanticCommitModal'
+import { recordInvariant, shouldCaptureInvariant } from '@/lib/invariants/captureInvariant'
+import { SemanticCommitModal, type InvariantCapture } from '@/components/Editor/SemanticCommitModal'
 import type { Annotation, ConversationMessage } from '@/lib/annotations/types'
 import { SEVERITY_ORDER } from '@/lib/annotations/types'
 
@@ -51,6 +52,10 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   // (last decision per edit wins), flushed on CONFIRM only, discarded on
   // cancel — so flip noise and abandoned sessions never inflate calibration.
   const modalDecisionsRef = useRef<ModalDecisionBuffer | null>(null)
+  // Document Invariant Ledger: the fact the user chose to declare at
+  // confirm time (or null), captured once the resulting apply commit's hash
+  // is known so the ledger row carries real provenance.
+  const pendingInvariantRef = useRef<InvariantCapture | null>(null)
 
   if (!annotation.resolution) return null
 
@@ -138,6 +143,18 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         if (changeSetId) {
           useChangesStore.getState().setChangeSetCommitHash(changeSetId, hash)
         }
+        // The user may have declared a fact in the commit modal — capture it
+        // now that we have the real provenance commit hash for this version.
+        const invariant = pendingInvariantRef.current
+        pendingInvariantRef.current = null
+        if (invariant) {
+          recordInvariant({
+            documentId: annotation.documentId,
+            statement: invariant.statement,
+            blockIds: invariant.blockIds,
+            provenanceCommitHash: hash,
+          })
+        }
       })
       .catch((err) => console.warn('[history] Failed to record version:', err))
   }
@@ -152,12 +169,14 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     if (proposed && proposed.length > 1 && view) {
       const ids = acceptedIds ?? proposed.map((e) => e.id)
       if (ids.length === 0) {
+        pendingInvariantRef.current = null
         setShowDiffModal(false)
         setPendingHandler(null)
         return
       }
       const result = applyProposedEdits(view, ids)
       if (!result.ok) {
+        pendingInvariantRef.current = null
         useToastStore.getState().addToast(result.reason, 'error')
         setShowDiffModal(false)
         setPendingHandler(null)
@@ -219,6 +238,9 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
           'No changes were needed — the text already matches',
           'info',
         )
+        // No commit will be recorded for a no-op apply — a declared fact with
+        // no real version to attribute it to would be a fabricated record.
+        pendingInvariantRef.current = null
       }
       setShowDiffModal(false)
       setPendingHandler(null)
@@ -228,6 +250,7 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     // Honor an explicit empty selection from the modal (defensive — single-edit
     // modals can't normally produce one).
     if (acceptedIds && acceptedIds.length === 0) {
+      pendingInvariantRef.current = null
       setShowDiffModal(false)
       setPendingHandler(null)
       return
@@ -494,6 +517,22 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
             after: annotation.resolution.suggestedEdit.newText,
           }]
         : []
+  // Document Invariant Ledger default: derived from the primary change only
+  // (a cascade's collateral edit isn't the fact the user just declared).
+  const primaryEdit = resolutionEdits?.find((e) => e.relation === 'primary') ?? null
+  const primaryBlockId = primaryEdit
+    ? (primaryEdit.blockId ?? null)
+    : view && annotation.resolution?.suggestedEdit
+      ? blockIdAtPos(view.state.doc, annotation.resolution.suggestedEdit.from)
+      : null
+  const primaryStatement = (
+    primaryEdit ? primaryEdit.newText : annotation.resolution?.suggestedEdit?.newText ?? ''
+  ).trim()
+  const invariantDefault =
+    primaryStatement.length > 0
+      ? { statement: primaryStatement, blockIds: primaryBlockId ? [primaryBlockId] : [] }
+      : null
+
   const commitInitialRejected: Record<string, boolean> = {}
   {
     const anchors = view ? getProposedAnchors(view.state) : null
@@ -527,12 +566,16 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
             setProposedEditStatus(view, id, status)
           }
         }}
-        onConfirm={(ids) => {
+        invariantDefault={invariantDefault}
+        onConfirm={(ids, invariant) => {
           // Confirm: the live statuses stand — drop the snapshot, no restore.
           // Flush the buffered modal decisions (one event per decided edit).
           modalDecisionsRef.current?.confirm()
           modalDecisionsRef.current = null
           commitSnapshotRef.current = null
+          const primaryId = primaryEdit?.id ?? annotation.id
+          pendingInvariantRef.current =
+            invariant && shouldCaptureInvariant(ids, primaryId) ? invariant : null
           applyConfirmedEdit(ids)
         }}
         onCancel={() => {

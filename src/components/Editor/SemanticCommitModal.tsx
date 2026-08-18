@@ -21,11 +21,29 @@ const SEVERITY_BADGE_STYLES: Record<CascadeSeverity, string> = {
   optional: 'bg-stone-200 text-stone-700',
 }
 
+/** A derivable "you just declared a fact" default — shown only when one exists. */
+interface InvariantDefault {
+  statement: string
+  blockIds: string[]
+}
+
+/** What the user decided about capturing the declared fact, or null to skip it. */
+export interface InvariantCapture {
+  statement: string
+  blockIds: string[]
+}
+
 interface SemanticCommitModalProps {
   changes: SemanticChange[]
-  /** Receives the ids of the changes the user chose to apply. */
-  onConfirm: (acceptedIds: string[]) => void
+  /**
+   * Receives the ids of the changes the user chose to apply, plus the fact
+   * to capture into the Document Invariant Ledger (or null when the user
+   * opted out / there was nothing to declare).
+   */
+  onConfirm: (acceptedIds: string[], invariant: InvariantCapture | null) => void
   onCancel: () => void
+  /** Pre-filled "you just declared a fact" suggestion — omit to hide the capture UI entirely. */
+  invariantDefault?: InvariantDefault | null
   /** Provocation from MADS Troublemaker — shown as amber callout, gates Apply for high-risk */
   provocation?: string | null
   /** Whether this edit came through MADS (multi-agent debate) — indicates higher scrutiny needed */
@@ -58,6 +76,7 @@ export function SemanticCommitModal({
   isHighRisk = false,
   initialRejected,
   onToggle,
+  invariantDefault,
 }: SemanticCommitModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null)
   const [acknowledged, setAcknowledged] = useState(false)
@@ -66,6 +85,11 @@ export function SemanticCommitModal({
   const [rejected, setRejected] = useState<Record<string, boolean>>(
     () => initialRejected ?? {},
   )
+  // Document Invariant Ledger capture (opt-out, editable fact text). Defaults
+  // to captured-on when there's a derivable statement; the user can uncheck
+  // or edit before confirming.
+  const [invariantOn, setInvariantOn] = useState(!!invariantDefault)
+  const [invariantText, setInvariantText] = useState(invariantDefault?.statement ?? '')
 
   const multi = changes.length > 1
   const acceptedIds = changes.filter((c) => !rejected[c.id]).map((c) => c.id)
@@ -105,7 +129,17 @@ export function SemanticCommitModal({
           confirmLabel={confirmLabel}
           cancelLabel="Discard"
           variant="destructive"
-          onConfirm={blocked ? () => {} : () => onConfirm(acceptedIds)}
+          onConfirm={
+            blocked
+              ? () => {}
+              : () =>
+                  onConfirm(
+                    acceptedIds,
+                    invariantOn && invariantText.trim()
+                      ? { statement: invariantText.trim(), blockIds: invariantDefault?.blockIds ?? [] }
+                      : null,
+                  )
+          }
           onCancel={onCancel}
         >
           <div className="semantic-commit-diffs">
@@ -167,6 +201,32 @@ export function SemanticCommitModal({
               )
             })}
           </div>
+
+          {/* Document Invariant Ledger capture — opt-out, editable fact text. */}
+          {invariantDefault && (
+            <div className="mt-3 p-3 border border-border rounded-md bg-warm/40">
+              <label className="flex items-start gap-2 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={invariantOn}
+                  onChange={(e) => setInvariantOn(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span className="font-medium text-ink">
+                  Remember this as a fact I can check against later
+                </span>
+              </label>
+              {invariantOn && (
+                <textarea
+                  value={invariantText}
+                  onChange={(e) => setInvariantText(e.target.value)}
+                  rows={2}
+                  className="mt-2 w-full text-xs border border-border rounded px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-accent/30"
+                  placeholder="What did you just declare?"
+                />
+              )}
+            </div>
+          )}
 
           {/* Provocation callout */}
           {provocation && (
