@@ -751,3 +751,144 @@
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Floating answer panel — the `floating` answer placement. The resolved
+   annotation card detaches from the sidebar and parks beside the passage it
+   belongs to, so the answer sits next to the text it is about. Positioned by
+   computeFloatingPosition(); this file only styles the shell.
+   --------------------------------------------------------------------------- */
+.floating-answer-panel {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 24px);
+  border-radius: 20px;
+  border: 1px solid rgba(148, 120, 93, 0.24);
+  background: rgba(255, 252, 247, 0.98);
+  backdrop-filter: blur(14px);
+  box-shadow:
+    0 24px 60px rgba(71, 48, 28, 0.16),
+    0 2px 8px rgba(71, 48, 28, 0.06);
+  overflow: hidden;
+  animation: floating-answer-in 0.14s ease;
+}
+
+@keyframes floating-answer-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .floating-answer-panel {
+    animation: none;
+  }
+}
+
+.floating-answer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 12px;
+  border-bottom: 1px solid rgba(148, 120, 93, 0.18);
+  background: rgba(246, 239, 228, 0.7);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.floating-answer-header:active {
+  cursor: grabbing;
+}
+
+.floating-answer-grip {
+  font-size: 12px;
+  line-height: 1;
+  color: rgba(136, 113, 90, 0.7);
+}
+
+.floating-answer-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+
+.floating-answer-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.floating-answer-btn {
+  padding: 2px 8px;
+  border-radius: 9999px;
+  border: 1px solid rgba(148, 120, 93, 0.24);
+  background: rgba(255, 252, 247, 0.9);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.floating-answer-btn:hover {
+  background: #fff;
+  color: hsl(var(--foreground));
+}
+
+.floating-answer-close {
+  padding: 2px 7px;
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.floating-answer-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Segmented control for choosing where answers appear. */
+.placement-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9999px;
+  border: 1px solid rgba(148, 120, 93, 0.2);
+  background: rgba(255, 251, 245, 0.8);
+}
+
+.placement-toggle-btn {
+  padding: 3px 9px;
+  border-radius: 9999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.placement-toggle-btn:hover {
+  color: hsl(var(--foreground));
+}
+
+.placement-toggle-btn[aria-pressed='true'] {
+  background: hsl(var(--foreground));
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(71, 48, 28, 0.18);
+}
