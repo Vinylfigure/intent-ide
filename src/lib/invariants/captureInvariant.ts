@@ -67,6 +67,20 @@ export function recordInvariant(params: CaptureInvariantParams): void {
   })
 }
 
+/**
+ * Gate for whether a declared fact should actually be captured. The capture
+ * checkbox/text in SemanticCommitModal is derived from the PRIMARY change's
+ * proposed text but is a separate control from that row's own accept/reject
+ * toggle — so a caller must not treat "checkbox on" alone as license to
+ * capture. If the primary edit isn't among the ids the user actually chose
+ * to apply, its claim never lands in the document; capturing it anyway would
+ * append a false, permanently unfixable (append-only) ledger row pointing at
+ * a real commit hash that doesn't actually contain it.
+ */
+export function shouldCaptureInvariant(acceptedIds: string[], primaryId: string): boolean {
+  return acceptedIds.includes(primaryId)
+}
+
 /** All invariants declared for a document, newest first. */
 export async function listInvariants(documentId: string): Promise<Invariant[]> {
   const res = await fetch(`/api/invariants?documentId=${encodeURIComponent(documentId)}`)

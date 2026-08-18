@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { captureInvariant, listInvariants, recordInvariant, type Invariant } from '../captureInvariant'
+import {
+  captureInvariant,
+  listInvariants,
+  recordInvariant,
+  shouldCaptureInvariant,
+  type Invariant,
+} from '../captureInvariant'
 
 // ---------------------------------------------------------------------------
 // In-memory fetch double for /api/invariants — mirrors the real route's
@@ -108,6 +114,27 @@ describe('recordInvariant', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
+  })
+})
+
+describe('shouldCaptureInvariant', () => {
+  // Regression for a review-caught bug: the capture checkbox/text in
+  // SemanticCommitModal is derived from the PRIMARY change but is a
+  // separate control from that row's own accept/reject toggle. Confirming
+  // with the checkbox on must NOT capture the declared fact if the primary
+  // edit itself was rejected — its claim never lands in the document, and
+  // capturing it anyway would append a false, permanently unfixable
+  // (append-only) ledger row with a real but misleading provenance hash.
+  it('captures when the primary edit is among the accepted ids', () => {
+    expect(shouldCaptureInvariant(['primary-1', 'cascade-2'], 'primary-1')).toBe(true)
+  })
+
+  it('does NOT capture when the primary edit was rejected, even if a cascade edit was accepted and applied', () => {
+    expect(shouldCaptureInvariant(['cascade-2'], 'primary-1')).toBe(false)
+  })
+
+  it('does not capture when nothing was accepted', () => {
+    expect(shouldCaptureInvariant([], 'primary-1')).toBe(false)
   })
 })
 

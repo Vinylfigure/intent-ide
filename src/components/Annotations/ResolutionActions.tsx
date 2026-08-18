@@ -29,7 +29,7 @@ import {
 import { showAffectedMode } from '@/lib/annotations/showAffected'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { createCommit } from '@/lib/history/commits'
-import { recordInvariant } from '@/lib/invariants/captureInvariant'
+import { recordInvariant, shouldCaptureInvariant } from '@/lib/invariants/captureInvariant'
 import { SemanticCommitModal, type InvariantCapture } from '@/components/Editor/SemanticCommitModal'
 import type { Annotation, ConversationMessage } from '@/lib/annotations/types'
 import { SEVERITY_ORDER } from '@/lib/annotations/types'
@@ -573,7 +573,9 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
           modalDecisionsRef.current?.confirm()
           modalDecisionsRef.current = null
           commitSnapshotRef.current = null
-          pendingInvariantRef.current = invariant
+          const primaryId = primaryEdit?.id ?? annotation.id
+          pendingInvariantRef.current =
+            invariant && shouldCaptureInvariant(ids, primaryId) ? invariant : null
           applyConfirmedEdit(ids)
         }}
         onCancel={() => {
