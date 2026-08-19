@@ -1,7 +1,7 @@
 import type { EditorView } from 'prosemirror-view'
 import type { Node as PMNode } from 'prosemirror-model'
 import { getProposedAnchors } from './plugins/proposedChangePlugin'
-import { blockTextRange, findTextInDoc } from './blockIds'
+import { blockIdAtPos, blockTextRange, findTextInDoc } from './blockIds'
 
 // Compat re-export: findTextInDoc moved to blockIds.ts (the proposedChange
 // plugin needs it for re-anchoring, and importing it from here would cycle).
@@ -153,8 +153,17 @@ export function applySingleEdit(view: EditorView, edit: AdHocEdit): ApplyPropose
   // recorded.
   if (edit.targetText === edit.newText) return { ok: true, applied: [] }
 
-  const range = resolveEditRange(view.state.doc, edit)
+  const doc = view.state.doc
+  const range = resolveEditRange(doc, edit)
   if (!range.ok) return range
+
+  // Recompute blockId from where the edit actually landed rather than
+  // trusting the caller's pre-resolution guess: unlike the plugin-anchored
+  // batched path (whose blockId was captured at proposal time), this ad-hoc
+  // caller's blockId is a live guess at the ORIGINAL (possibly stale) `from`
+  // — wrong or null if that guess missed, which would otherwise misattribute
+  // the ledger/GraphRAG record to the wrong block.
+  const landedBlockId = blockIdAtPos(doc, range.from) ?? edit.blockId ?? null
 
   const applied: AppliedEdit = {
     id: edit.id,
@@ -162,7 +171,7 @@ export function applySingleEdit(view: EditorView, edit: AdHocEdit): ApplyPropose
     to: range.to,
     newText: edit.newText,
     targetText: edit.targetText,
-    blockId: edit.blockId ?? null,
+    blockId: landedBlockId,
   }
 
   let tr = view.state.tr

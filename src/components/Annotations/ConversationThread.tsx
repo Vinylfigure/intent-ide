@@ -7,6 +7,7 @@ import { useChangesStore } from '@/stores/changesStore'
 import { generateId } from '@/lib/utils/id'
 import { applySingleEdit } from '@/lib/prosemirror/applyProposedEdits'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
+import { refreshAnchorAfterApply } from '@/lib/annotations/anchoring'
 import { captureAndResolveInBackground } from '@/lib/voice/pipeline'
 import type { ConversationMessage, SuggestedEdit } from '@/lib/annotations/types'
 import { AgentMarkdown } from '@/components/ui/AgentMarkdown'
@@ -71,6 +72,12 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
       pmStep: null,
       undone: false,
     })
+
+    if (annotation) {
+      useAnnotationStore.getState().update(annotation.id, {
+        anchor: refreshAnchorAfterApply(annotation.anchor, applied),
+      })
+    }
   }
 
   return (

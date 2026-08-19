@@ -13,6 +13,25 @@ export function createAnchor(
   return { from, to, scope, text }
 }
 
+/**
+ * Re-anchors a TextAnchor to where an applied edit actually landed.
+ *
+ * `parseSuggestedEdit` always derives a fresh SUGGESTED EDIT's from/to from
+ * `annotation.anchor`, and every apply path validates that suggestion's
+ * targetText against `annotation.anchor.text` (applyProposedEdits.ts's
+ * fingerprint check) before dispatching. An annotation whose anchor never
+ * moves past its FIRST successful apply would have every later re-apply on
+ * the same thread ("Tweak it", a further per-message edit) validate against
+ * stale pre-apply text and fail-closed. `scope` is preserved — an apply never
+ * changes what range-expansion mode the annotation was created with.
+ */
+export function refreshAnchorAfterApply(
+  anchor: TextAnchor,
+  applied: { from: number; to: number; newText: string },
+): TextAnchor {
+  return { ...anchor, from: applied.from, to: applied.from + applied.newText.length, text: applied.newText }
+}
+
 // Expand a selection to its full scope
 export function expandToScope(
   state: EditorState,

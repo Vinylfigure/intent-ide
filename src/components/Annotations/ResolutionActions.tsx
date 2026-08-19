@@ -28,6 +28,7 @@ import {
 } from '@/lib/telemetry/modalDecisionBuffer'
 import { showAffectedMode } from '@/lib/annotations/showAffected'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
+import { refreshAnchorAfterApply } from '@/lib/annotations/anchoring'
 import { createCommit } from '@/lib/history/commits'
 import { recordInvariant, shouldCaptureInvariant } from '@/lib/invariants/captureInvariant'
 import { SemanticCommitModal, type InvariantCapture } from '@/components/Editor/SemanticCommitModal'
@@ -219,7 +220,19 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
       if (changeSetId) {
         useChangesStore.getState().updateChangeSetStatus(changeSetId, 'approved')
       }
-      updateAnnotation(annotation.id, { status: 'applied' })
+      // Refresh the anchor to where the PRIMARY edit landed (if it was applied
+      // — a rejected/no-op primary leaves the original text untouched, so the
+      // anchor is still valid). Without this, a later per-message "Tweak it"
+      // apply (ConversationThread.handleApplyEdit) would validate its
+      // targetText against the now-stale pre-apply anchor.text and fail-closed
+      // on every legitimate reapply.
+      const appliedPrimary = result.applied.find((ap) =>
+        proposed.some((e) => e.id === ap.id && e.relation === 'primary'),
+      )
+      updateAnnotation(annotation.id, {
+        status: 'applied',
+        ...(appliedPrimary ? { anchor: refreshAnchorAfterApply(annotation.anchor, appliedPrimary) } : {}),
+      })
       // Every accepted edit may have been a no-op (applied is empty): the doc
       // did not change, so record no version commit and say so — a "0 changes"
       // success toast or an empty ledger commit would fabricate history.
@@ -313,7 +326,10 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
       useChangesStore.getState().updateChangeSetStatus(changeSetId, 'approved')
     }
 
-    updateAnnotation(annotation.id, { status: 'applied' })
+    updateAnnotation(annotation.id, {
+      status: 'applied',
+      anchor: refreshAnchorAfterApply(annotation.anchor, applied),
+    })
     recordApplyCommit(applied.blockId ? [applied.blockId] : [])
 
     // Apply uncertainty highlights to the newly inserted text
