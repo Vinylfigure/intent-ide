@@ -220,19 +220,20 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
       if (changeSetId) {
         useChangesStore.getState().updateChangeSetStatus(changeSetId, 'approved')
       }
-      // Refresh the anchor to where the PRIMARY edit landed (if it was applied
-      // — a rejected/no-op primary leaves the original text untouched, so the
-      // anchor is still valid). Without this, a later per-message "Tweak it"
-      // apply (ConversationThread.handleApplyEdit) would validate its
-      // targetText against the now-stale pre-apply anchor.text and fail-closed
-      // on every legitimate reapply.
-      const appliedPrimary = result.applied.find((ap) =>
-        proposed.some((e) => e.id === ap.id && e.relation === 'primary'),
-      )
-      updateAnnotation(annotation.id, {
-        status: 'applied',
-        ...(appliedPrimary ? { anchor: refreshAnchorAfterApply(annotation.anchor, appliedPrimary) } : {}),
-      })
+      // NOTE: the anchor is deliberately NOT refreshed here (unlike the
+      // single-edit path below). applyProposedEdits resolves every accepted
+      // edit's from/to against the PRE-transaction doc and returns those
+      // unmapped positions in `result.applied` — correct for the ledger
+      // entry above (an explicit "resolved old range" convention), but NOT a
+      // valid live position once other edits in the same batch, positioned
+      // earlier in the doc with a different replacement length, shift
+      // everything after them. Refreshing the anchor from `appliedPrimary`
+      // here would risk writing an out-of-bounds or wrong position onto the
+      // annotation. Filed as a follow-up (task: multi-region anchor refresh)
+      // — a real fix needs the primary's true post-apply position re-derived
+      // by fingerprint match against the live doc, not trusted from
+      // `result.applied`.
+      updateAnnotation(annotation.id, { status: 'applied' })
       // Every accepted edit may have been a no-op (applied is empty): the doc
       // did not change, so record no version commit and say so — a "0 changes"
       // success toast or an empty ledger commit would fabricate history.
