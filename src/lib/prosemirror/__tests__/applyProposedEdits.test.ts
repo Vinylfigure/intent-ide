@@ -9,6 +9,7 @@ import {
   setProposedEdits,
 } from '../plugins/proposedChangePlugin'
 import { applyProposedEdits } from '../applyProposedEdits'
+import { blockTextRange, INSERTION_CONTEXT_RADIUS } from '../blockIds'
 import type { ProposedEdit } from '@/lib/annotations/types'
 
 /**
@@ -127,5 +128,97 @@ describe('applyProposedEdits — no-op exclusion (M5)', () => {
     if (!result.ok) return
     expect(result.applied.map((a) => a.id)).toEqual(['pe_real'])
     expect(view.state.doc.textContent).toBe('ALTERED beta gammadelta beta OMEGA')
+  })
+})
+
+/**
+ * Regression suite for issue #40: pure insertions (targetText === '',
+ * from === to) have no target text to fingerprint, so the textBetween check
+ * alone always trivially passes. `insertionContext` (a verbatim before/after
+ * snippet captured at proposal time) is the only apply-time drift signal for
+ * them; a mismatch must abort the whole transaction like any other edit kind.
+ */
+function captureCtx(doc: PMNode, pos: number): { before: string; after: string } {
+  return {
+    before: doc.textBetween(Math.max(0, pos - INSERTION_CONTEXT_RADIUS), pos),
+    after: doc.textBetween(pos, Math.min(doc.content.size, pos + INSERTION_CONTEXT_RADIUS)),
+  }
+}
+
+describe('applyProposedEdits — insertion context drift (issue #40)', () => {
+  it('a valid, unchanged insertion applies normally', () => {
+    const view = mount(makeDoc())
+    const insertPos = blockTextRange(view.state.doc, 'b1', 'beta')!.to // right after "beta", before " gamma"
+    const ctx = captureCtx(view.state.doc, insertPos)
+    const ins = edit({
+      id: 'pe_insert',
+      from: insertPos,
+      to: insertPos,
+      targetText: '',
+      newText: ' INSERTED',
+      relation: 'primary',
+      blockId: 'b1',
+      severity: 'must',
+      insertionContext: ctx,
+    })
+    setProposedEdits(view, [ins])
+
+    const result = applyProposedEdits(view, ['pe_insert'])
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.applied).toHaveLength(1)
+    expect(view.state.doc.textContent).toContain('beta INSERTED gamma')
+  })
+
+  it('an insertion whose captured context no longer matches the live document is rejected', () => {
+    const view = mount(makeDoc())
+    const insertPos = blockTextRange(view.state.doc, 'b1', 'beta')!.to
+    const ctx = captureCtx(view.state.doc, insertPos)
+    const ins = edit({
+      id: 'pe_insert',
+      from: insertPos,
+      to: insertPos,
+      targetText: '',
+      newText: ' INSERTED',
+      relation: 'primary',
+      blockId: 'b1',
+      severity: 'must',
+      insertionContext: ctx,
+    })
+    setProposedEdits(view, [ins])
+
+    // Mutate text elsewhere within the captured context window (but not at the
+    // insertion point itself) — the plugin still maps the anchor's position
+    // through the transaction, but the surrounding text it once matched changed.
+    const range = blockTextRange(view.state.doc, 'b1', 'alpha')!
+    view.dispatch(view.state.tr.replaceWith(range.from, range.to, view.state.schema.text('ALPHA')))
+    const before = view.state.doc
+
+    const result = applyProposedEdits(view, ['pe_insert'])
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toMatch(/surrounding text/i)
+    // Whole transaction aborted — nothing was dispatched to the document.
+    expect(view.state.doc.eq(before)).toBe(true)
+  })
+
+  it('an insertion with no captured context (legacy data) still applies unvalidated', () => {
+    const view = mount(makeDoc())
+    const insertPos = blockTextRange(view.state.doc, 'b1', 'beta')!.to
+    const ins = edit({
+      id: 'pe_insert',
+      from: insertPos,
+      to: insertPos,
+      targetText: '',
+      newText: ' INSERTED',
+      relation: 'primary',
+      blockId: 'b1',
+      severity: 'must',
+      // No insertionContext — mirrors edits created before this field existed.
+    })
+    setProposedEdits(view, [ins])
+
+    const result = applyProposedEdits(view, ['pe_insert'])
+    expect(result.ok).toBe(true)
   })
 })

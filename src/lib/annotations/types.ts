@@ -170,6 +170,13 @@ export interface ProposedEdit {
   severity: CascadeSeverity
   /** null ⇒ the proposal has no locatable citation and can never be `must`. */
   evidence: CascadeEvidence | null
+  /**
+   * Pure insertions (targetText === '', from === to) have no target text to
+   * fingerprint-validate. This captures the verbatim text immediately
+   * before/after the insertion point at proposal time, so apply-time code can
+   * still detect drift instead of trivially accepting a stale position.
+   */
+  insertionContext?: { before: string; after: string }
 }
 
 /**
