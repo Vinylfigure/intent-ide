@@ -66,6 +66,28 @@ describe('documentStore phase 8 migration and collections', () => {
     expect(secondPass.collections).toHaveLength(1)
   })
 
+  it('does not throw and still marks migration done when a legacy project has no documents array', async () => {
+    localStorage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'p1',
+            name: 'Corrupt',
+            // no `documents` key at all — malformed legacy data
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    expect(useDocumentStore.getState().hasMigratedLegacyProjects).toBe(true)
+
+    // Retrying (as would happen on the next boot) must stay a no-op, not retry forever.
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+  })
+
   it('assigns and removes documents from collections', async () => {
     const { useDocumentStore } = await loadStore()
     const store = useDocumentStore.getState()

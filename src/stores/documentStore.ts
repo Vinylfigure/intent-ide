@@ -86,7 +86,14 @@ function parseLegacyProjects(): PersistedProject[] {
     const parsed = JSON.parse(raw)
     const state = parsed?.state ?? parsed
     if (!Array.isArray(state?.projects)) return []
-    return state.projects as PersistedProject[]
+    return (state.projects as unknown[])
+      .filter((project): project is PersistedProject => !!project && typeof project === 'object')
+      .map((project) => ({
+        ...(project as PersistedProject),
+        documents: Array.isArray((project as PersistedProject).documents)
+          ? (project as PersistedProject).documents
+          : [],
+      }))
   } catch {
     return []
   }
@@ -287,75 +294,90 @@ export const useDocumentStore = create<DocumentStoreState>()(
           return
         }
 
-        const existingById = new Set(state.documents.map((doc) => doc.id))
-        const existingFingerprints = new Set(
-          state.documents.map((doc) => {
-            const docJson = state.loadDocumentJson(doc.id)
-            return buildFingerprint(doc.title, docJson)
-          })
-        )
-        const existingCollectionByName = new Map(
-          state.collections.map((collection) => [normalizeTitle(collection.name), collection])
-        )
-
-        const nextCollections = [...state.collections]
-        const nextDocuments = [...state.documents]
-
-        legacyProjects.forEach((project) => {
-          const projectName = project.name?.trim() || 'Untitled collection'
-          const normalizedProjectName = normalizeTitle(projectName)
-          let collection = existingCollectionByName.get(normalizedProjectName)
-
-          if (!collection) {
-            collection = {
-              id: generateId(),
-              name: projectName,
-              createdAt: project.createdAt ?? Date.now(),
-              updatedAt: Date.now(),
-            }
-            existingCollectionByName.set(normalizedProjectName, collection)
-            nextCollections.push(collection)
-          }
-
-          project.documents.forEach((legacyDoc) => {
-            const title = legacyDoc.name?.trim() || 'Untitled'
-            const fingerprint = buildFingerprint(title, legacyDoc.docJson)
-            if (existingById.has(legacyDoc.id) || existingFingerprints.has(fingerprint)) {
-              const existingDoc = nextDocuments.find((doc) => doc.id === legacyDoc.id)
-                ?? nextDocuments.find((doc) => {
-                  const docJson = state.loadDocumentJson(doc.id)
-                  return buildFingerprint(doc.title, docJson) === fingerprint
-                })
-
-              if (existingDoc && !(existingDoc.collectionIds ?? []).includes(collection!.id)) {
-                existingDoc.collectionIds = [...(existingDoc.collectionIds ?? []), collection!.id]
-              }
-              return
-            }
-
-            try {
-              localStorage.setItem(getDocumentStorageKey(legacyDoc.id), JSON.stringify(legacyDoc.docJson))
-            } catch {
-              // ignore storage failures for migration
-            }
-
-            nextDocuments.push({
-              id: legacyDoc.id,
-              title,
-              createdAt: legacyDoc.createdAt ?? Date.now(),
-              updatedAt: legacyDoc.createdAt ?? Date.now(),
-              collectionIds: [collection.id],
+        try {
+          const existingById = new Set(state.documents.map((doc) => doc.id))
+          const existingFingerprints = new Set(
+            state.documents.map((doc) => {
+              const docJson = state.loadDocumentJson(doc.id)
+              return buildFingerprint(doc.title, docJson)
             })
-            existingById.add(legacyDoc.id)
-            existingFingerprints.add(fingerprint)
-          })
-        })
+          )
+          const existingCollectionByName = new Map(
+            state.collections.map((collection) => [normalizeTitle(collection.name), collection])
+          )
 
-        set({
-          collections: nextCollections,
-          documents: nextDocuments,
-          hasMigratedLegacyProjects: true,
-        })
+          const nextCollections = [...state.collections]
+          const nextDocuments = [...state.documents]
+
+          legacyProjects.forEach((project) => {
+            const projectName = project.name?.trim() || 'Untitled collection'
+            const normalizedProjectName = normalizeTitle(projectName)
+            let collection = existingCollectionByName.get(normalizedProjectName)
+
+            if (!collection) {
+              collection = {
+                id: generateId(),
+                name: projectName,
+                createdAt: project.createdAt ?? Date.now(),
+                updatedAt: Date.now(),
+              }
+              existingCollectionByName.set(normalizedProjectName, collection)
+              nextCollections.push(collection)
+            }
+
+            project.documents.forEach((legacyDoc) => {
+              const title = legacyDoc.name?.trim() || 'Untitled'
+              const fingerprint = buildFingerprint(title, legacyDoc.docJson)
+              if (existingById.has(legacyDoc.id) || existingFingerprints.has(fingerprint)) {
+                const existingIndex = nextDocuments.findIndex((doc) => doc.id === legacyDoc.id)
+                const resolvedIndex =
+                  existingIndex !== -1
+                    ? existingIndex
+                    : nextDocuments.findIndex((doc) => {
+                        const docJson = state.loadDocumentJson(doc.id)
+                        return buildFingerprint(doc.title, docJson) === fingerprint
+                      })
+
+                if (resolvedIndex !== -1) {
+                  const existingDoc = nextDocuments[resolvedIndex]
+                  if (!(existingDoc.collectionIds ?? []).includes(collection!.id)) {
+                    nextDocuments[resolvedIndex] = {
+                      ...existingDoc,
+                      collectionIds: [...(existingDoc.collectionIds ?? []), collection!.id],
+                    }
+                  }
+                }
+                return
+              }
+
+              try {
+                localStorage.setItem(getDocumentStorageKey(legacyDoc.id), JSON.stringify(legacyDoc.docJson))
+              } catch {
+                // ignore storage failures for migration
+              }
+
+              nextDocuments.push({
+                id: legacyDoc.id,
+                title,
+                createdAt: legacyDoc.createdAt ?? Date.now(),
+                updatedAt: legacyDoc.createdAt ?? Date.now(),
+                collectionIds: [collection.id],
+              })
+              existingById.add(legacyDoc.id)
+              existingFingerprints.add(fingerprint)
+            })
+          })
+
+          set({
+            collections: nextCollections,
+            documents: nextDocuments,
+            hasMigratedLegacyProjects: true,
+          })
+        } catch {
+          // A malformed legacy entry must not boot-loop the app on every rehydrate;
+          // mark migration done so we never retry against data we can't recover.
+          set({ hasMigratedLegacyProjects: true })
+        }
       },
     }),
     {
