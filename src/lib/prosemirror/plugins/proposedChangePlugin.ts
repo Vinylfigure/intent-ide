@@ -35,7 +35,7 @@ export interface ProposedAnchor {
   evidence: CascadeEvidence | null
   blockId?: string
   /** See ProposedEdit.insertionContext — apply-time drift check for insertions. */
-  insertionContext?: { before: string; after: string }
+  insertionContext?: { before: string; after: string; beforeSpan: number; afterSpan: number }
   /**
    * Flow-state hold flag (reveal-flag design): `false` means the anchor is
    * tracked, mapped, status-carrying, and APPLYABLE like any other — it just

@@ -94,11 +94,27 @@ function newId(): string {
  * drift validation (see applyProposedEdits.ts) — insertions have no target
  * text to fingerprint, so this is the only signal that the surrounding
  * document still looks like it did when the insertion was proposed.
+ *
+ * `beforeSpan`/`afterSpan` record the actual POSITION distance each snippet
+ * was captured over (== INSERTION_CONTEXT_RADIUS, unless clamped by a nearby
+ * doc boundary at capture time). Apply-time validation re-derives its window
+ * from these recorded spans, not from a fresh `doc.content.size` clamp —
+ * otherwise an edit anywhere else in the document that changes the doc's
+ * total size (even far from `pos`) would grow or shrink the live window
+ * relative to what was captured and produce a spurious mismatch.
  */
-function captureInsertionContext(doc: PMNode, pos: number): { before: string; after: string } {
+export function captureInsertionContext(
+  doc: PMNode,
+  pos: number,
+): { before: string; after: string; beforeSpan: number; afterSpan: number } {
   const from = Math.max(0, pos - INSERTION_CONTEXT_RADIUS)
   const to = Math.min(doc.content.size, pos + INSERTION_CONTEXT_RADIUS)
-  return { before: doc.textBetween(from, pos), after: doc.textBetween(pos, to) }
+  return {
+    before: doc.textBetween(from, pos),
+    after: doc.textBetween(pos, to),
+    beforeSpan: pos - from,
+    afterSpan: to - pos,
+  }
 }
 
 /**

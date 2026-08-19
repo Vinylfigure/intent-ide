@@ -1,7 +1,7 @@
 import type { EditorView } from 'prosemirror-view'
 import type { Node as PMNode } from 'prosemirror-model'
 import { getProposedAnchors } from './plugins/proposedChangePlugin'
-import { blockTextRange, findTextInDoc, INSERTION_CONTEXT_RADIUS } from './blockIds'
+import { blockTextRange, findTextInDoc } from './blockIds'
 
 // Compat re-export: findTextInDoc moved to blockIds.ts (the proposedChange
 // plugin needs it for re-anchoring, and importing it from here would cycle).
@@ -47,20 +47,27 @@ export type ApplyProposedResult =
  * no target text to fingerprint-search for, so this is the only apply-time
  * drift check available for them.
  *
- * The comparison window is derived from the same fixed INSERTION_CONTEXT_RADIUS
- * position offset used at capture time (orchestrator.ts) — never from the
- * captured string's length. Doc positions include non-character boundary slots
- * at block edges, so a window crossing a block boundary yields a string shorter
- * than the position delta that produced it; inverting length back into a
- * position offset would silently misalign the window on every such crossing.
+ * The comparison window is re-derived from the RECORDED `beforeSpan`/`afterSpan`
+ * position distances (never from the captured strings' length, and never from
+ * a fresh doc-size-based radius clamp):
+ * - Length-based reconstruction breaks across block boundaries, where doc
+ *   positions include non-character slots that don't correspond to characters.
+ * - A fresh `min(doc.content.size, pos + RADIUS)` clamp breaks whenever the
+ *   document's total size changes between proposal and apply for ANY reason
+ *   (e.g. text typed far away, near the end of the doc) — the window would
+ *   silently grow or shrink to include content that didn't exist at capture
+ *   time, producing a spurious mismatch even though nothing near `pos` moved.
+ * Reusing the exact spans captured at proposal time keeps the window's SIZE
+ * stable; only its clamp to the live `doc.content.size` can shrink it, which
+ * is itself a correct drift signal (the document got shorter near `pos`).
  */
 function insertionContextMatches(
   doc: PMNode,
   pos: number,
-  ctx: { before: string; after: string },
+  ctx: { before: string; after: string; beforeSpan: number; afterSpan: number },
 ): boolean {
-  const from = Math.max(0, pos - INSERTION_CONTEXT_RADIUS)
-  const to = Math.min(doc.content.size, pos + INSERTION_CONTEXT_RADIUS)
+  const from = Math.max(0, pos - ctx.beforeSpan)
+  const to = Math.min(doc.content.size, pos + ctx.afterSpan)
   return doc.textBetween(from, pos) === ctx.before && doc.textBetween(pos, to) === ctx.after
 }
 

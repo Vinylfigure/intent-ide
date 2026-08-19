@@ -94,7 +94,7 @@ export async function runDirectEditCascade(
   // modal and can never re-apply the user's own edit — only the cascades are
   // live review subjects.
   const primary = {
-    ...primaryProposedEdit(primarySuggested, offer.blockText, offer.blockId),
+    ...primaryProposedEdit(primarySuggested, offer.blockText, offer.blockId, view.state.doc),
     status: 'rejected' as const,
   }
 

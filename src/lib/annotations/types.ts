@@ -175,8 +175,13 @@ export interface ProposedEdit {
    * fingerprint-validate. This captures the verbatim text immediately
    * before/after the insertion point at proposal time, so apply-time code can
    * still detect drift instead of trivially accepting a stale position.
+   * `beforeSpan`/`afterSpan` are the position distance each snippet was
+   * captured over — apply-time validation re-derives its window from these,
+   * not from the live document size, so an edit elsewhere in the document
+   * that merely changes its total length can't spuriously invalidate an
+   * untouched insertion. See orchestrator.ts `captureInsertionContext`.
    */
-  insertionContext?: { before: string; after: string }
+  insertionContext?: { before: string; after: string; beforeSpan: number; afterSpan: number }
 }
 
 /**
