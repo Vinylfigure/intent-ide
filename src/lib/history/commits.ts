@@ -20,6 +20,13 @@
  *
  * UI capture points go through `recordCommit`, a fire-and-forget wrapper
  * that can never block or throw into UI paths.
+ *
+ * Retention: consecutive 'direct' autosave flushes with no compliance-
+ * relevant commit ('import' | 'apply' | 'restore') between them are
+ * amended in place server-side rather than appended — an active editing
+ * session keeps exactly one 'direct' row in the chain, refreshed on every
+ * flush. 'import' | 'apply' | 'restore' commits are never amend targets and
+ * are never replaced. See docs/compliance.md.
  */
 
 import type { EditorView } from 'prosemirror-view'
@@ -143,7 +150,15 @@ async function attemptCommit(
     return { hash: head.hash, noop: true }
   }
 
-  const parentHash = head?.hash ?? null
+  // Retention (amend-in-place): a 'direct' write whose current head is ALSO
+  // an unamended 'direct' write steps into that row's place instead of
+  // appending a new one — one active-editing session keeps exactly one row
+  // in the chain, refreshed on every autosave flush, until a compliance-
+  // relevant commit ('import' | 'apply' | 'restore') lands and starts a new
+  // session. Those kinds are NEVER amend targets. See docs/compliance.md.
+  const amendTarget = params.kind === 'direct' && head?.kind === 'direct' ? head : null
+
+  const parentHash = amendTarget ? amendTarget.parentHash : (head?.hash ?? null)
   const annotationId = params.annotationId ?? null
   const auditIds = params.auditIds ?? []
   const actor = params.actor ?? 'human'
@@ -165,7 +180,8 @@ async function attemptCommit(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      action: 'commit',
+      action: amendTarget ? 'amend' : 'commit',
+      targetHash: amendTarget?.hash,
       hash,
       contentHash,
       documentId: params.documentId,

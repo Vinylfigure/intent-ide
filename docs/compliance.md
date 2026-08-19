@@ -12,10 +12,28 @@ those guarantees. Precision over promotion.
 
 **Append-only, enforced at the application layer.** The only write path is
 `POST /api/history` (`src/app/api/history/route.ts`); the API exposes no update or delete
-operations, and restores are recorded as *new* versions — history is never rewritten through the
-application. This is an application-level guarantee, not a physical one: an actor with direct
-access to the local SQLite file could remove or alter rows. Hash verification (below) makes such
-partial modification *detectable* (tamper-evident), not impossible.
+operations on compliance-relevant versions (`kind: 'import' | 'apply' | 'restore'`), and restores
+are recorded as *new* versions — history is never rewritten through the application for these
+kinds. This is an application-level guarantee, not a physical one: an actor with direct access to
+the local SQLite file could remove or alter rows. Hash verification (below) makes such partial
+modification *detectable* (tamper-evident), not impossible.
+
+**One disclosed, narrowly-scoped exception: `kind: 'direct'` retention.** `'direct'` versions
+capture autosave/doc-switch/unmount flushes of raw human typing — they carry no AI provenance and
+(by construction — see capture points below) no audit linkage. Left unbounded, an actively-edited
+document would gain a full-document-snapshot row roughly every autosave cycle, forever, in the
+shared hosted database. To bound that growth, `POST /api/history` (`action: 'amend'`) lets a new
+`'direct'` write replace the CURRENT HEAD in place *if and only if* that head is itself a
+`'direct'` commit with no child yet — i.e. one continuous, still-open editing session collapses to
+exactly one row, refreshed on every flush, until a compliance-relevant commit lands and starts a
+new session. `'import'`, `'apply'`, and `'restore'` commits are never eligible as an amend target
+(the server rejects `kind !== 'direct'` outright) and are never replaced — this exception touches
+only the retention-only, provenance-free snapshot kind. The amend path re-verifies the same
+two-level hash scheme and the same linearity invariant (the target must still be the head, checked
+again inside the delete-and-recreate transaction) as a normal append, and a target that has already
+gained a child is rejected as a stale head exactly like a forked write — the client's existing
+single-retry-on-409 logic recovers by refetching and deciding fresh whether to amend again or
+append (`src/lib/history/commits.ts`).
 
 **Two-level content addressing (git's design).** Every version stores a `contentHash` — sha256
 over the canonical document content only — and is keyed by a commit `hash` — sha256 over the
@@ -48,12 +66,15 @@ audit ledger (`AuditLog`, written via the append-only `src/app/api/audit/route.t
 flagged in the UI (`auditFailed`) and the linked version records **zero** audit ids — the gap is
 surfaced, not papered over.
 
-**Retention.** Audit records carry a `dataRetentionDays` default of 2555 days (7 years); document
-versions are retained indefinitely alongside them in the same SQLite database. Version capture
-happens contemporaneously with the action that produced it (document creation, approved AI apply,
-autosaved or flushed edit session, restore) — see `src/lib/history/commits.ts` and the capture
-points in `src/stores/documentStore.ts`, `src/components/Annotations/ResolutionActions.tsx`, and
-`src/components/Editor/EditorShell.tsx`.
+**Retention.** Audit records carry a `dataRetentionDays` default of 2555 days (7 years);
+compliance-relevant document versions (`'import' | 'apply' | 'restore'`) are retained indefinitely
+alongside them in the same SQLite database. `'direct'` versions are retained for the life of the
+editing session that produced them and then collapse to their final state under the amend-in-place
+exception above — see "One disclosed, narrowly-scoped exception" for what that does and does not
+touch. Version capture happens contemporaneously with the action that produced it (document
+creation, approved AI apply, autosaved or flushed edit session, restore) — see
+`src/lib/history/commits.ts` and the capture points in `src/stores/documentStore.ts`,
+`src/components/Annotations/ResolutionActions.tsx`, and `src/components/Editor/EditorShell.tsx`.
 
 ## Article 14 — Human oversight
 
