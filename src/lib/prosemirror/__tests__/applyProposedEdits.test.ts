@@ -8,7 +8,7 @@ import {
   createProposedChangePlugin,
   setProposedEdits,
 } from '../plugins/proposedChangePlugin'
-import { applyProposedEdits } from '../applyProposedEdits'
+import { applyProposedEdits, applySingleEdit } from '../applyProposedEdits'
 import type { ProposedEdit } from '@/lib/annotations/types'
 
 /**
@@ -127,5 +127,98 @@ describe('applyProposedEdits — no-op exclusion (M5)', () => {
     if (!result.ok) return
     expect(result.applied.map((a) => a.id)).toEqual(['pe_real'])
     expect(view.state.doc.textContent).toBe('ALTERED beta gammadelta beta OMEGA')
+  })
+})
+
+/**
+ * #42: the single-suggestion apply paths (ResolutionActions.applyConfirmedEdit's
+ * fallback, ConversationThread.handleApplyEdit) never went through
+ * applyProposedEdits at all — a raw, unvalidated replaceWith with no re-check
+ * that the live doc still matched what was proposed. applySingleEdit gives
+ * those call sites the identical fail-closed fingerprint/block-scoped-recovery
+ * contract, for one ad-hoc edit that isn't registered in the plugin's anchors.
+ */
+describe('applySingleEdit — drift validation for the single-suggestion apply path (#42)', () => {
+  it('applies cleanly when the live range still matches targetText', () => {
+    const view = mount(makeDoc())
+    const before = view.state.doc
+
+    const result = applySingleEdit(view, {
+      id: 'single_1',
+      from: 1,
+      to: 17,
+      newText: 'ALPHA BETA GAMMA',
+      targetText: 'alpha beta gamma',
+      blockId: 'b1',
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.applied).toHaveLength(1)
+    expect(result.applied[0]).toMatchObject({ id: 'single_1', from: 1, to: 17, newText: 'ALPHA BETA GAMMA' })
+    expect(view.state.doc.textContent).toBe('ALPHA BETA GAMMAdelta beta omega')
+    expect(view.state.doc.eq(before)).toBe(false)
+  })
+
+  it('recovers by block-scoped fingerprint when the stored range has drifted', () => {
+    const view = mount(makeDoc())
+    // "omega" really lives at 30..35 in b2, but the caller's stored range is
+    // stale (e.g. an earlier apply in the same session shifted positions) —
+    // this mirrors the applyProposedEdits recovery path, now exercised for a
+    // single ad-hoc edit with no plugin anchor to remap it.
+    const result = applySingleEdit(view, {
+      id: 'single_2',
+      from: 0,
+      to: 0,
+      newText: 'OMEGA',
+      targetText: 'omega',
+      blockId: 'b2',
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.applied[0]).toMatchObject({ from: 30, to: 35, newText: 'OMEGA' })
+    expect(view.state.doc.textContent).toBe('alpha beta gammadelta beta OMEGA')
+  })
+
+  it('aborts — never misapplies — when targetText can no longer be found anywhere', () => {
+    const view = mount(makeDoc())
+    const before = view.state.doc
+    const dispatchesBefore = dispatchCount
+
+    const result = applySingleEdit(view, {
+      id: 'single_3',
+      from: 1,
+      to: 17,
+      newText: 'REPLACEMENT',
+      targetText: 'this text was never in the document',
+      blockId: 'b1',
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toMatch(/could not safely place/i)
+    // Fail-closed: no partial/wrong-range mutation, no dispatch at all.
+    expect(view.state.doc.eq(before)).toBe(true)
+    expect(dispatchCount).toBe(dispatchesBefore)
+  })
+
+  it('a no-op (targetText === newText) applies nothing and dispatches nothing', () => {
+    const view = mount(makeDoc())
+    const before = view.state.doc
+    const dispatchesBefore = dispatchCount
+
+    const result = applySingleEdit(view, {
+      id: 'single_4',
+      from: 1,
+      to: 17,
+      newText: 'alpha beta gamma',
+      targetText: 'alpha beta gamma',
+      blockId: 'b1',
+    })
+
+    expect(result).toEqual({ ok: true, applied: [] })
+    expect(view.state.doc.eq(before)).toBe(true)
+    expect(dispatchCount).toBe(dispatchesBefore)
   })
 })

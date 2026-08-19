@@ -19,7 +19,7 @@ import {
   restoreCommitReview,
   type CommitStatusSnapshot,
 } from '@/lib/annotations/commitStatusSnapshot'
-import { AI_APPLY_META, applyProposedEdits } from '@/lib/prosemirror/applyProposedEdits'
+import { AI_APPLY_META, applyProposedEdits, applySingleEdit } from '@/lib/prosemirror/applyProposedEdits'
 import { recordCascadeDecision } from '@/lib/telemetry/cascadeCalibration'
 import {
   createModalDecisionBuffer,
@@ -259,18 +259,39 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     const edit = annotation.resolution?.suggestedEdit
     if (!edit || !view) return
 
-    // Resolve the touched block before the positions shift under the apply.
-    const editedBlockId = blockIdAtPos(view.state.doc, edit.from)
-
-    // Apply the edit to the document. AI_APPLY_META keeps the direct-edit
-    // cascade trigger from re-offering a cascade on this AI-driven write.
-    const tr = view.state.tr.replaceWith(
-      edit.from,
-      edit.to,
-      view.state.schema.text(edit.newText)
-    )
-    tr.setMeta(AI_APPLY_META, true)
-    view.dispatch(tr)
+    // Same fail-closed fingerprint/block-scoped-recovery validation the
+    // multi-region path gets from applyProposedEdits — this single-suggestion
+    // path previously dispatched a raw, unvalidated replaceWith, so a document
+    // that changed since the edit was proposed could silently misapply.
+    const result = applySingleEdit(view, {
+      id: annotation.id,
+      from: edit.from,
+      to: edit.to,
+      newText: edit.newText,
+      targetText: annotation.anchor.text,
+      blockId: blockIdAtPos(view.state.doc, edit.from) ?? undefined,
+    })
+    if (!result.ok) {
+      pendingInvariantRef.current = null
+      useToastStore.getState().addToast(result.reason, 'error')
+      setShowDiffModal(false)
+      setPendingHandler(null)
+      return
+    }
+    if (result.applied.length === 0) {
+      // No-op: the target already matches newText — nothing was dispatched,
+      // so recording a version/change entry would fabricate history.
+      pendingInvariantRef.current = null
+      updateAnnotation(annotation.id, { status: 'applied' })
+      useToastStore.getState().addToast(
+        'No changes were needed — the text already matches',
+        'info',
+      )
+      setShowDiffModal(false)
+      setPendingHandler(null)
+      return
+    }
+    const applied = result.applied[0]
 
     // Record the change
     useChangesStore.getState().addEntry({
@@ -280,10 +301,10 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
       annotationId: annotation.id,
       timestamp: Date.now(),
       description: `${annotation.type}: ${annotation.transcript.slice(0, 50)}`,
-      beforeSlice: annotation.anchor.text,
-      afterSlice: edit.newText,
-      from: edit.from,
-      to: edit.to,
+      beforeSlice: applied.targetText,
+      afterSlice: applied.newText,
+      from: applied.from,
+      to: applied.to,
       pmStep: null,
       undone: false,
     })
@@ -293,26 +314,26 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     }
 
     updateAnnotation(annotation.id, { status: 'applied' })
-    recordApplyCommit(editedBlockId ? [editedBlockId] : [])
+    recordApplyCommit(applied.blockId ? [applied.blockId] : [])
 
     // Apply uncertainty highlights to the newly inserted text
-    const newTo = edit.from + edit.newText.length
+    const newTo = applied.from + applied.newText.length
     if (annotation.resolution?.logprobs?.content) {
-      applyUncertaintyFromLogprobs(view, annotation.resolution.logprobs, edit.from, newTo)
+      applyUncertaintyFromLogprobs(view, annotation.resolution.logprobs, applied.from, newTo)
     } else if (annotation.resolution?.uncertaintyFlags?.length) {
-      applyUncertaintyFromFlags(view, annotation.resolution.uncertaintyFlags, edit.from, newTo)
+      applyUncertaintyFromFlags(view, annotation.resolution.uncertaintyFlags, applied.from, newTo)
     }
 
     // Ingest the edit into GraphRAG (non-blocking)
     ingestEditEpisode(
       annotation.id,
-      annotation.anchor.text,
-      edit.newText,
+      applied.targetText,
+      applied.newText,
       `${annotation.type}: ${annotation.transcript.slice(0, 50)}`,
     )
 
     // GraphRAG-powered cascade check (falls back to keyword if MCP unavailable)
-    runCascadeCheck(view, annotation.anchor.text, edit.newText, edit.from).then(
+    runCascadeCheck(view, applied.targetText, applied.newText, applied.from).then(
       (result) => {
         if (result.count > 0) {
           const source = result.usedGraphRAG ? 'knowledge graph' : 'keyword analysis'
