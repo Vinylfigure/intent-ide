@@ -79,6 +79,18 @@ function buildFingerprint(title: string, docJson: unknown): string {
   return `${normalizeTitle(title)}::${JSON.stringify(docJson)}`
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function sanitizeLegacyDocuments(documents: unknown): PersistedProjectDocument[] {
+  if (!Array.isArray(documents)) return []
+  return documents.filter(
+    (doc): doc is PersistedProjectDocument =>
+      isPlainObject(doc) && typeof doc.id === 'string' && doc.id.length > 0
+  )
+}
+
 function parseLegacyProjects(): PersistedProject[] {
   try {
     const raw = localStorage.getItem(LEGACY_PROJECTS_KEY)
@@ -86,16 +98,24 @@ function parseLegacyProjects(): PersistedProject[] {
     const parsed = JSON.parse(raw)
     const state = parsed?.state ?? parsed
     if (!Array.isArray(state?.projects)) return []
-    return (state.projects as unknown[])
-      .filter((project): project is PersistedProject => !!project && typeof project === 'object')
-      .map((project) => ({
-        ...(project as PersistedProject),
-        documents: Array.isArray((project as PersistedProject).documents)
-          ? (project as PersistedProject).documents
-          : [],
-      }))
+    return (state.projects as unknown[]).filter(isPlainObject).map((project) => ({
+      ...(project as unknown as PersistedProject),
+      documents: sanitizeLegacyDocuments((project as unknown as PersistedProject).documents),
+    }))
   } catch {
     return []
+  }
+}
+
+// The persist middleware applies a set()'s in-memory state before attempting the
+// localStorage write-through, so a write failure (e.g. QuotaExceededError) here never
+// loses the intended state change — only the persistence side-effect fails, and it must
+// not escape as an uncaught error.
+function safeSet(fn: () => void) {
+  try {
+    fn()
+  } catch {
+    // ignore persist write-through failures
   }
 }
 
@@ -290,7 +310,7 @@ export const useDocumentStore = create<DocumentStoreState>()(
 
         const legacyProjects = parseLegacyProjects()
         if (legacyProjects.length === 0) {
-          set({ hasMigratedLegacyProjects: true })
+          safeSet(() => set({ hasMigratedLegacyProjects: true }))
           return
         }
 
@@ -310,73 +330,81 @@ export const useDocumentStore = create<DocumentStoreState>()(
           const nextDocuments = [...state.documents]
 
           legacyProjects.forEach((project) => {
-            const projectName = project.name?.trim() || 'Untitled collection'
-            const normalizedProjectName = normalizeTitle(projectName)
-            let collection = existingCollectionByName.get(normalizedProjectName)
+            // Isolated per project: one malformed legacy project must not discard
+            // migration progress already accumulated from its well-formed siblings.
+            try {
+              const projectName = project.name?.trim() || 'Untitled collection'
+              const normalizedProjectName = normalizeTitle(projectName)
+              let collection = existingCollectionByName.get(normalizedProjectName)
 
-            if (!collection) {
-              collection = {
-                id: generateId(),
-                name: projectName,
-                createdAt: project.createdAt ?? Date.now(),
-                updatedAt: Date.now(),
+              if (!collection) {
+                collection = {
+                  id: generateId(),
+                  name: projectName,
+                  createdAt: project.createdAt ?? Date.now(),
+                  updatedAt: Date.now(),
+                }
+                existingCollectionByName.set(normalizedProjectName, collection)
+                nextCollections.push(collection)
               }
-              existingCollectionByName.set(normalizedProjectName, collection)
-              nextCollections.push(collection)
-            }
 
-            project.documents.forEach((legacyDoc) => {
-              const title = legacyDoc.name?.trim() || 'Untitled'
-              const fingerprint = buildFingerprint(title, legacyDoc.docJson)
-              if (existingById.has(legacyDoc.id) || existingFingerprints.has(fingerprint)) {
-                const existingIndex = nextDocuments.findIndex((doc) => doc.id === legacyDoc.id)
-                const resolvedIndex =
-                  existingIndex !== -1
-                    ? existingIndex
-                    : nextDocuments.findIndex((doc) => {
-                        const docJson = state.loadDocumentJson(doc.id)
-                        return buildFingerprint(doc.title, docJson) === fingerprint
-                      })
+              project.documents.forEach((legacyDoc) => {
+                const title = legacyDoc.name?.trim() || 'Untitled'
+                const fingerprint = buildFingerprint(title, legacyDoc.docJson)
+                if (existingById.has(legacyDoc.id) || existingFingerprints.has(fingerprint)) {
+                  const existingIndex = nextDocuments.findIndex((doc) => doc.id === legacyDoc.id)
+                  const resolvedIndex =
+                    existingIndex !== -1
+                      ? existingIndex
+                      : nextDocuments.findIndex((doc) => {
+                          const docJson = state.loadDocumentJson(doc.id)
+                          return buildFingerprint(doc.title, docJson) === fingerprint
+                        })
 
-                if (resolvedIndex !== -1) {
-                  const existingDoc = nextDocuments[resolvedIndex]
-                  if (!(existingDoc.collectionIds ?? []).includes(collection!.id)) {
-                    nextDocuments[resolvedIndex] = {
-                      ...existingDoc,
-                      collectionIds: [...(existingDoc.collectionIds ?? []), collection!.id],
+                  if (resolvedIndex !== -1) {
+                    const existingDoc = nextDocuments[resolvedIndex]
+                    if (!(existingDoc.collectionIds ?? []).includes(collection!.id)) {
+                      nextDocuments[resolvedIndex] = {
+                        ...existingDoc,
+                        collectionIds: [...(existingDoc.collectionIds ?? []), collection!.id],
+                      }
                     }
                   }
+                  return
                 }
-                return
-              }
 
-              try {
-                localStorage.setItem(getDocumentStorageKey(legacyDoc.id), JSON.stringify(legacyDoc.docJson))
-              } catch {
-                // ignore storage failures for migration
-              }
+                try {
+                  localStorage.setItem(getDocumentStorageKey(legacyDoc.id), JSON.stringify(legacyDoc.docJson))
+                } catch {
+                  // ignore storage failures for migration
+                }
 
-              nextDocuments.push({
-                id: legacyDoc.id,
-                title,
-                createdAt: legacyDoc.createdAt ?? Date.now(),
-                updatedAt: legacyDoc.createdAt ?? Date.now(),
-                collectionIds: [collection.id],
+                nextDocuments.push({
+                  id: legacyDoc.id,
+                  title,
+                  createdAt: legacyDoc.createdAt ?? Date.now(),
+                  updatedAt: legacyDoc.createdAt ?? Date.now(),
+                  collectionIds: [collection.id],
+                })
+                existingById.add(legacyDoc.id)
+                existingFingerprints.add(fingerprint)
               })
-              existingById.add(legacyDoc.id)
-              existingFingerprints.add(fingerprint)
-            })
+            } catch {
+              // skip this project; siblings already accumulated in nextCollections/nextDocuments survive
+            }
           })
 
-          set({
-            collections: nextCollections,
-            documents: nextDocuments,
-            hasMigratedLegacyProjects: true,
-          })
+          safeSet(() =>
+            set({
+              collections: nextCollections,
+              documents: nextDocuments,
+              hasMigratedLegacyProjects: true,
+            })
+          )
         } catch {
-          // A malformed legacy entry must not boot-loop the app on every rehydrate;
-          // mark migration done so we never retry against data we can't recover.
-          set({ hasMigratedLegacyProjects: true })
+          // Something failed outside the per-project isolation above; never retry
+          // forever against data we can't recover.
+          safeSet(() => set({ hasMigratedLegacyProjects: true }))
         }
       },
     }),

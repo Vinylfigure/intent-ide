@@ -88,6 +88,78 @@ describe('documentStore phase 8 migration and collections', () => {
     expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
   })
 
+  it('drops a malformed document element (null) without losing a well-formed sibling document in the same project', async () => {
+    localStorage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'p1',
+            name: 'Mixed',
+            documents: [
+              null,
+              { id: 'legacy-doc-ok', name: 'Good Doc', docJson: { type: 'doc', content: [] } },
+            ],
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    const state = useDocumentStore.getState()
+    expect(state.hasMigratedLegacyProjects).toBe(true)
+    expect(state.documents.find((d) => d.id === 'legacy-doc-ok')).toBeTruthy()
+  })
+
+  it('does not lose a clean sibling project when another legacy project in the same array is malformed', async () => {
+    localStorage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'good1',
+            name: 'Good',
+            documents: [{ id: 'legacy-doc-good', name: 'Doc1', docJson: { type: 'doc', content: [] } }],
+          },
+          {
+            id: 'bad1',
+            name: 'Bad',
+            documents: [null],
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    const state = useDocumentStore.getState()
+    expect(state.hasMigratedLegacyProjects).toBe(true)
+    expect(state.documents.find((d) => d.id === 'legacy-doc-good')).toBeTruthy()
+    expect(state.collections.some((c) => c.name === 'Good')).toBe(true)
+  })
+
+  it('drops a document element missing a valid id instead of migrating it as id: undefined', async () => {
+    localStorage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'p1',
+            name: 'NoId',
+            documents: [{ name: 'Missing id', docJson: { type: 'doc', content: [] } }],
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    const state = useDocumentStore.getState()
+    expect(state.hasMigratedLegacyProjects).toBe(true)
+    expect(state.documents.some((d) => d.id === undefined || d.id === 'undefined')).toBe(false)
+  })
+
   it('assigns and removes documents from collections', async () => {
     const { useDocumentStore } = await loadStore()
     const store = useDocumentStore.getState()
