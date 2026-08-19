@@ -73,34 +73,68 @@ function performDelete({ where }: any): Row {
 }
 
 /**
+ * A real (macrotask) tick, not just a microtask — wide enough that two
+ * concurrent requests' DB calls reliably interleave regardless of how fast
+ * an unrelated real async op (e.g. WebCrypto hashing) happens to resolve in
+ * this environment. Without this, a race test can pass "by accident": both
+ * requests' non-transactional reads might happen to run back-to-back before
+ * either write lands, hiding a real TOCTOU gap instead of exercising it.
+ */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+/**
  * Function declaration (not `const`) so it is safe to reference from inside
  * the `vi.mock` factory below regardless of Vitest's hoisting of that call —
  * function declarations are fully hoisted with their body, unlike `const`.
  */
 function makeDocCommitClient() {
   return {
-    findUnique: async ({ where }: any) => rows.find((r) => r.hash === where.hash) ?? null,
-    findFirst: async ({ where }: any) => rows.find((r) => matches(r, where)) ?? null,
+    findUnique: async ({ where }: any) => {
+      await tick()
+      return rows.find((r) => r.hash === where.hash) ?? null
+    },
+    findFirst: async ({ where }: any) => {
+      await tick()
+      return rows.find((r) => matches(r, where)) ?? null
+    },
     findMany: async (args: any) => {
+      await tick()
       lastFindManyArgs = args
       return rows
         .filter((r) => matches(r, args.where))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
         .slice(0, args.take)
     },
-    create: async (args: any) => performCreate(args),
-    delete: async (args: any) => performDelete(args),
+    create: async (args: any) => {
+      await tick()
+      return performCreate(args)
+    },
+    delete: async (args: any) => {
+      await tick()
+      return performDelete(args)
+    },
   }
+}
+
+/**
+ * Serializes concurrent `$transaction` callbacks so at most one runs at a
+ * time, start to finish — the same atomicity guarantee real Prisma gets from
+ * SQLite. Without this, two callbacks invoked via `Promise.all` could
+ * interleave their internal `await`s (e.g. both read the target row before
+ * either deletes it), which a real DB transaction would never allow and
+ * which would make a concurrency test non-representative of production.
+ */
+let txQueue: Promise<unknown> = Promise.resolve()
+function runTransaction(fn: (tx: unknown) => Promise<unknown>) {
+  const run = txQueue.then(() => fn({ docCommit: makeDocCommitClient() }))
+  txQueue = run.catch(() => undefined)
+  return run
 }
 
 vi.mock('@/lib/db', () => ({
   prisma: {
     docCommit: makeDocCommitClient(),
-    // Interactive-transaction double: the fake store is single-threaded and
-    // every op below resolves synchronously-in-effect, so running the
-    // callback against the SAME client is sufficient to test the route's
-    // "re-check inside the transaction" logic without a real DB.
-    $transaction: async (fn: any) => fn({ docCommit: makeDocCommitClient() }),
+    $transaction: (fn: any) => runTransaction(fn),
   },
 }))
 
@@ -112,6 +146,7 @@ beforeEach(() => {
   clock = 0
   loseCreateRaceOnce = false
   lastFindManyArgs = null
+  txQueue = Promise.resolve()
 })
 
 // ---------------------------------------------------------------------------
@@ -463,6 +498,37 @@ describe("POST /api/history — action: 'amend'", () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ hash: amendBody.hash, existing: true })
     expect(rows).toHaveLength(2)
+  })
+
+  it('two concurrent amends of the SAME target: one wins 200, the other gets 409 stale-head (never a 500)', async () => {
+    const root = await seedRoot()
+    const directBody = await validBody(docJsonWithText('v1'), { parentHash: root })
+    expect((await POST(postRequest(directBody))).status).toBe(200)
+    const target = rows[1]
+
+    // Two independent writers (e.g. two tabs) both amending the same head at
+    // once. Before the fix, the second request's transaction would find the
+    // target already deleted by the first and throw an uncaught "record to
+    // delete does not exist" — an unhandled 500 instead of the documented
+    // 409 the client's retry logic knows how to recover from.
+    const amendA = await validAmendBody(target, docJsonWithText('from tab A'))
+    const amendB = await validAmendBody(target, docJsonWithText('from tab B'))
+    const [resA, resB] = await Promise.all([
+      POST(postRequest(amendA)),
+      POST(postRequest(amendB)),
+    ])
+
+    const statuses = [resA.status, resB.status].sort()
+    expect(statuses).toEqual([200, 409])
+    const [winner, loser] = resA.status === 200 ? [resA, resB] : [resB, resA]
+    expect(await loser.json()).toMatchObject({ reason: 'stale-head' })
+    const winnerBody = await winner.json()
+
+    // Exactly one row replaced the target — no orphan, no duplicate, no
+    // partially-applied delete-without-create (or vice versa).
+    expect(rows).toHaveLength(2)
+    expect(rows.find((r) => r.hash === target.hash)).toBeUndefined()
+    expect(rows.find((r) => r.hash === winnerBody.hash)).toBeDefined()
   })
 
   it("400s when a self-consistent payload's parentHash does not match the target's own parent", async () => {

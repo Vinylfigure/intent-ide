@@ -333,6 +333,8 @@ export async function POST(request: NextRequest) {
 
 /** Internal signal: the amend target stopped being the head inside the transaction. */
 class AmendStaleHeadError extends Error {}
+/** Internal signal: the amend target exists but fails a structural precondition (400, not 409). */
+class AmendInvalidTargetError extends Error {}
 
 /**
  * action: 'amend' — retention-only in-place replacement of a 'direct' commit.
@@ -348,6 +350,20 @@ class AmendStaleHeadError extends Error {}
  * existing single-retry-on-409 logic recovers by refetching the head and
  * deciding fresh whether to amend again or append. 'import' | 'apply' |
  * 'restore' commits are never touched by this path.
+ *
+ * The target lookup and every check that depends on it (kind, parentHash
+ * consistency, "does it already have a child") run INSIDE the `$transaction`
+ * callback below, not before it — an earlier version read the target once
+ * outside the transaction and only re-checked for a child inside it, which
+ * left a real gap: a second concurrent amend of the SAME target could delete
+ * it out from under the first request between that outer read and the
+ * transaction's delete, turning a normal, recoverable stale-head race into
+ * an unhandled 500 ("record to delete does not exist") instead of the
+ * documented 409 the client's retry logic expects. Doing the whole
+ * read-decide-write sequence atomically closes that gap: whichever
+ * concurrent amend's transaction commits first wins, and the other's target
+ * lookup — now inside its own transaction — correctly finds the row already
+ * gone and reports 409 stale-head like any other race.
  */
 async function handleAmend(params: Record<string, unknown>) {
   const documentId = typeof params.documentId === 'string' ? params.documentId : ''
@@ -434,30 +450,20 @@ async function handleAmend(params: Record<string, unknown>) {
     return NextResponse.json({ hash: existing.hash, existing: true })
   }
 
-  const target = await prisma.docCommit.findFirst({ where: { hash: targetHash, documentId } })
-  if (!target) {
-    // Most likely cause: another writer already amended or superseded this
-    // row. Same recovery as a normal fork race — refetch head and retry.
-    return NextResponse.json(
-      { error: 'Amend target not found', reason: 'stale-head' },
-      { status: 409 },
-    )
-  }
-  if (target.kind !== 'direct') {
-    return NextResponse.json({ error: 'Amend target is not a direct commit' }, { status: 400 })
-  }
-  if (parentHash !== target.parentHash) {
-    return NextResponse.json(
-      { error: "parentHash must match the amend target's own parent" },
-      { status: 400 },
-    )
-  }
-
   try {
     const record = await prisma.$transaction(async (tx) => {
-      // Re-verify inside the transaction: the target could have gained a
-      // child (an 'apply'/'import'/'restore' or a racing amend) in the gap
-      // between the read above and this write.
+      // The target lookup and every check derived from it run HERE, inside
+      // the transaction — see the function doc comment for why an earlier
+      // outer-then-inner split left a real TOCTOU gap.
+      const target = await tx.docCommit.findFirst({ where: { hash: targetHash, documentId } })
+      if (!target) throw new AmendStaleHeadError() // superseded before we could even read it
+      if (target.kind !== 'direct') throw new AmendInvalidTargetError('not-direct')
+      if (parentHash !== target.parentHash) throw new AmendInvalidTargetError('parent-mismatch')
+
+      // A concurrent writer could still have appended a child (an
+      // 'apply'/'import'/'restore' or a racing amend's new row) onto this
+      // exact target between two callers both finding it present above —
+      // that's a distinct interleaving from "target already deleted".
       const child = await tx.docCommit.findFirst({
         where: { documentId, parentHash: target.hash },
         select: { hash: true },
@@ -492,6 +498,17 @@ async function handleAmend(params: Record<string, unknown>) {
           reason: 'stale-head',
         },
         { status: 409 },
+      )
+    }
+    if (amendErr instanceof AmendInvalidTargetError) {
+      return NextResponse.json(
+        {
+          error:
+            amendErr.message === 'parent-mismatch'
+              ? "parentHash must match the amend target's own parent"
+              : 'Amend target is not a direct commit',
+        },
+        { status: 400 },
       )
     }
     // A concurrent identical amend can race past the checks above and

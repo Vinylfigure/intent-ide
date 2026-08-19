@@ -33,7 +33,19 @@ two-level hash scheme and the same linearity invariant (the target must still be
 again inside the delete-and-recreate transaction) as a normal append, and a target that has already
 gained a child is rejected as a stale head exactly like a forked write — the client's existing
 single-retry-on-409 logic recovers by refetching and deciding fresh whether to amend again or
-append (`src/lib/history/commits.ts`).
+append (`src/lib/history/commits.ts`). The whole read-target / validate / check-for-a-child /
+delete / create sequence runs inside one `$transaction`, so a second concurrent amend of the same
+target is either serialized cleanly after the first (and correctly told to retry) or never observes
+a half-applied state — never a corrupted or orphaned chain link.
+
+Disclosed limitation: "the head is a `'direct'` commit" is used as a proxy for "this write
+continues the same editing session," but it isn't proof of that — it only proves no
+compliance-relevant commit has landed since. Two genuinely different writers (e.g. two browser tabs
+open on the same document) both autosaving `'direct'` commits will amend over each other with no
+merge; whichever flush lands last wins, and the other's snapshot is discarded with no signal to
+either tab. This is judged acceptable because `'direct'` commits carry no compliance weight by
+design (no AI provenance, no audit linkage) — but it is a real, disclosed weakening of the ledger's
+usefulness for reconstructing concurrent-editing history, not merely a hypothetical.
 
 **Two-level content addressing (git's design).** Every version stores a `contentHash` — sha256
 over the canonical document content only — and is keyed by a commit `hash` — sha256 over the
