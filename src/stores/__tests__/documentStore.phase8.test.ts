@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 class MemoryStorage {
-  private store = new Map<string, string>()
+  protected store = new Map<string, string>()
 
   getItem(key: string) {
     return this.store.get(key) ?? null
@@ -17,6 +17,21 @@ class MemoryStorage {
 
   clear() {
     this.store.clear()
+  }
+}
+
+class QuotaExceededOnKeyStorage extends MemoryStorage {
+  constructor(private readonly failingKey: string) {
+    super()
+  }
+
+  setItem(key: string, value: string) {
+    if (key === this.failingKey) {
+      const err = new Error('QuotaExceededError')
+      err.name = 'QuotaExceededError'
+      throw err
+    }
+    super.setItem(key, value)
   }
 }
 
@@ -158,6 +173,56 @@ describe('documentStore phase 8 migration and collections', () => {
     const state = useDocumentStore.getState()
     expect(state.hasMigratedLegacyProjects).toBe(true)
     expect(state.documents.some((d) => d.id === undefined || d.id === 'undefined')).toBe(false)
+  })
+
+  it('drops a document with a malformed name (non-string) without losing a well-formed sibling document', async () => {
+    localStorage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'p1',
+            name: 'BadName',
+            documents: [
+              { id: 'bad-name-doc', name: 42, docJson: { type: 'doc', content: [] } },
+              { id: 'good-doc-after', name: 'Should Survive', docJson: { type: 'doc', content: [] } },
+            ],
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    const state = useDocumentStore.getState()
+    expect(state.hasMigratedLegacyProjects).toBe(true)
+    expect(state.documents.find((d) => d.id === 'good-doc-after')).toBeTruthy()
+  })
+
+  it('completes the migration in memory even when the store persist write-through hits a quota error', async () => {
+    const storage = new QuotaExceededOnKeyStorage('intent-ide-documents')
+    vi.stubGlobal('localStorage', storage)
+
+    storage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'p1',
+            name: 'Quota',
+            documents: [{ id: 'legacy-doc-quota', name: 'Doc', docJson: { type: 'doc', content: [] } }],
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    const state = useDocumentStore.getState()
+    // In-memory state reflects the completed migration even though persisting the
+    // zustand-managed 'intent-ide-documents' key itself failed (quota exceeded).
+    expect(state.hasMigratedLegacyProjects).toBe(true)
+    expect(state.documents.find((d) => d.id === 'legacy-doc-quota')).toBeTruthy()
   })
 
   it('assigns and removes documents from collections', async () => {

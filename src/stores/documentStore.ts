@@ -107,10 +107,14 @@ function parseLegacyProjects(): PersistedProject[] {
   }
 }
 
-// The persist middleware applies a set()'s in-memory state before attempting the
-// localStorage write-through, so a write failure (e.g. QuotaExceededError) here never
-// loses the intended state change — only the persistence side-effect fails, and it must
-// not escape as an uncaught error.
+// This store's persist config uses the default synchronous localStorage-backed storage
+// (no custom `storage`/serialize/deserialize), so zustand's wrapped set() applies the
+// in-memory state update first and only then attempts the synchronous localStorage
+// write-through (see zustand's persist middleware `newImpl`). A write failure (e.g.
+// QuotaExceededError) therefore never loses the intended state change — only the
+// persistence side-effect fails — and it must not escape as an uncaught error. (If this
+// store's persist config ever adopts a custom async storage adapter, this guarantee
+// would need re-verifying against that adapter's error-propagation behavior.)
 function safeSet(fn: () => void) {
   try {
     fn()
@@ -349,45 +353,53 @@ export const useDocumentStore = create<DocumentStoreState>()(
               }
 
               project.documents.forEach((legacyDoc) => {
-                const title = legacyDoc.name?.trim() || 'Untitled'
-                const fingerprint = buildFingerprint(title, legacyDoc.docJson)
-                if (existingById.has(legacyDoc.id) || existingFingerprints.has(fingerprint)) {
-                  const existingIndex = nextDocuments.findIndex((doc) => doc.id === legacyDoc.id)
-                  const resolvedIndex =
-                    existingIndex !== -1
-                      ? existingIndex
-                      : nextDocuments.findIndex((doc) => {
-                          const docJson = state.loadDocumentJson(doc.id)
-                          return buildFingerprint(doc.title, docJson) === fingerprint
-                        })
+                // Isolated per document too: an id-level-valid but otherwise malformed
+                // entry (e.g. a non-string `name`, an unserializable `docJson`) must not
+                // take its later well-formed siblings in this same project down with it.
+                try {
+                  const rawName = typeof legacyDoc.name === 'string' ? legacyDoc.name : ''
+                  const title = rawName.trim() || 'Untitled'
+                  const fingerprint = buildFingerprint(title, legacyDoc.docJson)
+                  if (existingById.has(legacyDoc.id) || existingFingerprints.has(fingerprint)) {
+                    const existingIndex = nextDocuments.findIndex((doc) => doc.id === legacyDoc.id)
+                    const resolvedIndex =
+                      existingIndex !== -1
+                        ? existingIndex
+                        : nextDocuments.findIndex((doc) => {
+                            const docJson = state.loadDocumentJson(doc.id)
+                            return buildFingerprint(doc.title, docJson) === fingerprint
+                          })
 
-                  if (resolvedIndex !== -1) {
-                    const existingDoc = nextDocuments[resolvedIndex]
-                    if (!(existingDoc.collectionIds ?? []).includes(collection!.id)) {
-                      nextDocuments[resolvedIndex] = {
-                        ...existingDoc,
-                        collectionIds: [...(existingDoc.collectionIds ?? []), collection!.id],
+                    if (resolvedIndex !== -1) {
+                      const existingDoc = nextDocuments[resolvedIndex]
+                      if (!(existingDoc.collectionIds ?? []).includes(collection!.id)) {
+                        nextDocuments[resolvedIndex] = {
+                          ...existingDoc,
+                          collectionIds: [...(existingDoc.collectionIds ?? []), collection!.id],
+                        }
                       }
                     }
+                    return
                   }
-                  return
-                }
 
-                try {
-                  localStorage.setItem(getDocumentStorageKey(legacyDoc.id), JSON.stringify(legacyDoc.docJson))
+                  try {
+                    localStorage.setItem(getDocumentStorageKey(legacyDoc.id), JSON.stringify(legacyDoc.docJson))
+                  } catch {
+                    // ignore storage failures for migration
+                  }
+
+                  nextDocuments.push({
+                    id: legacyDoc.id,
+                    title,
+                    createdAt: legacyDoc.createdAt ?? Date.now(),
+                    updatedAt: legacyDoc.createdAt ?? Date.now(),
+                    collectionIds: [collection.id],
+                  })
+                  existingById.add(legacyDoc.id)
+                  existingFingerprints.add(fingerprint)
                 } catch {
-                  // ignore storage failures for migration
+                  // skip this document; siblings in this and other projects survive
                 }
-
-                nextDocuments.push({
-                  id: legacyDoc.id,
-                  title,
-                  createdAt: legacyDoc.createdAt ?? Date.now(),
-                  updatedAt: legacyDoc.createdAt ?? Date.now(),
-                  collectionIds: [collection.id],
-                })
-                existingById.add(legacyDoc.id)
-                existingFingerprints.add(fingerprint)
               })
             } catch {
               // skip this project; siblings already accumulated in nextCollections/nextDocuments survive
