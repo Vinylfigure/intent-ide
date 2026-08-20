@@ -30,6 +30,7 @@ import { showAffectedMode } from '@/lib/annotations/showAffected'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { createCommit } from '@/lib/history/commits'
 import { recordInvariant, shouldCaptureInvariant } from '@/lib/invariants/captureInvariant'
+import { runAndSurfaceInvariantChecks } from '@/lib/invariants/invariantCascade'
 import { SemanticCommitModal, type InvariantCapture } from '@/components/Editor/SemanticCommitModal'
 import type { Annotation, ConversationMessage } from '@/lib/annotations/types'
 import { SEVERITY_ORDER } from '@/lib/annotations/types'
@@ -155,6 +156,10 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
             provenanceCommitHash: hash,
           })
         }
+        // Doc-CI (issue #32): this version just landed — re-check every
+        // previously declared fact against it. Fire-and-forget (the function
+        // never rejects — internal failures are caught and logged there).
+        void runAndSurfaceInvariantChecks(annotation.documentId, currentView.state)
       })
       .catch((err) => console.warn('[history] Failed to record version:', err))
   }
