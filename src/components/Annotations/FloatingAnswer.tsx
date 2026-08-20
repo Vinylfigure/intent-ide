@@ -137,6 +137,12 @@ export function FloatingAnswer() {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [visible, setActive])
 
+  // Cleared by the drag's own pointerup in the common case; the unmount effect
+  // below is the fallback for a drag interrupted by unmount (Escape, Dock,
+  // placement toggled mid-drag) — pointerup on window would otherwise never
+  // fire and the listeners would linger untracked by React.
+  const dragCleanupRef = useRef<(() => void) | null>(null)
+
   const handleDragStart = useCallback((e: React.PointerEvent) => {
     // Ignore drags started on the header's buttons.
     if ((e.target as HTMLElement).closest('button')) return
@@ -154,9 +160,15 @@ export function FloatingAnswer() {
     function handleUp() {
       window.removeEventListener('pointermove', handleMove)
       window.removeEventListener('pointerup', handleUp)
+      dragCleanupRef.current = null
     }
     window.addEventListener('pointermove', handleMove)
     window.addEventListener('pointerup', handleUp)
+    dragCleanupRef.current = handleUp
+  }, [])
+
+  useEffect(() => {
+    return () => dragCleanupRef.current?.()
   }, [])
 
   if (!mounted || !visible || !annotation || !position) return null
