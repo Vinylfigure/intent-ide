@@ -84,6 +84,50 @@ function resolveEditRange(
   return { ok: true, from: found.from, to: found.to }
 }
 
+/**
+ * Re-derives an applied edit's TRUE post-transaction position by ARITHMETIC
+ * over the batch's own known deltas, rather than trusting `target.from/to`
+ * as-is or fingerprint-searching the post-dispatch doc for `target.newText`.
+ *
+ * `AppliedEdit.from/to` are the positions passed to `tr.replaceWith` at
+ * dispatch time (pre-transaction, per `applyProposedEdits`'s doc comment)
+ * and stay valid post-transaction only for the LOWEST-`from` edit in the
+ * batch: since edits dispatch descending by `from`, that one is applied
+ * LAST, so nothing dispatched after it can shift it. Any edit that isn't
+ * the lowest can be shifted by a different-length edit at a lower position
+ * applied after it in the same transaction (#44).
+ *
+ * A fingerprint search for `target.newText` was tried and rejected: the
+ * replacement text is often short/common (a single corrected word or
+ * character), and can coincidentally match pre-existing text elsewhere in
+ * the same block or another edit's own landing text, silently returning the
+ * WRONG occurrence. Arithmetic has no such false-positive risk: every OTHER
+ * applied edit positioned before `target` (dispatched after it, since
+ * dispatch order is descending by `from`) shifts everything from its own
+ * `to` onward — including `target`'s already-landed text — by exactly its
+ * own length delta (`newText.length - (to - from)`). Summing those deltas
+ * gives `target`'s exact final position with no text search at all.
+ */
+export function findAppliedEditFinalPosition(
+  target: AppliedEdit,
+  allApplied: AppliedEdit[],
+): { from: number; to: number } {
+  // `ap.from === target.from` (a tie) is currently unreachable: primary and
+  // cascade edits are always non-zero-width (orchestrator.ts rejects an
+  // empty targetText/anchor), and the overlap/dedup gates that select which
+  // proposed edits survive into a batch treat any two non-zero-width ranges
+  // sharing a `from` as overlapping, so at most one of them is ever in
+  // `allApplied`. If either invariant ever loosens (e.g. a zero-width
+  // primary), this `>=` excludes a tied edit from the shift sum — revisit
+  // this boundary then, since it isn't exercised by any test today.
+  const shift = allApplied.reduce((sum, ap) => {
+    if (ap.id === target.id || ap.from >= target.from) return sum
+    return sum + (ap.newText.length - (ap.to - ap.from))
+  }, 0)
+  const from = target.from + shift
+  return { from, to: from + target.newText.length }
+}
+
 export function applyProposedEdits(view: EditorView, acceptedIds: string[]): ApplyProposedResult {
   const anchors = getProposedAnchors(view.state)
   const doc = view.state.doc
