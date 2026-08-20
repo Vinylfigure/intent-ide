@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 class MemoryStorage {
-  private store = new Map<string, string>()
+  protected store = new Map<string, string>()
 
   getItem(key: string) {
     return this.store.get(key) ?? null
@@ -17,6 +17,21 @@ class MemoryStorage {
 
   clear() {
     this.store.clear()
+  }
+}
+
+class QuotaExceededOnKeyStorage extends MemoryStorage {
+  constructor(private readonly failingKey: string) {
+    super()
+  }
+
+  setItem(key: string, value: string) {
+    if (key === this.failingKey) {
+      const err = new Error('QuotaExceededError')
+      err.name = 'QuotaExceededError'
+      throw err
+    }
+    super.setItem(key, value)
   }
 }
 
@@ -64,6 +79,150 @@ describe('documentStore phase 8 migration and collections', () => {
     const secondPass = useDocumentStore.getState()
     expect(secondPass.documents).toHaveLength(1)
     expect(secondPass.collections).toHaveLength(1)
+  })
+
+  it('does not throw and still marks migration done when a legacy project has no documents array', async () => {
+    localStorage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'p1',
+            name: 'Corrupt',
+            // no `documents` key at all — malformed legacy data
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    expect(useDocumentStore.getState().hasMigratedLegacyProjects).toBe(true)
+
+    // Retrying (as would happen on the next boot) must stay a no-op, not retry forever.
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+  })
+
+  it('drops a malformed document element (null) without losing a well-formed sibling document in the same project', async () => {
+    localStorage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'p1',
+            name: 'Mixed',
+            documents: [
+              null,
+              { id: 'legacy-doc-ok', name: 'Good Doc', docJson: { type: 'doc', content: [] } },
+            ],
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    const state = useDocumentStore.getState()
+    expect(state.hasMigratedLegacyProjects).toBe(true)
+    expect(state.documents.find((d) => d.id === 'legacy-doc-ok')).toBeTruthy()
+  })
+
+  it('does not lose a clean sibling project when another legacy project in the same array is malformed', async () => {
+    localStorage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'good1',
+            name: 'Good',
+            documents: [{ id: 'legacy-doc-good', name: 'Doc1', docJson: { type: 'doc', content: [] } }],
+          },
+          {
+            id: 'bad1',
+            name: 'Bad',
+            documents: [null],
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    const state = useDocumentStore.getState()
+    expect(state.hasMigratedLegacyProjects).toBe(true)
+    expect(state.documents.find((d) => d.id === 'legacy-doc-good')).toBeTruthy()
+    expect(state.collections.some((c) => c.name === 'Good')).toBe(true)
+  })
+
+  it('drops a document element missing a valid id instead of migrating it as id: undefined', async () => {
+    localStorage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'p1',
+            name: 'NoId',
+            documents: [{ name: 'Missing id', docJson: { type: 'doc', content: [] } }],
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    const state = useDocumentStore.getState()
+    expect(state.hasMigratedLegacyProjects).toBe(true)
+    expect(state.documents.some((d) => d.id === undefined || d.id === 'undefined')).toBe(false)
+  })
+
+  it('drops a document with a malformed name (non-string) without losing a well-formed sibling document', async () => {
+    localStorage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'p1',
+            name: 'BadName',
+            documents: [
+              { id: 'bad-name-doc', name: 42, docJson: { type: 'doc', content: [] } },
+              { id: 'good-doc-after', name: 'Should Survive', docJson: { type: 'doc', content: [] } },
+            ],
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    const state = useDocumentStore.getState()
+    expect(state.hasMigratedLegacyProjects).toBe(true)
+    expect(state.documents.find((d) => d.id === 'good-doc-after')).toBeTruthy()
+  })
+
+  it('completes the migration in memory even when the store persist write-through hits a quota error', async () => {
+    const storage = new QuotaExceededOnKeyStorage('intent-ide-documents')
+    vi.stubGlobal('localStorage', storage)
+
+    storage.setItem('intent-ide-projects', JSON.stringify({
+      state: {
+        projects: [
+          {
+            id: 'p1',
+            name: 'Quota',
+            documents: [{ id: 'legacy-doc-quota', name: 'Doc', docJson: { type: 'doc', content: [] } }],
+          },
+        ],
+      },
+    }))
+
+    const { useDocumentStore } = await loadStore()
+
+    expect(() => useDocumentStore.getState().runLegacyProjectMigration()).not.toThrow()
+    const state = useDocumentStore.getState()
+    // In-memory state reflects the completed migration even though persisting the
+    // zustand-managed 'intent-ide-documents' key itself failed (quota exceeded).
+    expect(state.hasMigratedLegacyProjects).toBe(true)
+    expect(state.documents.find((d) => d.id === 'legacy-doc-quota')).toBeTruthy()
   })
 
   it('assigns and removes documents from collections', async () => {
