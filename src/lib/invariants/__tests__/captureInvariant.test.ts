@@ -3,6 +3,7 @@ import {
   captureInvariant,
   listInvariants,
   recordInvariant,
+  resolveInvariant,
   shouldCaptureInvariant,
   type Invariant,
 } from '../captureInvariant'
@@ -16,6 +17,7 @@ import {
 let store: Invariant[] = []
 let nextId = 0
 let failNextPost = false
+let failNextResolve = false
 
 function jsonResponse(body: unknown, status = 200) {
   return {
@@ -26,6 +28,31 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 function fetchStub(url: string, init?: RequestInit) {
+  const path = new URL(url, 'http://localhost').pathname
+
+  if (init?.method === 'POST' && path === '/api/invariants/resolve') {
+    if (failNextResolve) {
+      failNextResolve = false
+      return Promise.resolve(jsonResponse({ error: 'boom' }, 500))
+    }
+    const body = JSON.parse(String(init.body))
+    const target = store.find((r) => r.id === body.invariantId && r.documentId === body.documentId)
+    if (!target) return Promise.resolve(jsonResponse({ error: 'invariant not found' }, 404))
+    const invariant: Invariant = {
+      id: `inv-${nextId++}`,
+      documentId: target.documentId,
+      statement: target.statement,
+      blockIds: target.blockIds,
+      checkKind: target.checkKind,
+      status: body.status,
+      provenanceCommitHash: target.provenanceCommitHash,
+      supersedesId: target.id,
+      createdAt: new Date(1700000000000 + nextId * 1000).toISOString(),
+    }
+    store.push(invariant)
+    return Promise.resolve(jsonResponse({ invariant }))
+  }
+
   if (init?.method === 'POST') {
     if (failNextPost) {
       failNextPost = false
@@ -40,15 +67,17 @@ function fetchStub(url: string, init?: RequestInit) {
       checkKind: body.checkKind ?? 'deterministic',
       status: 'active',
       provenanceCommitHash: body.provenanceCommitHash ?? null,
+      supersedesId: null,
       createdAt: new Date(1700000000000 + nextId * 1000).toISOString(),
     }
     store.push(invariant)
     return Promise.resolve(jsonResponse({ invariant }))
   }
-  // GET
+  // GET — mirrors the real route's "exclude superseded rows" computation.
   const documentId = new URL(url, 'http://localhost').searchParams.get('documentId')
+  const supersededIds = new Set(store.filter((r) => r.supersedesId).map((r) => r.supersedesId as string))
   const invariants = [...store]
-    .filter((r) => r.documentId === documentId)
+    .filter((r) => r.documentId === documentId && !supersededIds.has(r.id))
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
   return Promise.resolve(jsonResponse({ invariants }))
 }
@@ -57,6 +86,7 @@ beforeEach(() => {
   store = []
   nextId = 0
   failNextPost = false
+  failNextResolve = false
   vi.stubGlobal('fetch', vi.fn(fetchStub))
 })
 
@@ -157,5 +187,43 @@ describe('listInvariants', () => {
     expect(invariants[0].statement).toBe('Termination notices go through HR.')
     expect(invariants[1].statement).toBe('Terminations are now 30 days.')
     expect(JSON.parse(invariants[1].blockIds)).toEqual(['blk-terminations'])
+  })
+
+  it('excludes a resolved invariant\'s original row, keeping the resolution row live (#35)', async () => {
+    const original = await captureInvariant({ documentId: 'doc-1', statement: 'Terminations are now 30 days.' })
+    await resolveInvariant({ documentId: 'doc-1', invariantId: original.id, status: 'resolved' })
+
+    const invariants = await listInvariants('doc-1')
+    expect(invariants).toHaveLength(1)
+    expect(invariants[0].status).toBe('resolved')
+    expect(invariants[0].supersedesId).toBe(original.id)
+  })
+})
+
+describe('resolveInvariant', () => {
+  it('appends a new row pointing supersedesId at the target, duplicating its content forward', async () => {
+    const original = await captureInvariant({
+      documentId: 'doc-1',
+      statement: 'Terminations are now 30 days.',
+      blockIds: ['blk-terminations'],
+    })
+    const resolved = await resolveInvariant({
+      documentId: 'doc-1',
+      invariantId: original.id,
+      status: 'resolved',
+    })
+    expect(resolved.id).not.toBe(original.id)
+    expect(resolved.supersedesId).toBe(original.id)
+    expect(resolved.status).toBe('resolved')
+    expect(resolved.statement).toBe(original.statement)
+    expect(resolved.blockIds).toBe(original.blockIds)
+  })
+
+  it('throws on a failed resolve', async () => {
+    const original = await captureInvariant({ documentId: 'doc-1', statement: 'A fact.' })
+    failNextResolve = true
+    await expect(
+      resolveInvariant({ documentId: 'doc-1', invariantId: original.id, status: 'resolved' }),
+    ).rejects.toThrow('boom')
   })
 })

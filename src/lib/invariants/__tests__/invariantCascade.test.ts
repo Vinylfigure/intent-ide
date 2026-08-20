@@ -8,7 +8,11 @@ import { useDocumentStore } from '@/stores/documentStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useInvariantFlagStore } from '@/stores/invariantFlagStore'
 import type { Invariant } from '../captureInvariant'
-import { runAndSurfaceInvariantChecks } from '../invariantCascade'
+import {
+  invariantIdFromFlagKey,
+  resolveInvariantFlagOnDismiss,
+  runAndSurfaceInvariantChecks,
+} from '../invariantCascade'
 
 function p(blockId: string, text: string): PMNode {
   return schema.node('paragraph', { blockId }, [schema.text(text)])
@@ -28,6 +32,7 @@ function invariantRecord(overrides: Partial<Invariant> = {}): Invariant {
     checkKind: 'deterministic',
     status: 'active',
     provenanceCommitHash: 'hash-1',
+    supersedesId: null,
     createdAt: '2026-08-18T00:00:00.000Z',
     ...overrides,
   }
@@ -212,5 +217,94 @@ describe('runAndSurfaceInvariantChecks', () => {
     const tr = state.tr.replaceWith(cascade.from, cascade.to, schema.text(cascade.newText))
     const next = state.apply(tr)
     expect(next.doc.textBetween(cascade.from, cascade.to)).toBe(cascade.targetText)
+  })
+
+  it('produces no flag for an invariant already resolved (#35: dismissing a flag stops it being checked)', async () => {
+    // Simulates what GET /api/invariants returns once a "Nevermind" resolve
+    // has landed: the live row for this fact now has status 'resolved', not
+    // 'active' — checkInvariants (and therefore this runner) must skip it,
+    // exactly as it already does for entailment-kind and superseded rows.
+    stubListInvariants([invariantRecord({ status: 'resolved', supersedesId: null })])
+    const state = EditorState.create({ schema, doc: DOC })
+
+    await runAndSurfaceInvariantChecks('doc-A', state)
+
+    expect(useAnnotationStore.getState().annotations).toHaveLength(0)
+    expect(useToastStore.getState().toasts).toHaveLength(0)
+  })
+})
+
+describe('invariantIdFromFlagKey', () => {
+  it('recovers the invariantId from a locationGroupKey produced for an invariant-check flag', () => {
+    expect(invariantIdFromFlagKey('doc-A:invariant:inv-1:b-conflict')).toBe('inv-1')
+  })
+
+  it('returns null for a locationGroupKey that is not an invariant-flag key', () => {
+    expect(invariantIdFromFlagKey('some-other-annotation-key')).toBeNull()
+  })
+
+  it('is unfooled by a documentId that itself contains a colon', () => {
+    expect(invariantIdFromFlagKey('doc:with:colons:invariant:inv-9:b-1')).toBe('inv-9')
+  })
+
+  it('is unfooled by a documentId that itself contains the literal ":invariant:" marker', () => {
+    // A front-anchored (indexOf-from-the-start) parse would find the FIRST
+    // ":invariant:" occurrence and misparse this as invariantId="evil" — the
+    // real invariantId is only recoverable by anchoring from the END.
+    expect(invariantIdFromFlagKey('doc:invariant:evil:invariant:inv-9:b-1')).toBe('inv-9')
+  })
+
+  it('returns null for a key one segment short of the minimum shape', () => {
+    expect(invariantIdFromFlagKey('doc-A:invariant:inv-1')).toBeNull()
+  })
+})
+
+describe('resolveInvariantFlagOnDismiss', () => {
+  const FLAG_KEY = 'doc-A:invariant:inv-1:b-conflict'
+
+  it('no-ops (and makes no network call) for a non-invariant annotation', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await resolveInvariantFlagOnDismiss({ documentId: 'doc-A', locationGroupKey: 'some-other-key' })
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('resolves the ledger row and prunes the dedup entry on success', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ invariant: { id: 'inv-2', supersedesId: 'inv-1', status: 'resolved' } }),
+      })),
+    )
+    useInvariantFlagStore.getState().markSurfaced(FLAG_KEY)
+
+    await resolveInvariantFlagOnDismiss({ documentId: 'doc-A', locationGroupKey: FLAG_KEY })
+
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/invariants/resolve',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(useInvariantFlagStore.getState().hasSurfaced(FLAG_KEY)).toBe(false)
+  })
+
+  it('leaves the dedup entry intact (and warns) when the resolve call fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: 'boom' }) })),
+    )
+    useInvariantFlagStore.getState().markSurfaced(FLAG_KEY)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await resolveInvariantFlagOnDismiss({ documentId: 'doc-A', locationGroupKey: FLAG_KEY })
+
+    // Still surfaced — a network failure must not silently drop dedup memory
+    // and let the doc-CI lane re-flag this as a brand-new annotation later.
+    expect(useInvariantFlagStore.getState().hasSurfaced(FLAG_KEY)).toBe(true)
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

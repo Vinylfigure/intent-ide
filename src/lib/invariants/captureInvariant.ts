@@ -11,6 +11,7 @@
  */
 
 export type InvariantCheckKind = 'deterministic' | 'entailment'
+export type InvariantResolveStatus = 'resolved' | 'superseded'
 
 export interface Invariant {
   id: string
@@ -20,6 +21,7 @@ export interface Invariant {
   checkKind: InvariantCheckKind
   status: string
   provenanceCommitHash: string | null
+  supersedesId: string | null
   createdAt: string
 }
 
@@ -87,4 +89,31 @@ export async function listInvariants(documentId: string): Promise<Invariant[]> {
   if (!res.ok) throw new Error(`Failed to load invariants (HTTP ${res.status})`)
   const data = await res.json()
   return data.invariants ?? []
+}
+
+export interface ResolveInvariantParams {
+  documentId: string
+  invariantId: string
+  status: InvariantResolveStatus
+}
+
+/**
+ * Append a status-transition row for a DocInvariant (Phase 3, #35) — see
+ * `/api/invariants/resolve` for why this is a new row, not a PATCH. Throws on
+ * failure — callers that must react differently to success vs. failure (e.g.
+ * `resolveInvariantFlagOnDismiss`, which only prunes dedup memory on success)
+ * should catch this directly rather than using a swallowing wrapper.
+ */
+export async function resolveInvariant(params: ResolveInvariantParams): Promise<Invariant> {
+  const res = await fetch('/api/invariants/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => null)
+    throw new Error(data?.error ?? `Failed to resolve invariant (HTTP ${res.status})`)
+  }
+  const data = await res.json()
+  return data.invariant
 }

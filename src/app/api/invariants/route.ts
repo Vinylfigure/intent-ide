@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { INVARIANT_SELECT } from '@/lib/invariants/invariantSelect'
 
 /**
- * /api/invariants — Document Invariant Ledger, Phase 1 (data model + capture
- * only; see issue #26). A user-declared fact ("terminations are now 30
- * days"), captured at SemanticCommitModal confirm time and linked to the
- * block(s) that evidence it.
+ * /api/invariants — Document Invariant Ledger. A user-declared fact
+ * ("terminations are now 30 days"), captured at SemanticCommitModal confirm
+ * time and linked to the block(s) that evidence it (Phase 1, #26). The
+ * deterministic check runner re-evaluates active rows against later document
+ * edits (Phase 2, #32).
  *
- * This endpoint ONLY creates and reads records — no update or delete
- * operations exist. The check runner that regression-tests these against
- * later document edits, and CascadeList surfacing of a failing invariant,
- * are a separate follow-up task (#20 steps 2-3); this route only stores what
- * that runner will eventually read.
+ * This route creates and reads records — no PATCH/DELETE exist, and no row's
+ * `statement`/`blockIds`/`provenanceCommitHash` is ever rewritten in place. A
+ * status transition (e.g. dismissing a surfaced conflict) is a separate
+ * append-only write at POST /api/invariants/resolve (Phase 3, #35), which
+ * appends a NEW row pointing `supersedesId` at the one it resolves rather
+ * than mutating it — see the schema doc-comment on `DocInvariant` for the
+ * full rationale. GET computes the "live" (not-yet-superseded) set below.
  */
 
 const VALID_CHECK_KINDS = new Set(['deterministic', 'entailment'])
@@ -22,21 +26,28 @@ const MAX_BLOCK_ID_CHARS = 200
 
 const DEFAULT_LIMIT = 100
 const MAX_LIMIT = 200
-
-const INVARIANT_SELECT = {
-  id: true,
-  documentId: true,
-  statement: true,
-  blockIds: true,
-  checkKind: true,
-  status: true,
-  provenanceCommitHash: true,
-  createdAt: true,
-} as const
+// Upper bound on how many of a document's rows (across both original facts
+// and their resolve/supersede rows) GET scans to compute the live set. Rows
+// beyond this cutoff (ordered newest-first) are invisible to this endpoint —
+// a disclosed limit, not silently unbounded, matching this app's public-
+// exposure hardening posture elsewhere (e.g. /api/audit's body cap).
+// Disclosed interaction (#35 review): there is no offset/cursor param on
+// this route (pre-existing, not introduced here), so a document whose live
+// set exceeds MAX_LIMIT has no way to fetch a second page — each resolve now
+// leaves BOTH the original and its resolution row present in the DB (only
+// the original drops out of the live view), so an actively-dismissed
+// document's live-row count grows faster post-#35 than pre-#35. Acceptable
+// for now given expected per-document invariant volume; a real follow-up if
+// it becomes user-visible.
+const SUPERSEDE_SCAN_CAP = 2000
 
 /**
- * GET /api/invariants?documentId=... — list a document's invariants, newest
- * first (default page of 100, ?limit=N up to 200).
+ * GET /api/invariants?documentId=... — list a document's LIVE invariants
+ * (rows no other row supersedes), newest first (default page of 100,
+ * ?limit=N up to 200). A row that has been resolved/superseded is excluded;
+ * the row recording that resolution (status 'resolved'|'superseded') takes
+ * its place in the result if it is itself still live — which it always is
+ * unless something later supersedes it too.
  */
 export async function GET(request: NextRequest) {
   try {
@@ -51,12 +62,16 @@ export async function GET(request: NextRequest) {
       ? Math.min(Math.max(Math.floor(rawLimit), 1), MAX_LIMIT)
       : DEFAULT_LIMIT
 
-    const invariants = await prisma.docInvariant.findMany({
+    const scanned = await prisma.docInvariant.findMany({
       where: { documentId },
       orderBy: { createdAt: 'desc' },
-      take: limit,
+      take: SUPERSEDE_SCAN_CAP,
       select: INVARIANT_SELECT,
     })
+    const supersededIds = new Set(
+      scanned.filter((r) => r.supersedesId).map((r) => r.supersedesId as string),
+    )
+    const invariants = scanned.filter((r) => !supersededIds.has(r.id)).slice(0, limit)
     return NextResponse.json({ invariants })
   } catch (err) {
     console.error('[/api/invariants GET] Error:', err)

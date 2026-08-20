@@ -81,23 +81,29 @@ model DocCommit {
   @@index([documentId, parentHash])
 }
 
-/// Document Invariant Ledger — Phase 1 (data model + capture only; see #26).
-/// A user-declared fact, captured at SemanticCommitModal confirm time and
-/// linked to the block(s) that evidence it. The check runner that regression-
-/// tests these against later DocCommits, and CascadeList surfacing of a
-/// failing invariant, are out of scope until a follow-up task lands (#20
-/// steps 2-3); `status` and `checkKind` exist now so that runner has a stable
-/// schema to read, but nothing in this phase writes anything other than
-/// `active`/`deterministic`.
-/// Append-only: no update/delete operations permitted on invariant records.
+/// Document Invariant Ledger. A user-declared fact, captured at
+/// SemanticCommitModal confirm time and linked to the block(s) that evidence
+/// it (Phase 1, #26). The deterministic check runner re-evaluates active rows
+/// against later document edits and surfaces conflicts through CascadeList
+/// (Phase 2, #32).
+/// Append-only, git-model (Phase 3, #35): no update/delete operations exist on
+/// a row's evidentiary content (`statement`/`blockIds`/`provenanceCommitHash`
+/// are set once at creation and never rewritten). A status transition
+/// (active -> resolved|superseded) is recorded as a NEW row that duplicates
+/// the prior row's content forward and points `supersedesId` at it — the same
+/// parent-pointer-chain shape `DocCommit.parentHash` uses, rather than a
+/// PATCH that mutates a row in place. A row is "live" (counts toward active
+/// checks) iff no other row's `supersedesId` points at it; see
+/// `src/app/api/invariants/route.ts` GET for that computation.
 model DocInvariant {
   id                   String   @id @default(cuid())
   documentId           String
   statement            String
   blockIds             String   @default("[]") // JSON string[] — evidence links
   checkKind            String   @default("deterministic") // 'deterministic' | 'entailment'
-  status               String   @default("active") // reserved for the future check runner
+  status               String   @default("active") // 'active' | 'resolved' | 'superseded'
   provenanceCommitHash String? // DocCommit.hash of the commit that declared this fact
+  supersedesId         String?  @unique // id of the DocInvariant row this one supersedes (append-only resolve/dismiss)
   createdAt            DateTime @default(now())
 
   @@index([documentId, createdAt])

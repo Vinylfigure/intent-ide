@@ -21,6 +21,7 @@ function invariant(overrides: Partial<Invariant> = {}): Invariant {
     checkKind: 'deterministic',
     status: 'active',
     provenanceCommitHash: 'hash-1',
+    supersedesId: null,
     createdAt: '2026-08-18T00:00:00.000Z',
     ...overrides,
   }
@@ -78,12 +79,21 @@ describe('checkInvariants', () => {
     expect(violations).toEqual([])
   })
 
-  it('skips inactive (already-resolved) invariants', () => {
+  it('skips inactive (superseded) invariants', () => {
     const doc = docOf(
       p('b-declare', 'Terminations are now 30 days per the updated policy.'),
       p('b-conflict', 'Under the new policy, terminations occur within 45 days of notice.'),
     )
     const violations = checkInvariants(doc, [invariant({ status: 'superseded' })])
+    expect(violations).toEqual([])
+  })
+
+  it('skips inactive (resolved via the #35 "Nevermind" flow) invariants', () => {
+    const doc = docOf(
+      p('b-declare', 'Terminations are now 30 days per the updated policy.'),
+      p('b-conflict', 'Under the new policy, terminations occur within 45 days of notice.'),
+    )
+    const violations = checkInvariants(doc, [invariant({ status: 'resolved' })])
     expect(violations).toEqual([])
   })
 
