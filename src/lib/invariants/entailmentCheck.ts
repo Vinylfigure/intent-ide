@@ -149,8 +149,12 @@ export async function judgeEntailmentPairs(
   for (const tc of toolCalls) {
     if (tc.name !== VERDICT_TOOL.name) continue
     const input = tc.input as VerdictInput
-    const n = typeof input?.index === 'number' ? Math.trunc(input.index) : NaN
-    if (!Number.isInteger(n) || n < 1 || n > pairs.length) continue
+    // No `Math.trunc` here, unlike relevanceJudge: coercing a malformed 2.9
+    // into slot 2 is fail-OPEN, and in a lane whose charter is "a broken judge
+    // never manufactures a false positive" a garbled index must be discarded,
+    // not rounded into a real candidate.
+    const n = input?.index
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || n > pairs.length) continue
     const parsed: EntailmentVerdict = {
       contradicts: input.contradicts === true,
       reason: typeof input.reason === 'string' && input.reason ? input.reason : 'no reason given',
@@ -188,6 +192,14 @@ interface ScoredCandidate {
   /** Lower sorts first: graph distance, or PLAIN_TERM_HOP for a term-only hit. */
   hop: number
   sourceRank: number
+  /**
+   * How many distinct statement terms this block matches. Breaks the tie
+   * between term-only candidates, which all share `PLAIN_TERM_HOP` — without
+   * it the comparator returns 0 for every one of them and the stable sort
+   * silently pins selection to the first N blocks in document order, run
+   * after run, leaving later blocks permanently unreachable.
+   */
+  termHits: number
 }
 
 /**
@@ -217,6 +229,13 @@ export function selectCandidates(
   graph: DocGraph | null,
 ): EntailmentPair[] {
   const evidenceBlockIds = parseBlockIds(invariant.blockIds)
+  // An invariant with no evidence links has nothing to exclude, so every
+  // block — including the one that declared the fact — would be offered to
+  // the judge as possibly contradicting it. `invariantCascade` would then
+  // drop any resulting flag anyway (`primaryAnchor` needs an evidence block
+  // to anchor to), so the whole round-trip is spend with no reachable
+  // outcome. Skip it here instead of paying for it.
+  if (evidenceBlockIds.length === 0) return []
   const evidence = new Set(evidenceBlockIds)
 
   const reach = new Map<string, { hop: number; sourceRank: number }>()
@@ -239,18 +258,27 @@ export function selectCandidates(
     if (!blockText.trim()) continue
 
     const neighbor = reach.get(blockId)
-    const sharesTerm = terms.some((term) => containsTerm(blockText, term))
-    if (!neighbor && !sharesTerm) continue
+    const termHits = terms.reduce((n, term) => (containsTerm(blockText, term) ? n + 1 : n), 0)
+    if (!neighbor && termHits === 0) continue
 
     scored.push({
       blockId,
       blockText,
       hop: neighbor ? neighbor.hop : PLAIN_TERM_HOP,
       sourceRank: neighbor ? neighbor.sourceRank : 0,
+      termHits,
     })
   }
 
-  scored.sort((a, b) => a.hop - b.hop || a.sourceRank - b.sourceRank)
+  scored.sort(
+    (a, b) => a.hop - b.hop || a.sourceRank - b.sourceRank || b.termHits - a.termHits,
+  )
+
+  if (scored.length > MAX_CANDIDATES_PER_INVARIANT) {
+    console.warn(
+      `[invariants] entailment candidates for ${invariant.id} capped at ${MAX_CANDIDATES_PER_INVARIANT}; ${scored.length - MAX_CANDIDATES_PER_INVARIANT} matching blocks not checked`,
+    )
+  }
 
   return scored.slice(0, MAX_CANDIDATES_PER_INVARIANT).map((c) => ({
     invariantId: invariant.id,
@@ -280,15 +308,22 @@ export async function checkEntailmentInvariants(
   config: LLMConfig,
   deps: EntailmentCheckDeps = {},
 ): Promise<EntailmentViolation[]> {
-  const active = invariants.filter(
-    (inv) => inv.checkKind === 'entailment' && inv.status === 'active',
-  )
+  // Which invariants belong in this lane — `checkKind: 'entailment'` rows,
+  // plus any `'deterministic'`-classified row `invariantCascade.ts` decided
+  // deserves a second look — is the CALLER's decision (see its docstring for
+  // why). This function only re-asserts `status === 'active'` as a defensive
+  // floor for any other caller.
+  const active = invariants.filter((inv) => inv.status === 'active')
   if (active.length === 0) return []
 
+  // No rotation: `listInvariants` returns newest-first and this takes the same
+  // prefix on every run, so an over-cap ledger's oldest rows are never checked
+  // by this lane at all — not merely deferred. Disclosed as a real coverage
+  // limit rather than implied away by a "this run" that suggests a next turn.
   const considered = active.slice(0, MAX_INVARIANTS_PER_RUN)
   if (considered.length < active.length) {
     console.warn(
-      `[invariants] entailment lane capped at ${MAX_INVARIANTS_PER_RUN} invariants; ${active.length - considered.length} not checked this run`,
+      `[invariants] entailment lane checks at most ${MAX_INVARIANTS_PER_RUN} invariants (newest first); ${active.length - considered.length} older ones are never reached`,
     )
   }
 
@@ -307,10 +342,23 @@ export async function checkEntailmentInvariants(
     }
 
     const pairs: EntailmentPair[] = []
+    const starved: string[] = []
     for (const invariant of considered) {
-      if (pairs.length >= MAX_TOTAL_PAIRS) break
       const remaining = MAX_TOTAL_PAIRS - pairs.length
-      pairs.push(...selectCandidates(doc, invariant, graph).slice(0, remaining))
+      const selected = selectCandidates(doc, invariant, graph)
+      // The batch budget is shared and spent in order, so a later invariant
+      // can get fewer slots than it has candidates — or none at all. Say so:
+      // "no contradictions" must not quietly mean "never looked".
+      if (selected.length > 0 && remaining < selected.length) {
+        starved.push(invariant.id)
+      }
+      if (remaining <= 0) continue
+      pairs.push(...selected.slice(0, remaining))
+    }
+    if (starved.length > 0) {
+      console.warn(
+        `[invariants] entailment batch budget (${MAX_TOTAL_PAIRS} passages) exhausted; these invariants were checked partially or not at all: ${starved.join(', ')}`,
+      )
     }
     if (pairs.length === 0) return []
 

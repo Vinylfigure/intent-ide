@@ -223,9 +223,29 @@ export async function runAndSurfaceInvariantChecks(
       opts.entailmentEnabled ?? useSettingsStore.getState().invariantEntailmentEnabled
     if (entailmentOn) {
       const config = useSettingsStore.getState().llmConfig
+      // Candidates for this lane are NOT just `checkKind: 'entailment'` rows.
+      // `classifyCheckKind` decides the lane from the statement text ALONE —
+      // it cannot see the future drift text, so it cannot always predict
+      // whether the deterministic lane's exact-word `containsTerm` subject
+      // match will actually fire (a plural variant or a reworded date can
+      // defeat it even when a figure and a term are both present, which is
+      // all `classifyCheckKind` can check). A `'deterministic'`-classified
+      // invariant that produced no deterministic violation this run is given
+      // a second look here rather than assumed clean. This also covers every
+      // ledger row written before this phase shipped, when capture
+      // unconditionally defaulted to `checkKind: 'deterministic'` — those
+      // rows need no migration to reach this lane; they just need this run
+      // to find nothing wrong with them deterministically, which a genuinely
+      // stale row won't.
+      const flaggedByDeterministic = new Set(violations.map((v) => v.invariantId))
+      const entailmentCandidates = invariants.filter((inv) => {
+        if (inv.status !== 'active') return false
+        if (inv.checkKind === 'entailment') return true
+        return inv.checkKind === 'deterministic' && !flaggedByDeterministic.has(inv.id)
+      })
       const entailed = await checkEntailmentInvariants(
         state.doc,
-        invariants,
+        entailmentCandidates,
         config,
         opts.entailmentDeps,
       )

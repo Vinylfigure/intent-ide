@@ -28,8 +28,17 @@ import type { Invariant, InvariantCheckKind } from './captureInvariant'
  * numbers ("thirty days"), calendar-date fragments, and singular/plural term
  * variants (`containsTerm` is exact-word, not stemmed) are not matched. These
  * make the lane conservative — it can miss a real drift — never the reverse.
- * `classifyCheckKind` below routes exactly those statements to the entailment
- * lane instead, so a fact this lane cannot check is not simply dropped.
+ *
+ * `classifyCheckKind` below cannot fully close that gap by itself: it decides
+ * the lane from the STATEMENT text alone, before any conflicting block
+ * exists, so it can confirm a statement has a figure and a subject term but
+ * cannot predict whether a future block's phrasing of that same term will
+ * survive `containsTerm`'s exact-word match (a plural, a reworded date, a
+ * synonym all defeat it silently). What actually closes the gap is
+ * `invariantCascade.ts`'s `runAndSurfaceInvariantChecks`: when the entailment
+ * lane is on, a `'deterministic'`-classified invariant that this lane finds
+ * NO violation for is handed to the entailment lane as a fallback, rather
+ * than trusted as clean on classification alone.
  *
  * Known remaining false-positive limitation: a statement whose ONLY
  * substantive term is a single generic word ("the deadline is $500") cannot
@@ -78,13 +87,23 @@ const NUMERIC_TOKEN_RE = /^[$€£]?\d/
  * ledger row is written with the right `checkKind` instead of the hardcoded
  * `'deterministic'` every caller used through Phase 3.
  *
- * Deliberately mirrors `checkInvariants`'s own skip gate below rather than
- * inventing a second notion of "deterministically checkable": a statement the
- * deterministic lane would silently `continue` past (no figure, or no
- * substantive subject term to identify WHICH block is about the fact) is
- * exactly the statement that needs the entailment lane. Keeping both reads of
- * `extractChangedTokens` in one file is what stops them drifting apart and
- * opening a gap where a fact belongs to neither lane.
+ * Deliberately mirrors `checkInvariants`'s STATEMENT-side skip gate below
+ * rather than inventing a second notion of "deterministically checkable": a
+ * statement the deterministic lane would silently `continue` past (no figure,
+ * or no substantive subject term to identify WHICH block is about the fact)
+ * is exactly the statement that needs the entailment lane. Keeping both reads
+ * of `extractChangedTokens` in one file is what stops them drifting apart.
+ *
+ * What this CANNOT decide, and deliberately does not pretend to: the
+ * deterministic lane's *effective* gate is the per-block `containsTerm`
+ * subject match, which depends on text that does not exist yet at capture
+ * time. So `'deterministic'` here means "worth trying deterministically
+ * first", NOT "guaranteed deterministically checkable" — e.g. "each
+ * termination requires 30 days notice" classifies deterministic and still
+ * misses a later "Terminations now require 45 days." (unstemmed plural).
+ * `runAndSurfaceInvariantChecks` is what catches those, by falling such
+ * invariants through to the entailment lane when it finds no deterministic
+ * violation for them.
  *
  * Local and free — no LLM call is made just to classify.
  */

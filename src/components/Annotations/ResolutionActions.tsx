@@ -156,9 +156,11 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
             statement: invariant.statement,
             blockIds: invariant.blockIds,
             // Decide the lane at capture time (#51) instead of letting every
-            // row default to 'deterministic' — a statement the figure-matching
-            // lane cannot check ("thirty days") is routed to the entailment
-            // lane rather than silently going unchecked forever.
+            // row default to 'deterministic'. This routes the statements the
+            // figure-matching lane provably cannot check ("thirty days") to
+            // the entailment lane up front; statements it can only sometimes
+            // check still start here and fall through at check time — see
+            // `classifyCheckKind` for the split.
             checkKind: classifyCheckKind(invariant.statement),
             provenanceCommitHash: hash,
           })

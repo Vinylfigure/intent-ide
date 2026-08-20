@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Node as PMNode } from 'prosemirror-model'
 import { schema } from '@/lib/prosemirror/schema'
 import type { LLMConfig } from '@/stores/settingsStore'
-import type { DocGraph } from '@/lib/graphrag/docGraph'
+import type { DocGraph, DocGraphEdge, DocGraphNode } from '@/lib/graphrag/docGraph'
 import {
   checkEntailmentInvariants,
   judgeEntailmentPairs,
@@ -28,18 +28,46 @@ const CONFIG: LLMConfig = {
   baseUrl: undefined,
 }
 
-/** No deterministic edges — proves the term-sharing recall floor does the work. */
-const EMPTY_GRAPH: DocGraph = {
-  contentHash: 'h',
-  builtAt: 0,
-  llmApplied: false,
-  llmPartial: false,
-  embeddingsApplied: false,
-  graphitiApplied: false,
-  nodes: new Map(),
-  edges: [],
-  adjacency: new Map(),
-} as unknown as DocGraph
+function graphOf(edges: DocGraphEdge[]): DocGraph {
+  const nodes = new Map<string, DocGraphNode>()
+  const adjacency = new Map<string, DocGraphEdge[]>()
+  for (const edge of edges) {
+    for (const id of [edge.from, edge.to]) {
+      if (!nodes.has(id)) {
+        nodes.set(id, {
+          blockId: id,
+          pos: 0,
+          nodeType: 'paragraph',
+          text: '',
+          headingPath: [],
+          definedTerms: [],
+        })
+      }
+      adjacency.set(id, [...(adjacency.get(id) ?? []), edge])
+    }
+  }
+  return {
+    contentHash: 'h',
+    builtAt: 0,
+    llmApplied: false,
+    llmPartial: false,
+    embeddingsApplied: false,
+    embeddingsPartial: false,
+    graphitiApplied: false,
+    blockHashes: new Map(),
+    nodes,
+    edges,
+    adjacency,
+  }
+}
+
+/** One deterministic edge between two blocks — the graph-scoping fixture. */
+function graphWithEdge(from: string, to: string): DocGraph {
+  return graphOf([{ from, to, type: 'depends-on', source: 'deterministic' }])
+}
+
+/** No edges — isolates the term-sharing recall floor from the graph lane. */
+const EMPTY_GRAPH: DocGraph = graphOf([])
 
 function invariantRecord(overrides: Partial<Invariant> = {}): Invariant {
   return {
@@ -84,8 +112,9 @@ describe('checkEntailmentInvariants', () => {
       conflictText: CONFLICT_TEXT,
       judgeReason: 'One and a half months is not thirty days.',
     })
-    // No figure fields on this lane — the discriminated union keeps them off.
-    expect(violations[0]).not.toHaveProperty('statementNumber')
+    // The union's discriminant is what downstream branches on, so pin it
+    // rather than asserting the absence of a key nothing ever sets.
+    expect(violations[0].checkKind).toBe('entailment')
   })
 
   it('produces no flag when the judge says the passage is consistent', async () => {
@@ -112,32 +141,108 @@ describe('checkEntailmentInvariants', () => {
     expect(violations).toEqual([])
   })
 
-  it('produces no flag when the judge returns verdicts for no candidate', async () => {
-    const judge = vi.fn(async () => new Map<number, EntailmentVerdict>())
-
+  it('produces no flag when the real judge path yields zero verdicts', async () => {
+    // Drives the REAL judge (not a hand-written empty Map, which
+    // judgeEntailmentPairs can never actually return — it throws first), so
+    // this exercises the malfunction path the production code really takes.
     const violations = await checkEntailmentInvariants(DOC, [invariantRecord()], CONFIG, {
-      judge,
+      judge: (pairs, config) =>
+        judgeEntailmentPairs(pairs, config, (async () => ({
+          toolCalls: [{ name: 'not_a_verdict', input: {} }],
+        })) as never),
       graph: EMPTY_GRAPH,
     })
 
     expect(violations).toEqual([])
   })
 
-  it('never calls the judge for deterministic-kind or inactive rows', async () => {
-    const judge = judgeReturning({ contradicts: true, reason: 'should not be reached' })
+  it('produces no flag when the judge confirms an index that matches no candidate', async () => {
+    const violations = await checkEntailmentInvariants(DOC, [invariantRecord()], CONFIG, {
+      judge: (pairs, config) =>
+        judgeEntailmentPairs(pairs, config, (async () => ({
+          toolCalls: [
+            { name: 'entailment_verdict', input: { index: 99, contradicts: true, reason: 'r' } },
+            { name: 'entailment_verdict', input: { index: 1.7, contradicts: true, reason: 'r' } },
+          ],
+        })) as never),
+      graph: EMPTY_GRAPH,
+    })
+
+    expect(violations).toEqual([])
+  })
+
+  it('never judges an invariant with no evidence links — the flag could not anchor anyway', async () => {
+    const judge = judgeReturning({ contradicts: true, reason: 'r' })
 
     const violations = await checkEntailmentInvariants(
       DOC,
-      [
-        invariantRecord({ id: 'inv-det', checkKind: 'deterministic' }),
-        invariantRecord({ id: 'inv-resolved', status: 'resolved' }),
-      ],
+      [invariantRecord({ blockIds: JSON.stringify([]) })],
       CONFIG,
       { judge, graph: EMPTY_GRAPH },
     )
 
     expect(violations).toEqual([])
     expect(judge).not.toHaveBeenCalled()
+  })
+
+  it('caps the batch across invariants and names what it could not check', async () => {
+    const blocks = [p('b-declare', DECLARE_TEXT)]
+    for (let i = 0; i < 10; i++) {
+      blocks.push(p(`b-${i}`, `Section ${i} also describes terminations in detail.`))
+    }
+    const doc = schema.node('doc', null, blocks)
+    const invariants = Array.from({ length: 6 }, (_, i) =>
+      invariantRecord({ id: `inv-${i}` }),
+    )
+    const judge = vi.fn(async (pairs: EntailmentPair[]) => {
+      const map = new Map<number, EntailmentVerdict>()
+      pairs.forEach((_, i) => map.set(i, { contradicts: false, reason: 'ok' }))
+      return map
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await checkEntailmentInvariants(doc, invariants, CONFIG, { judge, graph: EMPTY_GRAPH })
+
+    // Hard budget: never more than MAX_TOTAL_PAIRS passages in one batch.
+    expect(judge.mock.calls[0][0].length).toBe(20)
+    // Both the per-run invariant cap and the shared-budget starvation are
+    // disclosed, not silently truncated.
+    const warned = warn.mock.calls.map((c) => String(c[0])).join('\n')
+    expect(warned).toMatch(/never reached/)
+    expect(warned).toMatch(/batch budget/)
+    warn.mockRestore()
+  })
+
+  it('never calls the judge for a row that is no longer active', async () => {
+    const judge = judgeReturning({ contradicts: true, reason: 'should not be reached' })
+
+    const violations = await checkEntailmentInvariants(
+      DOC,
+      [invariantRecord({ id: 'inv-resolved', status: 'resolved' })],
+      CONFIG,
+      { judge, graph: EMPTY_GRAPH },
+    )
+
+    expect(violations).toEqual([])
+    expect(judge).not.toHaveBeenCalled()
+  })
+
+  it('judges whatever active rows the caller selected, kind included', () => {
+    // Lane membership is the CALLER's call (invariantCascade decides which
+    // deterministic-classified rows deserve a second look), so this function
+    // must not second-guess checkKind — otherwise the fallthrough that closes
+    // the plural/date hole would be silently filtered out here.
+    const judge = judgeReturning({ contradicts: true, reason: 'conflicts' })
+
+    return checkEntailmentInvariants(
+      DOC,
+      [invariantRecord({ id: 'inv-det', checkKind: 'deterministic' })],
+      CONFIG,
+      { judge, graph: EMPTY_GRAPH },
+    ).then((violations) => {
+      expect(judge).toHaveBeenCalled()
+      expect(violations).toHaveLength(1)
+    })
   })
 
   it('reports at most one violation per invariant even when several passages contradict', async () => {
@@ -176,8 +281,58 @@ describe('selectCandidates', () => {
     for (let i = 0; i < 20; i++) {
       blocks.push(p(`b-${i}`, `Section ${i} also describes terminations in some detail.`))
     }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const pairs = selectCandidates(schema.node('doc', null, blocks), invariantRecord(), EMPTY_GRAPH)
-    expect(pairs.length).toBeLessThanOrEqual(6)
+    // Exactly the cap, not merely "at most" — an assertion that also passes on
+    // an empty result would go green if selection were entirely broken.
+    expect(pairs).toHaveLength(6)
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('prefers the block matching more of the statement over mere document order', () => {
+    const doc = schema.node('doc', null, [
+      p('b-declare', DECLARE_TEXT),
+      // Earlier in the document, but matches only "terminations".
+      p('b-weak', 'Terminations are discussed in the appendix.'),
+      // Later, but matches both "terminations" and "notice".
+      p('b-strong', 'Terminations require notice of one and a half months.'),
+    ])
+    const pairs = selectCandidates(
+      doc,
+      invariantRecord({ statement: 'terminations now require thirty days notice' }),
+      EMPTY_GRAPH,
+    )
+    expect(pairs[0].blockId).toBe('b-strong')
+  })
+
+  it('ranks a graph neighbor ahead of a block that only shares a term', () => {
+    const doc = schema.node('doc', null, [
+      p('b-declare', DECLARE_TEXT),
+      p('b-term-only', 'Terminations are discussed in the appendix.'),
+      p('b-neighbor', 'That period governs how much warning staff receive.'),
+    ])
+    // b-neighbor shares no statement term; it is reachable ONLY via the graph.
+    const graph = graphWithEdge('b-declare', 'b-neighbor')
+
+    const pairs = selectCandidates(doc, invariantRecord(), graph)
+
+    expect(pairs.map((c) => c.blockId)).toEqual(['b-neighbor', 'b-term-only'])
+  })
+
+  it('reaches a graph neighbor that shares no wording with the statement at all', () => {
+    const doc = schema.node('doc', null, [
+      p('b-declare', DECLARE_TEXT),
+      p('b-neighbor', 'That period governs how much warning staff receive.'),
+    ])
+    const graph = graphWithEdge('b-declare', 'b-neighbor')
+
+    expect(selectCandidates(doc, invariantRecord(), graph).map((c) => c.blockId)).toEqual([
+      'b-neighbor',
+    ])
+    // Without the graph the same block is unreachable — proving the
+    // neighborhood lane, not the term floor, is what found it.
+    expect(selectCandidates(doc, invariantRecord(), EMPTY_GRAPH)).toEqual([])
   })
 })
 

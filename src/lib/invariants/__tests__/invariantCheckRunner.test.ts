@@ -223,4 +223,36 @@ describe('classifyCheckKind', () => {
     expect(classifyCheckKind(statement)).toBe('deterministic')
     expect(checkInvariants(doc, [invariant({ statement })])).toHaveLength(1)
   })
+
+  it("classifies 'deterministic' for statements the lane can still MISS — the fallthrough's reason to exist", () => {
+    // Pinning the honest limit rather than the flattering claim: the split is
+    // statement-shaped, but the deterministic lane's real gate is the
+    // per-block containsTerm match, which depends on text that does not exist
+    // at capture time. Both of these classify deterministic and find nothing,
+    // which is exactly why invariantCascade falls them through to the
+    // entailment lane instead of trusting classification alone.
+    const plural = 'each termination requires 30 days notice'
+    expect(classifyCheckKind(plural)).toBe('deterministic')
+    expect(
+      checkInvariants(
+        docOf(
+          p('b-declare', 'Each termination requires 30 days notice under the policy.'),
+          p('b-conflict', 'Terminations now require 45 days.'),
+        ),
+        [invariant({ statement: plural })],
+      ),
+    ).toEqual([])
+
+    const dated = 'the filing deadline is March 15'
+    expect(classifyCheckKind(dated)).toBe('deterministic')
+    expect(
+      checkInvariants(
+        docOf(
+          p('b-declare', 'The filing deadline is March 15 for all staff.'),
+          p('b-conflict', 'Filings are due by April 20 this year.'),
+        ),
+        [invariant({ statement: dated })],
+      ),
+    ).toEqual([])
+  })
 })

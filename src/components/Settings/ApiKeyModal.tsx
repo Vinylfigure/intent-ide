@@ -245,10 +245,15 @@ export function ApiKeyModal() {
               <span className="text-sm text-ink leading-snug">
                 Check declared facts for meaning, not just figures
                 <span className="block text-xs text-muted">
-                  Off by default. When on, applying a change also asks the small model whether any
-                  passage contradicts a fact you declared in words rather than numbers
-                  (&ldquo;thirty days&rdquo;). Sends those passages to your provider; the
-                  figure-matching check stays on your machine either way.
+                  Off by default. When on, applying a change also asks whether any passage
+                  contradicts a fact you declared in words rather than numbers (&ldquo;thirty
+                  days&rdquo;). Sends those passages to your provider; the figure-matching check
+                  stays on your machine either way.
+                </span>
+                <span className="block text-xs text-muted">
+                  {provider === 'claude'
+                    ? 'Runs on Haiku, not your selected model.'
+                    : `Runs on your selected model (${llmConfig.model}) — only Claude has a cheaper model wired up for this.`}
                 </span>
               </span>
             </label>
