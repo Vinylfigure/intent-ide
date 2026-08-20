@@ -85,9 +85,10 @@ export function FollowUpInput({ annotation, onSend, disabled }: FollowUpInputPro
         }}
         disabled={!text.trim() || disabled}
         className="p-2 rounded-lg text-muted hover:text-ink hover:bg-warm transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        aria-label="Send follow-up"
         title="Send"
       >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M14 2L7 9M14 2L9.5 14L7 9M14 2L2 6.5L7 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
@@ -104,9 +105,11 @@ export function FollowUpInput({ annotation, onSend, disabled }: FollowUpInputPro
             ? 'text-red-500 bg-red-50 hover:bg-red-100'
             : 'text-muted hover:text-ink hover:bg-warm'
         }`}
+        aria-label={isRecording ? 'Stop recording' : isTranscribing ? 'Transcribing' : 'Voice input'}
+        aria-pressed={isRecording}
         title={isRecording ? 'Stop recording' : isTranscribing ? 'Transcribing...' : 'Voice input'}
       >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect x="5.5" y="1" width="5" height="9" rx="2.5" stroke="currentColor" strokeWidth="1.5" />
           <path d="M3 7.5C3 10.26 5.24 12.5 8 12.5C10.76 12.5 13 10.26 13 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           <path d="M8 12.5V15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />

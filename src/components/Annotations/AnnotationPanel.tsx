@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAnnotationStore } from '@/stores/annotationStore'
+import { useLayoutStore } from '@/stores/layoutStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { AnnotationCard } from './AnnotationCard'
 import { AnnotationMap } from './AnnotationMap'
@@ -29,6 +30,8 @@ export function AnnotationPanel() {
   const annotations = useAnnotationStore((s) => s.annotations)
   const activeId = useAnnotationStore((s) => s.activeAnnotationId)
   const activeDocumentId = useDocumentStore((s) => s.activeDocumentId)
+  const placement = useLayoutStore((s) => s.answerPlacement)
+  const setPlacement = useLayoutStore((s) => s.setAnswerPlacement)
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -89,7 +92,7 @@ export function AnnotationPanel() {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-center px-6">
         <div className="w-12 h-12 rounded-full bg-warm flex items-center justify-center mb-3">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-foreground">
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-foreground">
             <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
             <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
             <line x1="12" y1="19" x2="12" y2="23" />
@@ -107,23 +110,45 @@ export function AnnotationPanel() {
         <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-[0.2em]">
           {annotationCount} review item{annotationCount !== 1 ? 's' : ''}
         </span>
-        <div className="flex gap-1">
+        <div className="flex items-center gap-2">
+          <div className="placement-toggle" role="group" aria-label="Where answers appear">
+            <button
+              onClick={() => setPlacement('sidebar')}
+              aria-pressed={placement === 'sidebar'}
+              title="Answers expand here in the sidebar"
+              className="placement-toggle-btn"
+            >
+              Sidebar
+            </button>
+            <button
+              onClick={() => setPlacement('floating')}
+              aria-pressed={placement === 'floating'}
+              title="Answers float beside the passage they belong to"
+              className="placement-toggle-btn"
+            >
+              Floating
+            </button>
+          </div>
           <button
             onClick={() => setViewMode('list')}
+            aria-label="Grouped list view"
+            aria-pressed={viewMode === 'list'}
             title="Grouped list view"
             className={`p-1.5 rounded-lg transition-colors ${viewMode === 'list' ? 'bg-ink text-white shadow-sm' : 'text-muted-foreground hover:bg-warm/80'}`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
               <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
             </svg>
           </button>
           <button
             onClick={() => setViewMode('map')}
+            aria-label="Map view (beta)"
+            aria-pressed={viewMode === 'map'}
             title="Map view (beta)"
             className={`p-1.5 rounded-lg transition-colors ${viewMode === 'map' ? 'bg-ink text-white shadow-sm' : 'text-muted-foreground hover:bg-warm/80'}`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="12" y1="3" x2="12" y2="21" />
             </svg>
           </button>
@@ -154,6 +179,7 @@ export function AnnotationPanel() {
                       <AnnotationCard
                         annotation={annotation}
                         isActive={annotation.id === activeId}
+                        detailElsewhere={placement === 'floating'}
                       />
                     </div>
                   ))}

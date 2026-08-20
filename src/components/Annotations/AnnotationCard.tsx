@@ -37,6 +37,19 @@ function isMutatingOverride(from: AnnotationType, to: AnnotationType): boolean {
 interface AnnotationCardProps {
   annotation: Annotation
   isActive: boolean
+  /**
+   * This card's expanded body is rendered somewhere else (the floating answer
+   * panel). The row keeps its active highlight but renders no detail and runs
+   * no cascade-decoration effect, so exactly one card owns the proposed-edit
+   * decorations at a time no matter how many copies of the thread are on
+   * screen.
+   */
+  detailElsewhere?: boolean
+  /**
+   * Clicking the card never deactivates it. The floating panel owns dismissal,
+   * so a click inside it must not collapse the thread out from under the user.
+   */
+  lockActive?: boolean
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -57,7 +70,15 @@ const STATUS_STYLES: Record<string, string> = {
   dismissed: 'bg-stone-200 text-stone-700',
 }
 
-export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
+export function AnnotationCard({
+  annotation,
+  isActive,
+  detailElsewhere = false,
+  lockActive = false,
+}: AnnotationCardProps) {
+  // The expanded body — and everything that only makes sense alongside it —
+  // belongs to whichever card is actually rendering the detail.
+  const showDetail = isActive && !detailElsewhere
   const setActive = useAnnotationStore((s) => s.setActive)
   const updateAnnotation = useAnnotationStore((s) => s.update)
   const addMessage = useAnnotationStore((s) => s.addMessage)
@@ -89,7 +110,7 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
   // tracked yet — reveals everything immediately (see partitionCascadeReveal).
   const reviewEdits = annotation.resolution?.edits
   useEffect(() => {
-    if (!view || !isActive) return
+    if (!view || !showDetail) return
     if (annotation.status === 'resolved' && reviewEdits && reviewEdits.length > 1) {
       const primary = reviewEdits.find((e) => e.relation === 'primary')
       const breakpoint = cascadeBreakpointPos(view.state.doc, primary)
@@ -117,14 +138,18 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
     return () => {
       clearProposedEdits(view)
     }
-  }, [isActive, annotation.status, reviewEdits, view])
+  }, [showDetail, annotation.status, reviewEdits, view])
 
   // Sibling effect to the cascade-reveal poll above (do NOT merge them): while
   // this card's ANSWER is held, poll the read-line high-water mark against the
   // anchor block's end; with no reading signal at all, fall back to the dwell
   // timer. On reveal, flash a transient "Answer ready" chip.
+  // Gated by showDetail for the same reason as the cascade-reveal effect above:
+  // when detailElsewhere is set, a second AnnotationCard for this annotation is
+  // mounted elsewhere (the floating panel) and must be the sole owner of this
+  // poll, or both copies flash their own "Answer ready" chip independently.
   useEffect(() => {
-    if (!heldEntry || !view) return
+    if (!heldEntry || !view || !showDetail) return
     const timer = setInterval(() => {
       const highWaterMark = readLinePluginKey.getState(view.state)?.highWaterMark ?? 0
       const breakpointPos = answerBreakpointPos(view.state.doc, annotation.anchor)
@@ -137,7 +162,7 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
       }
     }, 500)
     return () => clearInterval(timer)
-  }, [heldEntry, view, annotation.id, annotation.anchor])
+  }, [heldEntry, view, annotation.id, annotation.anchor, showDetail])
 
   // Auto-clear the transient chip after the fade animation (~4s).
   useEffect(() => {
@@ -260,7 +285,9 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
     // mark — this click is user attention, not capture plumbing.
     revealAnswer(annotation.id)
     markUserActivated(annotation.id)
-    setActive(isActive ? null : annotation.id)
+    if (!lockActive) {
+      setActive(isActive ? null : annotation.id)
+    }
     if (!isActive) {
       scrollToAnchor()
     }
@@ -341,6 +368,7 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
       <button
         onClick={(e) => { e.stopPropagation(); scrollToAnchor() }}
         className="w-full text-left text-xs text-ink/60 bg-warm/40 hover:bg-warm/70 rounded-lg px-2.5 py-1.5 border-l-2 border-accent/30 transition-colors cursor-pointer truncate"
+        aria-label="Scroll to the annotated passage"
         title="Click to scroll to this passage"
       >
         &ldquo;{annotation.anchor.text.slice(0, 50)}{annotation.anchor.text.length > 50 ? '...' : ''}&rdquo;
@@ -370,7 +398,7 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
       )}
 
       {/* Verbosity toggle (when active and resolved; hidden while the answer is held) */}
-      {isActive && !held && annotation.resolution && (
+      {showDetail && !held && annotation.resolution && (
         <div className="mt-2 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           <span className="text-[10px] font-mono text-muted-foreground mr-1">Length:</span>
           {(['concise', 'normal', 'detailed'] as const).map((v) => (
@@ -418,7 +446,7 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
       )}
 
       {/* Inline provocation callout (when MADS raised an unresolved objection; hidden while held) */}
-      {isActive && !held && annotation.resolution?.provocation && (
+      {showDetail && !held && annotation.resolution?.provocation && (
         <div className="mt-3 mx-1 p-3 border border-amber-300 bg-amber-50 rounded-xl shadow-sm">
           <div className="flex items-start gap-2">
             <span className="text-amber-600 text-xs font-bold shrink-0">⚠</span>
@@ -440,10 +468,10 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
       )}
 
       {/* Cascade review list — navigable "affects N sections" (when active) */}
-      {isActive && <CascadeList annotation={annotation} />}
+      {showDetail && <CascadeList annotation={annotation} />}
 
       {/* Conversation thread (when active and has conversation messages; hidden while the answer is held) */}
-      {isActive && !held && annotation.conversation && annotation.conversation.length > 0 && (
+      {showDetail && !held && annotation.conversation && annotation.conversation.length > 0 && (
         <div className="mt-3 pt-3 border-t border-border/70" onClick={(e) => e.stopPropagation()}>
           <ConversationThread messages={annotation.conversation} annotationId={annotation.id} isStreaming={annotation.status === 'resolving'} />
           {annotation.resolution && <ResolutionActions annotation={annotation} />}
@@ -456,7 +484,7 @@ export function AnnotationCard({ annotation, isActive }: AnnotationCardProps) {
       )}
 
       {/* Resolution content (when active, resolved, and no conversation — backward compatibility; hidden while the answer is held) */}
-      {isActive && !held && annotation.resolution && (!annotation.conversation || annotation.conversation.length === 0) && (
+      {showDetail && !held && annotation.resolution && (!annotation.conversation || annotation.conversation.length === 0) && (
         <div className="mt-3 pt-3 border-t border-border/70" onClick={(e) => e.stopPropagation()}>
           <div className="text-sm text-ink leading-relaxed">
             <AgentMarkdown content={annotation.resolution.content} />

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { EditorShell } from '@/components/Editor/EditorShell'
 import { AnnotationPanel } from '@/components/Annotations/AnnotationPanel'
+import { FloatingAnswer } from '@/components/Annotations/FloatingAnswer'
 import { ChangesPanel } from '@/components/Changes/ChangesPanel'
 import { VoiceButton } from '@/components/Voice/VoiceButton'
 import { VoiceOverlay } from '@/components/Voice/VoiceOverlay'
@@ -26,9 +27,34 @@ import { triggerFloatingBar } from '@/lib/prosemirror/plugins/contextMenuPlugin'
 
 type SidebarTab = 'annotations' | 'changes' | 'documents' | 'history' | 'audit'
 
+/**
+ * Sidebar tabs, split by how they are used rather than alphabetically.
+ *
+ * The rail is a fixed 320px. Five equal tabs left each label about 55px, which
+ * is why they were set at 10px with wide tracking and still read poorly. The
+ * three workspaces people live in keep the rail; History and Audit are
+ * reference surfaces consulted occasionally, so they move behind an overflow
+ * menu that names whichever of them is active.
+ */
+const PRIMARY_TABS: { id: SidebarTab; label: string }[] = [
+  { id: 'annotations', label: 'Annotations' },
+  { id: 'changes', label: 'Changes' },
+  { id: 'documents', label: 'Documents' },
+]
+
+const OVERFLOW_TABS: { id: SidebarTab; label: string }[] = [
+  { id: 'history', label: 'History' },
+  { id: 'audit', label: 'Audit' },
+]
+
+const SIDEBAR_TABS = [...PRIMARY_TABS, ...OVERFLOW_TABS]
+
+const SIDEBAR_TAB_IDS = new Set<string>(SIDEBAR_TABS.map((tab) => tab.id))
+
 export function AppShell() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('annotations')
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
+  const [showTabOverflow, setShowTabOverflow] = useState(false)
   const [showDocInput, setShowDocInput] = useState(false)
   const [showCommandPalette, setShowCommandPalette] = useState(false)
   const [showAgentConfig, setShowAgentConfig] = useState(false)
@@ -55,6 +81,26 @@ export function AppShell() {
       }
     }
   }, [activeDocumentId])
+
+  // Overflow menu: dismiss on outside click or Escape, like every other
+  // transient surface in the app.
+  useEffect(() => {
+    if (!showTabOverflow) return
+    function handlePointerDown(e: MouseEvent) {
+      if (!(e.target as HTMLElement).closest('[data-tab-overflow]')) {
+        setShowTabOverflow(false)
+      }
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setShowTabOverflow(false)
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [showTabOverflow])
 
   // Warn on unsaved changes before unload
   useEffect(() => {
@@ -110,9 +156,10 @@ export function AppShell() {
     // Listen for sidebar switch events from command palette
     function handleSidebarEvent(e: Event) {
       const detail = (e as CustomEvent).detail
-      if (detail === 'annotations' || detail === 'changes' || detail === 'documents') {
-        setSidebarTab(detail)
+      if (typeof detail === 'string' && SIDEBAR_TAB_IDS.has(detail)) {
+        setSidebarTab(detail as SidebarTab)
         setIsSidebarCollapsed(false)
+        setShowTabOverflow(false)
       }
     }
     window.addEventListener('intent-ide:sidebar', handleSidebarEvent)
@@ -133,6 +180,8 @@ export function AppShell() {
     }
   }, [])
 
+  const overflowTab = OVERFLOW_TABS.find((tab) => tab.id === sidebarTab) ?? null
+
   return (
     <div className="flex flex-col h-screen app-shell-backdrop">
       {/* Main content */}
@@ -142,58 +191,65 @@ export function AppShell() {
         <div className="w-80 border-r border-border/70 panel-shell flex flex-col shrink-0">
           {/* Sidebar tabs */}
           <div className="flex items-center border-b border-border/70 bg-white/55">
-            <button
-              onClick={() => setSidebarTab('annotations')}
-              className={`flex-1 px-4 py-3 text-[10px] font-mono uppercase tracking-[0.24em] transition-colors ${
-                sidebarTab === 'annotations'
-                  ? 'text-accent border-b-2 border-accent bg-white/80'
-                  : 'text-muted hover:text-ink hover:bg-white/40'
-              }`}
-            >
-              Annotations
-            </button>
-            <button
-              onClick={() => setSidebarTab('changes')}
-              className={`flex-1 px-4 py-3 text-[10px] font-mono uppercase tracking-[0.24em] transition-colors ${
-                sidebarTab === 'changes'
-                  ? 'text-accent border-b-2 border-accent bg-white/80'
-                  : 'text-muted hover:text-ink hover:bg-white/40'
-              }`}
-            >
-              Changes
-            </button>
-            <button
-              onClick={() => setSidebarTab('documents')}
-              className={`flex-1 px-4 py-3 text-[10px] font-mono uppercase tracking-[0.24em] transition-colors ${
-                sidebarTab === 'documents'
-                  ? 'text-accent border-b-2 border-accent bg-white/80'
-                  : 'text-muted hover:text-ink hover:bg-white/40'
-              }`}
-            >
-              Documents
-            </button>
-            <button
-              onClick={() => setSidebarTab('history')}
-              className={`flex-1 px-4 py-3 text-[10px] font-mono uppercase tracking-[0.24em] transition-colors ${
-                sidebarTab === 'history'
-                  ? 'text-accent border-b-2 border-accent bg-white/80'
-                  : 'text-muted hover:text-ink hover:bg-white/40'
-              }`}
-            >
-              History
-            </button>
-            <button
-              onClick={() => setSidebarTab('audit')}
-              className={`flex-1 px-4 py-3 text-[10px] font-mono uppercase tracking-[0.24em] transition-colors ${
-                sidebarTab === 'audit'
-                  ? 'text-accent border-b-2 border-accent bg-white/80'
-                  : 'text-muted hover:text-ink hover:bg-white/40'
-              }`}
-            >
-              Audit
-            </button>
+            {PRIMARY_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setSidebarTab(tab.id)}
+                aria-current={sidebarTab === tab.id ? 'page' : undefined}
+                className={`flex-1 px-3 py-3 text-[11px] font-mono uppercase tracking-[0.12em] transition-colors ${
+                  sidebarTab === tab.id
+                    ? 'text-accent border-b-2 border-accent bg-white/80'
+                    : 'text-muted hover:text-ink hover:bg-white/40'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+
+            {/* History + Audit. The trigger takes the active tab's name when
+                one of them is showing, so the rail never hides where you are. */}
+            <div className="relative" data-tab-overflow>
+              <button
+                onClick={() => setShowTabOverflow((prev) => !prev)}
+                aria-haspopup="menu"
+                aria-expanded={showTabOverflow}
+                aria-label={overflowTab ? `${overflowTab.label} — more panels` : 'More panels'}
+                title="History and Audit"
+                className={`px-3 py-3 text-[11px] font-mono uppercase tracking-[0.12em] transition-colors ${
+                  overflowTab
+                    ? 'text-accent border-b-2 border-accent bg-white/80'
+                    : 'text-muted hover:text-ink hover:bg-white/40'
+                }`}
+              >
+                {overflowTab ? overflowTab.label : '\u22EF'}
+              </button>
+              {showTabOverflow && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full z-30 mt-1 min-w-[10rem] rounded-xl border border-border/70 bg-white py-1 shadow-lg"
+                >
+                  {OVERFLOW_TABS.map((tab) => (
+                    <button
+                      key={tab.id}
+                      role="menuitem"
+                      onClick={() => {
+                        setSidebarTab(tab.id)
+                        setShowTabOverflow(false)
+                      }}
+                      className={`flex w-full items-center px-3 py-2 text-left text-xs transition-colors hover:bg-warm ${
+                        sidebarTab === tab.id ? 'font-semibold text-accent' : 'text-ink'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               onClick={() => setIsSidebarCollapsed(true)}
+              aria-label="Collapse sidebar"
+              aria-expanded={true}
               className="px-3 py-3 text-xs text-muted hover:text-ink hover:bg-white/40 transition-colors"
               title="Collapse sidebar"
             >
@@ -220,6 +276,8 @@ export function AppShell() {
           <div className="w-12 border-r border-border/70 panel-shell flex items-start justify-center py-4 shrink-0">
             <button
               onClick={() => setIsSidebarCollapsed(false)}
+              aria-label="Expand sidebar"
+              aria-expanded={false}
               className="w-8 h-8 rounded-full border border-border/70 text-muted hover:text-ink hover:bg-white/70 transition-colors"
               title="Expand sidebar"
             >
@@ -299,6 +357,7 @@ export function AppShell() {
       {showDocInput && <DocInputModal onClose={() => setShowDocInput(false)} />}
       {showCommandPalette && <CommandPalette onClose={() => setShowCommandPalette(false)} />}
       <FloatingIconBar />
+      <FloatingAnswer />
 
       {/* Toast notifications */}
       <ToastContainer />

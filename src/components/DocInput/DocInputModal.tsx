@@ -106,7 +106,7 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <h2 className="font-serif text-xl">Load Document</h2>
-          <button onClick={onClose} className="text-muted hover:text-ink text-xl leading-none">&times;</button>
+          <button onClick={onClose} aria-label="Close" title="Close" className="text-muted hover:text-ink text-xl leading-none">&times;</button>
         </div>
 
         {/* Mode tabs */}
