@@ -5,6 +5,26 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-08-20] Document Invariant Ledger — doc-CI complete (PRs #29, #34, #48, #52)
+
+Closes the "tests for prose" spike (#20) in four phases: a user-declared fact captured at semantic-commit time becomes a runnable assertion that every later apply regression-tests, with a failing fact surfacing as a cascade flag naming the invariant it broke.
+
+### Added
+- **Phase 1 (#26, PR #29):** `DocInvariant` Prisma model, `POST/GET /api/invariants`, `captureInvariant.ts`. Append-only — no PATCH/DELETE route exists.
+- **Phase 2 (#32, PR #34):** `invariantCheckRunner.ts` deterministic check lane, reusing the cascade's own `extractChangedTokens` + `containsTerm` rather than new extraction logic. Numeric comparison is value-equality, not string-equality (`$30` / `30` / `30.00` are one figure). Surfaced through the existing `CascadeList` via `invariantCascade.ts`.
+- **Phase 3 (#35, PR #48):** `POST /api/invariants/resolve` — a status transition appends a new row with `supersedesId` pointing at its target instead of mutating it, mirroring the `DocCommit.parentHash` chain. `supersedesId` is a DB-enforced unique column; the route reports a clean 409 on the race.
+- **Phase 4 (#51, PR #52):** the LLM entailment lane — `entailmentCheck.ts`, `classifyCheckKind`, and the `invariantEntailmentEnabled` setting.
+
+### Fixed
+- **`checkKind: 'entailment'` was dead weight from Phase 1 until Phase 4.** No code path had ever created *or* checked an entailment-kind invariant, so any declared fact the figure-matching lane structurally cannot check — word-form numbers, calendar-date fragments, plural variants, claims with no exact-match anchor — was captured as `'deterministic'` and then silently skipped forever.
+
+### Security / Privacy
+- The entailment lane is gated on `invariantEntailmentEnabled`, **default OFF** and rehydrate-backfilled to OFF (anything other than an explicit stored `true` resolves to off — same rule as `telemetryEnabled`). It is the only doc-CI path that spends money and sends document text; the deterministic lane stays local and always-on regardless. Runs on a user-initiated apply only, never on typing. Its graph build passes `skipLlm`/`skipEmbeddings`/`skipGraphiti`, so it is a cache hit and never itself a network call.
+
+### Process
+- Pre-push adversarial review returned **NO-MERGE with 2 HIGH findings**, both reproducible, both fixed with regression tests before the PR was opened — see `audit.md` for the full record. Headline: a classifier mirroring only the receiving lane's *first* skip gate left plural-variant and calendar-date statements in **neither** lane, while the pre-existing hardcoded `'deterministic'` default would have made the new lane a permanent no-op on every existing ledger. One fix (runtime fallthrough in `runAndSurfaceInvariantChecks`) closed both, and closed the second without a backfill migration.
+- Not exercised: the entailment lane has never run against a live provider — every test injects a scripted judge. Needs an operator-supplied key, same constraint as #19.
+
 ## [2026-08-16] Fleet-Autonomy Machinery (branch `claude/fleet-status-machinery`)
 
 Instantiated the Janus-style fleet-autonomy machinery — repo-level automation plumbing only, zero `src/` changes, 731-test suite untouched.
