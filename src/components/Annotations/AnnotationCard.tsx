@@ -144,8 +144,12 @@ export function AnnotationCard({
   // this card's ANSWER is held, poll the read-line high-water mark against the
   // anchor block's end; with no reading signal at all, fall back to the dwell
   // timer. On reveal, flash a transient "Answer ready" chip.
+  // Gated by showDetail for the same reason as the cascade-reveal effect above:
+  // when detailElsewhere is set, a second AnnotationCard for this annotation is
+  // mounted elsewhere (the floating panel) and must be the sole owner of this
+  // poll, or both copies flash their own "Answer ready" chip independently.
   useEffect(() => {
-    if (!heldEntry || !view) return
+    if (!heldEntry || !view || !showDetail) return
     const timer = setInterval(() => {
       const highWaterMark = readLinePluginKey.getState(view.state)?.highWaterMark ?? 0
       const breakpointPos = answerBreakpointPos(view.state.doc, annotation.anchor)
@@ -158,7 +162,7 @@ export function AnnotationCard({
       }
     }, 500)
     return () => clearInterval(timer)
-  }, [heldEntry, view, annotation.id, annotation.anchor])
+  }, [heldEntry, view, annotation.id, annotation.anchor, showDetail])
 
   // Auto-clear the transient chip after the fade animation (~4s).
   useEffect(() => {
