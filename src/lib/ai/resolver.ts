@@ -124,7 +124,7 @@ async function attachCascadeEdits(
   if (!resolution.suggestedEdit) return
   const primaryBlockId =
     blockIdAtPos(editorState.doc, resolution.suggestedEdit.from) ?? undefined
-  const primary = primaryProposedEdit(resolution.suggestedEdit, anchorText, primaryBlockId)
+  const primary = primaryProposedEdit(resolution.suggestedEdit, anchorText, primaryBlockId, editorState.doc)
   // Graph-scoped: the dependency graph bounds what the model sees, so the old
   // whole-doc-truncated-to-6000-chars payload (which silently hid everything
   // past ~page 4) is gone. Long documents now cascade end to end.
