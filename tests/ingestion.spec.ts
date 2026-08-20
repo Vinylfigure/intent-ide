@@ -47,17 +47,44 @@ test.describe('Intent IDE E2E', () => {
   })
 
   test('should connect to FalkorDB and query Episode nodes', async () => {
-    const redis = new Redis({ host: 'localhost', port: 6379, lazyConnect: true })
+    // Connectivity is probed separately from the query, and the probe never
+    // throws. Guarding the skip on one error string (ECONNREFUSED) was too
+    // narrow: with no server listening ioredis can also surface "Connection is
+    // closed", a timeout, or a DNS error depending on how the sandbox handles
+    // the dead port — all of which mean the same thing here, and none of which
+    // is a failure of this repository's code.
+    const redis = new Redis({
+      host: 'localhost',
+      port: 6379,
+      lazyConnect: true,
+      connectTimeout: 3_000,
+      // Without this, ioredis retries forever and the test dies on timeout
+      // instead of skipping.
+      retryStrategy: () => null,
+      maxRetriesPerRequest: 1,
+    })
+    // A dead connection emits 'error' asynchronously; unhandled, it crashes
+    // the worker rather than failing this test.
+    redis.on('error', () => {})
+
+    const connected = await redis
+      .connect()
+      .then(() => true)
+      .catch(() => false)
+
+    if (!connected) {
+      redis.disconnect()
+      test.skip(true, 'FalkorDB not reachable on localhost:6379 — skipping graph assertion')
+      return
+    }
 
     try {
-      await redis.connect()
-
       // Query the graphiti graph for Episode nodes
-      const result = await redis.call(
+      const result = (await redis.call(
         'GRAPH.QUERY',
         'graphiti',
         'MATCH (e:Episodic) RETURN count(e) AS cnt',
-      ) as unknown[][]
+      )) as unknown[][]
 
       // FalkorDB returns: [[headers], [data rows], [stats]]
       const dataRows = result[1] as unknown[][]
@@ -67,15 +94,8 @@ test.describe('Intent IDE E2E', () => {
       // Episode nodes are created by annotation resolution, not direct edits.
       // This test validates FalkorDB connectivity; count >= 0 is valid.
       expect(episodeCount).toBeGreaterThanOrEqual(0)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      if (message.includes('ECONNREFUSED')) {
-        test.skip(true, 'FalkorDB not running on localhost:6379 — skipping graph assertion')
-      } else {
-        throw err
-      }
     } finally {
-      await redis.quit()
+      await redis.quit().catch(() => redis.disconnect())
     }
   })
 })
