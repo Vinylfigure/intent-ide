@@ -98,6 +98,16 @@ interface SettingsState {
    */
   judgeEnabled: boolean
   /**
+   * LLM entailment checking for semantic declared facts the deterministic
+   * doc-CI lane cannot check — word-form numbers, dates, claims with no
+   * exact-match anchor (default OFF). When on, applying an AI change sends
+   * the declared statement and a bounded set of candidate passages to the
+   * small model. Off by default because it is the only doc-CI path that costs
+   * money and sends document text; the deterministic lane stays local and
+   * always-on either way.
+   */
+  invariantEntailmentEnabled: boolean
+  /**
    * Anonymous severity-calibration telemetry (default OFF — public repo,
    * other users). When on, cascade accept/reject decisions send metadata-only
    * events (severity × action, never document content or ids) to PostHog if
@@ -110,6 +120,7 @@ interface SettingsState {
   setShowApiKeyModal: (show: boolean) => void
   setEmbeddingsEnabled: (enabled: boolean) => void
   setJudgeEnabled: (enabled: boolean) => void
+  setInvariantEntailmentEnabled: (enabled: boolean) => void
   setTelemetryEnabled: (enabled: boolean) => void
   hasKeys: () => boolean
 }
@@ -127,6 +138,7 @@ export const useSettingsStore = create<SettingsState>()(
       showApiKeyModal: false,
       embeddingsEnabled: true,
       judgeEnabled: true,
+      invariantEntailmentEnabled: false,
       telemetryEnabled: false,
       setLLMConfig: (config) =>
         set((s) => ({ llmConfig: { ...s.llmConfig, ...config } })),
@@ -134,6 +146,7 @@ export const useSettingsStore = create<SettingsState>()(
       setShowApiKeyModal: (show) => set({ showApiKeyModal: show }),
       setEmbeddingsEnabled: (enabled) => set({ embeddingsEnabled: enabled }),
       setJudgeEnabled: (enabled) => set({ judgeEnabled: enabled }),
+      setInvariantEntailmentEnabled: (enabled) => set({ invariantEntailmentEnabled: enabled }),
       setTelemetryEnabled: (enabled) => set({ telemetryEnabled: enabled }),
       hasKeys: () => {
         const s = get()
@@ -168,9 +181,17 @@ export const useSettingsStore = create<SettingsState>()(
           state.setJudgeEnabled(true)
         }
         // Privacy-sensitive: anything other than an explicit stored `true`
-        // resolves to OFF.
+        // resolves to OFF. Same rule for the entailment lane, which is the
+        // only doc-CI path that spends money and sends document text.
         if (state && typeof (state as { telemetryEnabled?: unknown }).telemetryEnabled !== 'boolean') {
           state.setTelemetryEnabled(false)
+        }
+        if (
+          state &&
+          typeof (state as { invariantEntailmentEnabled?: unknown }).invariantEntailmentEnabled !==
+            'boolean'
+        ) {
+          state.setInvariantEntailmentEnabled(false)
         }
       },
     }

@@ -308,3 +308,93 @@ describe('resolveInvariantFlagOnDismiss', () => {
     warn.mockRestore()
   })
 })
+
+describe('entailment lane surfacing (#51)', () => {
+  const ENTAILMENT_DOC = schema.node('doc', null, [
+    p('b-declare', 'Terminations are now thirty days per the updated policy.'),
+    p('b-conflict', 'Under the new policy, terminations occur within one and a half months.'),
+  ])
+
+  const entailmentRecord = () =>
+    invariantRecord({
+      id: 'inv-e',
+      statement: 'terminations are now thirty days',
+      checkKind: 'entailment',
+    })
+
+  const confirmingJudge = async (pairs: { blockId: string }[]) =>
+    new Map(pairs.map((_, i) => [i, { contradicts: true, reason: 'Not thirty days.' }]))
+
+  it('makes no entailment call at all while the setting is off', async () => {
+    stubListInvariants([entailmentRecord()])
+    const judge = vi.fn(confirmingJudge)
+    const state = EditorState.create({ schema, doc: ENTAILMENT_DOC })
+
+    await runAndSurfaceInvariantChecks('doc-A', state, {
+      entailmentEnabled: false,
+      entailmentDeps: { judge, graph: null },
+    })
+
+    expect(judge).not.toHaveBeenCalled()
+    expect(useAnnotationStore.getState().annotations).toEqual([])
+  })
+
+  it('surfaces a confirmed entailment conflict through the same CascadeList flag', async () => {
+    stubListInvariants([entailmentRecord()])
+    const state = EditorState.create({ schema, doc: ENTAILMENT_DOC })
+
+    await runAndSurfaceInvariantChecks('doc-A', state, {
+      entailmentEnabled: true,
+      entailmentDeps: { judge: vi.fn(confirmingJudge), graph: null },
+    })
+
+    const annotations = useAnnotationStore.getState().annotations
+    expect(annotations).toHaveLength(1)
+    const [primary, cascade] = annotations[0].resolution!.edits!
+    expect(primary.status).toBe('rejected')
+    expect(cascade.newText).toBe(cascade.targetText) // still a no-op — flags never edit
+    expect(cascade.blockId).toBe('b-conflict')
+    expect(cascade.reason).toContain('Not thirty days.')
+    // No verbatim figure to cite, so it degrades to a lead — an uncited
+    // proposal can never be 'must'.
+    expect(cascade.evidence).toBeNull()
+    expect(cascade.severity).toBe('optional')
+  })
+
+  it('surfaces nothing when the entailment judge fails', async () => {
+    stubListInvariants([entailmentRecord()])
+    const state = EditorState.create({ schema, doc: ENTAILMENT_DOC })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await runAndSurfaceInvariantChecks('doc-A', state, {
+      entailmentEnabled: true,
+      entailmentDeps: {
+        judge: vi.fn(async () => {
+          throw new Error('provider down')
+        }),
+        graph: null,
+      },
+    })
+
+    expect(useAnnotationStore.getState().annotations).toEqual([])
+    warn.mockRestore()
+  })
+
+  it('aborts without flagging when the active document changed during the judge call', async () => {
+    stubListInvariants([entailmentRecord()])
+    const state = EditorState.create({ schema, doc: ENTAILMENT_DOC })
+
+    await runAndSurfaceInvariantChecks('doc-A', state, {
+      entailmentEnabled: true,
+      entailmentDeps: {
+        judge: async (pairs) => {
+          useDocumentStore.setState({ activeDocumentId: 'doc-B' })
+          return new Map(pairs.map((_, i) => [i, { contradicts: true, reason: 'r' }]))
+        },
+        graph: null,
+      },
+    })
+
+    expect(useAnnotationStore.getState().annotations).toEqual([])
+  })
+})

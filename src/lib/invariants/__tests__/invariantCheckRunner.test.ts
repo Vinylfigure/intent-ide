@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Node as PMNode } from 'prosemirror-model'
 import { schema } from '@/lib/prosemirror/schema'
-import { checkInvariants } from '../invariantCheckRunner'
+import { checkInvariants, classifyCheckKind } from '../invariantCheckRunner'
 import type { Invariant } from '../captureInvariant'
 
 function p(blockId: string, text: string): PMNode {
@@ -180,5 +180,47 @@ describe('checkInvariants', () => {
     ])
     expect(violations).toHaveLength(1)
     expect(violations[0].conflictBlockId).toBe('b-conflict')
+  })
+
+  it('tags every violation it produces as the deterministic lane', () => {
+    const doc = docOf(
+      p('b-declare', 'Terminations are now 30 days per the updated policy.'),
+      p('b-conflict', 'Under the new policy, terminations occur within 45 days of notice.'),
+    )
+    const violations = checkInvariants(doc, [invariant()])
+    expect(violations[0].checkKind).toBe('deterministic')
+  })
+})
+
+describe('classifyCheckKind', () => {
+  it('routes a figure-and-subject fact to the deterministic lane', () => {
+    expect(classifyCheckKind('terminations are now 30 days')).toBe('deterministic')
+    expect(classifyCheckKind('the cancellation fee is now $30')).toBe('deterministic')
+  })
+
+  it('routes a word-form-number fact to the entailment lane', () => {
+    expect(classifyCheckKind('terminations are now thirty days')).toBe('entailment')
+  })
+
+  it('routes a fact with no figure at all to the entailment lane', () => {
+    expect(classifyCheckKind('contractors are no longer eligible for severance')).toBe('entailment')
+  })
+
+  it('routes a bare figure with no subject term to the entailment lane', () => {
+    // The deterministic lane skips these outright — it cannot tell WHICH block
+    // the fact is even about — so they must not be classified into it.
+    expect(classifyCheckKind('30')).toBe('entailment')
+  })
+
+  it('agrees with the deterministic lane about what that lane can actually check', () => {
+    // The contract between the two: anything classified 'deterministic' must
+    // be something checkInvariants will genuinely evaluate rather than skip.
+    const doc = docOf(
+      p('b-declare', 'Terminations are now 30 days per the updated policy.'),
+      p('b-conflict', 'Under the new policy, terminations occur within 45 days of notice.'),
+    )
+    const statement = 'terminations are now 30 days'
+    expect(classifyCheckKind(statement)).toBe('deterministic')
+    expect(checkInvariants(doc, [invariant({ statement })])).toHaveLength(1)
   })
 })

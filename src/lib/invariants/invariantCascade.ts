@@ -9,6 +9,8 @@ import { useInvariantFlagStore } from '@/stores/invariantFlagStore'
 import { generateId } from '@/lib/utils/id'
 import { listInvariants, resolveInvariant } from './captureInvariant'
 import { checkInvariants, type InvariantViolation } from './invariantCheckRunner'
+import { checkEntailmentInvariants, type EntailmentCheckDeps } from './entailmentCheck'
+import { useSettingsStore } from '@/stores/settingsStore'
 import type { Annotation, CascadeEvidence, ProposedEdit, ResolutionAction } from '@/lib/annotations/types'
 
 /**
@@ -107,19 +109,40 @@ function verifiedEvidence(
   return { evidence: null, severity: 'optional' }
 }
 
+/**
+ * An entailment violation (Phase 4, #51) has no figure to cite — the absence
+ * of any exact-match anchor is precisely why it needed a judge rather than the
+ * deterministic lane. So it degrades to no evidence and `'optional'` severity,
+ * under the same rule that governs every other cascade path in this codebase:
+ * an uncited proposal can never be `must`. A model's say-so is a lead.
+ */
+function violationEvidence(
+  doc: EditorState['doc'],
+  violation: InvariantViolation,
+): { evidence: CascadeEvidence | null; severity: 'must' | 'optional' } {
+  if (violation.checkKind !== 'deterministic') return { evidence: null, severity: 'optional' }
+  return verifiedEvidence(doc, violation.evidenceBlockIds, violation.statementNumber)
+}
+
+function violationReason(violation: InvariantViolation): string {
+  return violation.checkKind === 'deterministic'
+    ? `Declared "${violation.statementNumber}", but this section says "${violation.conflictNumber}": "${violation.statement}"`
+    : `Declared "${violation.statement}", but this section may contradict it: ${violation.judgeReason}`
+}
+
 function conflictEdit(doc: EditorState['doc'], violation: InvariantViolation): ProposedEdit | null {
   const block = findBlockById(doc, violation.conflictBlockId)
   if (!block) return null
   const from = block.pos + 1
   const to = block.pos + block.node.nodeSize - 1
   const text = block.node.textContent
-  const { evidence, severity } = verifiedEvidence(doc, violation.evidenceBlockIds, violation.statementNumber)
+  const { evidence, severity } = violationEvidence(doc, violation)
   return {
     id: generateId(),
     from,
     to,
     newText: text,
-    reason: `Declared "${violation.statementNumber}", but this section says "${violation.conflictNumber}": "${violation.statement}"`,
+    reason: violationReason(violation),
     relation: 'cascade',
     status: 'pending',
     targetText: text,
@@ -177,6 +200,12 @@ function primaryAnchor(doc: EditorState['doc'], violation: InvariantViolation): 
 export async function runAndSurfaceInvariantChecks(
   documentId: string,
   state: EditorState,
+  opts: {
+    /** Test/caller override for the settings-store entailment toggle. */
+    entailmentEnabled?: boolean
+    /** Injectable judge/graph for the entailment lane (tests). */
+    entailmentDeps?: EntailmentCheckDeps
+  } = {},
 ): Promise<void> {
   try {
     if (useDocumentStore.getState().activeDocumentId !== documentId) return
@@ -184,7 +213,28 @@ export async function runAndSurfaceInvariantChecks(
     const invariants = await listInvariants(documentId)
     if (useDocumentStore.getState().activeDocumentId !== documentId) return
 
-    const violations = checkInvariants(state.doc, invariants)
+    const violations: InvariantViolation[] = checkInvariants(state.doc, invariants)
+
+    // Entailment lane (Phase 4, #51): opt-in only. Off by default because it
+    // is the one doc-CI path that spends money and sends document text — the
+    // deterministic lane above stays local and always-on regardless. Runs on
+    // this same user-initiated apply, never on typing.
+    const entailmentOn =
+      opts.entailmentEnabled ?? useSettingsStore.getState().invariantEntailmentEnabled
+    if (entailmentOn) {
+      const config = useSettingsStore.getState().llmConfig
+      const entailed = await checkEntailmentInvariants(
+        state.doc,
+        invariants,
+        config,
+        opts.entailmentDeps,
+      )
+      // The judge call is a second async gap — re-check the doc-switch guard
+      // before tagging anything with this documentId.
+      if (useDocumentStore.getState().activeDocumentId !== documentId) return
+      violations.push(...entailed)
+    }
+
     if (violations.length === 0) return
 
     const flagStore = useInvariantFlagStore.getState()

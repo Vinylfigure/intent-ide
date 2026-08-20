@@ -32,6 +32,7 @@ import { refreshAnchorAfterApply, refreshedAnchorForMultiRegionApply } from '@/l
 import { createCommit } from '@/lib/history/commits'
 import { recordInvariant, shouldCaptureInvariant } from '@/lib/invariants/captureInvariant'
 import { resolveInvariantFlagOnDismiss, runAndSurfaceInvariantChecks } from '@/lib/invariants/invariantCascade'
+import { classifyCheckKind } from '@/lib/invariants/invariantCheckRunner'
 import { SemanticCommitModal, type InvariantCapture } from '@/components/Editor/SemanticCommitModal'
 import type { Annotation, ConversationMessage } from '@/lib/annotations/types'
 import { SEVERITY_ORDER } from '@/lib/annotations/types'
@@ -154,6 +155,11 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
             documentId: annotation.documentId,
             statement: invariant.statement,
             blockIds: invariant.blockIds,
+            // Decide the lane at capture time (#51) instead of letting every
+            // row default to 'deterministic' — a statement the figure-matching
+            // lane cannot check ("thirty days") is routed to the entailment
+            // lane rather than silently going unchecked forever.
+            checkKind: classifyCheckKind(invariant.statement),
             provenanceCommitHash: hash,
           })
         }

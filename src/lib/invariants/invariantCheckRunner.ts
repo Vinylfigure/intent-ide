@@ -2,7 +2,7 @@ import type { Node as PMNode } from 'prosemirror-model'
 import { collectTextblocks } from '@/lib/prosemirror/blockIds'
 import { containsTerm } from '@/lib/graphrag/docGraph'
 import { extractChangedTokens } from '@/lib/ai/orchestrator'
-import type { Invariant } from './captureInvariant'
+import type { Invariant, InvariantCheckKind } from './captureInvariant'
 
 /**
  * Document Invariant Ledger — Phase 2 (issue #32): the deterministic check
@@ -19,8 +19,8 @@ import type { Invariant } from './captureInvariant'
  * before/after diff extractor as a plain tokenizer — nothing in an empty
  * `after` can match, so every token in `text` comes back.
  *
- * The LLM/NLI entailment lane for semantic (non-deterministic) facts is out
- * of scope for this slice (#20's own phasing) — entailment-kind and
+ * The LLM/NLI entailment lane for semantic (non-deterministic) facts lives in
+ * the sibling `entailmentCheck.ts` (Phase 4, #51) — entailment-kind and
  * inactive rows are silently skipped here, never errored.
  *
  * Known false-negative limitations, disclosed rather than silently assumed
@@ -28,6 +28,8 @@ import type { Invariant } from './captureInvariant'
  * numbers ("thirty days"), calendar-date fragments, and singular/plural term
  * variants (`containsTerm` is exact-word, not stemmed) are not matched. These
  * make the lane conservative — it can miss a real drift — never the reverse.
+ * `classifyCheckKind` below routes exactly those statements to the entailment
+ * lane instead, so a fact this lane cannot check is not simply dropped.
  *
  * Known remaining false-positive limitation: a statement whose ONLY
  * substantive term is a single generic word ("the deadline is $500") cannot
@@ -37,7 +39,7 @@ import type { Invariant } from './captureInvariant'
  * not, and this is a deliberate reuse-only tradeoff, not an oversight.
  */
 
-export interface InvariantViolation {
+interface InvariantViolationBase {
   invariantId: string
   statement: string
   /** The invariant's own evidence blocks — never treated as a conflict target. */
@@ -45,13 +47,53 @@ export interface InvariantViolation {
   /** The block whose content no longer agrees with the declared statement. */
   conflictBlockId: string
   conflictText: string
+}
+
+export interface DeterministicViolation extends InvariantViolationBase {
+  checkKind: 'deterministic'
   /** The specific figure the statement declared (verbatim substring of it). */
   statementNumber: string
   /** The specific figure found in the conflicting block (verbatim substring of it). */
   conflictNumber: string
 }
 
+export interface EntailmentViolation extends InvariantViolationBase {
+  checkKind: 'entailment'
+  /** The judge's one-sentence justification — there is no figure to cite here. */
+  judgeReason: string
+}
+
+/**
+ * Discriminated on `checkKind` so the two lanes cannot be confused downstream:
+ * a deterministic violation always carries the two figures it compared, an
+ * entailment violation never does (that absence is precisely why it needed a
+ * judge) and carries the judge's reason instead.
+ */
+export type InvariantViolation = DeterministicViolation | EntailmentViolation
+
 const NUMERIC_TOKEN_RE = /^[$€£]?\d/
+
+/**
+ * Which lane a newly declared fact belongs to, decided at capture time so the
+ * ledger row is written with the right `checkKind` instead of the hardcoded
+ * `'deterministic'` every caller used through Phase 3.
+ *
+ * Deliberately mirrors `checkInvariants`'s own skip gate below rather than
+ * inventing a second notion of "deterministically checkable": a statement the
+ * deterministic lane would silently `continue` past (no figure, or no
+ * substantive subject term to identify WHICH block is about the fact) is
+ * exactly the statement that needs the entailment lane. Keeping both reads of
+ * `extractChangedTokens` in one file is what stops them drifting apart and
+ * opening a gap where a fact belongs to neither lane.
+ *
+ * Local and free — no LLM call is made just to classify.
+ */
+export function classifyCheckKind(statement: string): InvariantCheckKind {
+  const tokens = extractChangedTokens(statement, '')
+  const hasNumber = tokens.some((t) => NUMERIC_TOKEN_RE.test(t))
+  const hasTerm = tokens.some((t) => !NUMERIC_TOKEN_RE.test(t))
+  return hasNumber && hasTerm ? 'deterministic' : 'entailment'
+}
 
 function parseBlockIds(raw: string): string[] {
   try {
@@ -85,11 +127,11 @@ function normalizeNumeric(token: string): string {
  * conflicting block found) — enough signal to flag; the cascade review flow
  * is where the user inspects the rest of the document.
  */
-export function checkInvariants(doc: PMNode, invariants: Invariant[]): InvariantViolation[] {
+export function checkInvariants(doc: PMNode, invariants: Invariant[]): DeterministicViolation[] {
   const blocks = collectTextblocks(doc).filter(
     (b): b is { blockId: string; pos: number; node: (typeof b)['node'] } => Boolean(b.blockId),
   )
-  const violations: InvariantViolation[] = []
+  const violations: DeterministicViolation[] = []
 
   for (const invariant of invariants) {
     if (invariant.checkKind !== 'deterministic' || invariant.status !== 'active') continue
@@ -134,6 +176,7 @@ export function checkInvariants(doc: PMNode, invariants: Invariant[]): Invariant
       if (differentIdx === -1) continue
 
       violations.push({
+        checkKind: 'deterministic',
         invariantId: invariant.id,
         statement: invariant.statement,
         evidenceBlockIds,
