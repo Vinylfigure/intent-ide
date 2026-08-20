@@ -14,6 +14,7 @@ interface Row {
   checkKind: string
   status: string
   provenanceCommitHash: string | null
+  supersedesId: string | null
   createdAt: Date
 }
 
@@ -37,8 +38,9 @@ vi.mock('@/lib/db', () => ({
           statement: data.statement,
           blockIds: data.blockIds,
           checkKind: data.checkKind,
-          status: 'active',
+          status: data.status ?? 'active',
           provenanceCommitHash: data.provenanceCommitHash ?? null,
+          supersedesId: data.supersedesId ?? null,
           createdAt: new Date(1700000000000 + clock++ * 1000),
         }
         rows.push(row)
@@ -185,5 +187,71 @@ describe('GET /api/invariants', () => {
     const res = await GET(getRequest('documentId=doc-1&limit=2'))
     const data = await res.json()
     expect(data.invariants).toHaveLength(2)
+  })
+
+  it('excludes a superseded row, keeping the row that supersedes it (#35 resolve/dismiss)', async () => {
+    const created = await POST(postRequest({ documentId: 'doc-1', statement: 'Terminations are now 30 days.' }))
+    const original = (await created.json()).invariant
+
+    // Simulates what POST /api/invariants/resolve creates — a new row
+    // duplicating the target's content forward with supersedesId set, never
+    // mutating the original row's own columns.
+    rows.push({
+      id: `inv-${nextId++}`,
+      documentId: 'doc-1',
+      statement: original.statement,
+      blockIds: original.blockIds,
+      checkKind: original.checkKind,
+      status: 'resolved',
+      provenanceCommitHash: original.provenanceCommitHash,
+      supersedesId: original.id,
+      createdAt: new Date(1700000000000 + clock++ * 1000),
+    })
+
+    const res = await GET(getRequest('documentId=doc-1'))
+    const data = await res.json()
+    expect(data.invariants).toHaveLength(1)
+    expect(data.invariants[0].status).toBe('resolved')
+    expect(data.invariants[0].supersedesId).toBe(original.id)
+    // The original row itself is untouched (still exists, still 'active') —
+    // it just no longer appears in the LIVE set GET returns.
+    expect(rows.find((r) => r.id === original.id)?.status).toBe('active')
+  })
+
+  it('follows a two-level supersede chain, surfacing only the newest terminal row', async () => {
+    const created = await POST(postRequest({ documentId: 'doc-1', statement: 'Terminations are now 30 days.' }))
+    const original = (await created.json()).invariant
+
+    const firstResolveId = `inv-${nextId++}`
+    rows.push({
+      id: firstResolveId,
+      documentId: 'doc-1',
+      statement: original.statement,
+      blockIds: original.blockIds,
+      checkKind: original.checkKind,
+      status: 'resolved',
+      provenanceCommitHash: original.provenanceCommitHash,
+      supersedesId: original.id,
+      createdAt: new Date(1700000000000 + clock++ * 1000),
+    })
+    // A resolve-of-a-resolve — e.g. a newly declared fact later supersedes
+    // the ledger's record of having resolved the earlier one.
+    rows.push({
+      id: `inv-${nextId++}`,
+      documentId: 'doc-1',
+      statement: original.statement,
+      blockIds: original.blockIds,
+      checkKind: original.checkKind,
+      status: 'superseded',
+      provenanceCommitHash: original.provenanceCommitHash,
+      supersedesId: firstResolveId,
+      createdAt: new Date(1700000000000 + clock++ * 1000),
+    })
+
+    const res = await GET(getRequest('documentId=doc-1'))
+    const data = await res.json()
+    expect(data.invariants).toHaveLength(1)
+    expect(data.invariants[0].status).toBe('superseded')
+    expect(data.invariants[0].supersedesId).toBe(firstResolveId)
   })
 })

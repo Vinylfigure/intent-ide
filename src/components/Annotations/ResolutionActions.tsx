@@ -31,7 +31,7 @@ import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { refreshAnchorAfterApply, refreshedAnchorForMultiRegionApply } from '@/lib/annotations/anchoring'
 import { createCommit } from '@/lib/history/commits'
 import { recordInvariant, shouldCaptureInvariant } from '@/lib/invariants/captureInvariant'
-import { runAndSurfaceInvariantChecks } from '@/lib/invariants/invariantCascade'
+import { resolveInvariantFlagOnDismiss, runAndSurfaceInvariantChecks } from '@/lib/invariants/invariantCascade'
 import { SemanticCommitModal, type InvariantCapture } from '@/components/Editor/SemanticCommitModal'
 import type { Annotation, ConversationMessage } from '@/lib/annotations/types'
 import { SEVERITY_ORDER } from '@/lib/annotations/types'
@@ -471,6 +471,13 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
 
       case 'dismiss':
       case 'park': {
+        // Idempotency guard: a double-click fires two synchronous onClick
+        // calls before React can re-render with the new status, but each
+        // call reads the STORE (not the closure-captured `annotation` prop)
+        // fresh — so the second call correctly sees what the first one just
+        // wrote and no-ops, rather than firing the invariant-resolve network
+        // call (below) twice for one user action.
+        if (useAnnotationStore.getState().getById(annotation.id)?.status === 'dismissed') break
         updateAnnotation(annotation.id, { status: 'dismissed' })
         if (changeSetId) {
           useChangesStore.getState().updateChangeSetStatus(changeSetId, 'rejected')
@@ -478,6 +485,12 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         if (view) {
           removeAnnotationDecoration(view, annotation.id)
         }
+        // Dismissing an invariant-check flag ("Nevermind") also resolves the
+        // underlying ledger row (#35), so the doc-CI lane stops re-flagging
+        // it. No-op for any other annotation type. Fire-and-forget from this
+        // handler's perspective — the helper itself only prunes dedup memory
+        // once the resolve genuinely succeeds.
+        resolveInvariantFlagOnDismiss(annotation)
         break
       }
 

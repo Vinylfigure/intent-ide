@@ -7,7 +7,7 @@ import { useDocumentStore } from '@/stores/documentStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useInvariantFlagStore } from '@/stores/invariantFlagStore'
 import { generateId } from '@/lib/utils/id'
-import { listInvariants } from './captureInvariant'
+import { listInvariants, resolveInvariant } from './captureInvariant'
 import { checkInvariants, type InvariantViolation } from './invariantCheckRunner'
 import type { Annotation, CascadeEvidence, ProposedEdit, ResolutionAction } from '@/lib/annotations/types'
 
@@ -29,9 +29,36 @@ const FLAG_ACTIONS: ResolutionAction[] = [
   { label: 'Nevermind', kind: 'dismiss', handler: 'dismiss' },
 ]
 
+// Shared with `invariantIdFromFlagKey` below — the one source of truth for
+// this key's shape, so construction and parsing can't drift apart.
+const INVARIANT_KEY_MARKER = 'invariant'
+
 /** Deterministic key for one (invariant, conflicting block) pair — the dedup unit. */
 function violationKey(documentId: string, violation: InvariantViolation): string {
-  return `${documentId}:invariant:${violation.invariantId}:${violation.conflictBlockId}`
+  return `${documentId}:${INVARIANT_KEY_MARKER}:${violation.invariantId}:${violation.conflictBlockId}`
+}
+
+/**
+ * Recovers the invariantId from a `locationGroupKey` produced by
+ * `violationKey` above (an invariant-check flag's `Annotation.locationGroupKey`
+ * IS that key verbatim), or null for any other annotation. Used by
+ * `resolveInvariantFlagOnDismiss` below to detect "this is an invariant-check
+ * flag" without adding a new field to the general-purpose `Annotation` type.
+ *
+ * Anchored from the END of the string (the last 3 ':'-separated segments must
+ * be [marker, invariantId, conflictBlockId]) rather than searching for the
+ * marker from the front. `invariantId` (a Prisma cuid) and `conflictBlockId`
+ * (a ProseMirror block id) never contain colons by construction, but
+ * `documentId` is not similarly constrained here — an indexOf-from-the-front
+ * search would misparse a documentId that happens to contain the literal
+ * substring "invariant" bracketed by colons.
+ */
+export function invariantIdFromFlagKey(locationGroupKey: string): string | null {
+  const parts = locationGroupKey.split(':')
+  if (parts.length < 4) return null
+  const [invariantId, conflictBlockId] = parts.slice(-2)
+  if (parts[parts.length - 3] !== INVARIANT_KEY_MARKER) return null
+  return invariantId && conflictBlockId ? invariantId : null
 }
 
 /**
@@ -204,5 +231,30 @@ export async function runAndSurfaceInvariantChecks(
     }
   } catch (err) {
     console.warn('[invariants] Check runner failed:', err)
+  }
+}
+
+/**
+ * Resolves the ledger row behind a dismissed invariant-check flag ("Nevermind",
+ * #35) and prunes its dedup entry — but ONLY once the resolve genuinely
+ * succeeds. A failed network call leaves the dedup entry in place, so the
+ * still-`active` ledger row's dedup memory stays intact (bounded by
+ * `invariantFlagStore`'s own `MAX_SURFACED` eviction) instead of letting the
+ * next `runAndSurfaceInvariantChecks` pass treat the same conflict as
+ * never-seen and append an unbounded new entry to `annotationStore` (which,
+ * unlike the flag store, has no cap). No-op — and no network call — for a
+ * `locationGroupKey` that isn't an invariant-check flag's.
+ */
+export async function resolveInvariantFlagOnDismiss(annotation: {
+  documentId: string
+  locationGroupKey: string
+}): Promise<void> {
+  const invariantId = invariantIdFromFlagKey(annotation.locationGroupKey)
+  if (!invariantId) return
+  try {
+    await resolveInvariant({ documentId: annotation.documentId, invariantId, status: 'resolved' })
+    useInvariantFlagStore.getState().removeSurfaced(annotation.locationGroupKey)
+  } catch (err) {
+    console.warn('[invariants] Failed to resolve invariant on dismiss:', err)
   }
 }

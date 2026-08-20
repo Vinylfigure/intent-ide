@@ -20,6 +20,7 @@ interface InvariantFlagState {
   surfaced: string[]
   hasSurfaced: (key: string) => boolean
   markSurfaced: (key: string) => void
+  removeSurfaced: (key: string) => void
   clear: () => void
 }
 
@@ -34,6 +35,11 @@ export const useInvariantFlagStore = create<InvariantFlagState>()(
             ? s
             : { surfaced: [...s.surfaced, key].slice(-MAX_SURFACED) },
         ),
+      // Called when the underlying invariant is resolved/dismissed (#35) —
+      // the ledger itself now excludes it from future checks, so holding
+      // onto its dedup entry serves no purpose and just crowds out the
+      // MAX_SURFACED window for pairs that might still recur.
+      removeSurfaced: (key) => set((s) => ({ surfaced: s.surfaced.filter((k) => k !== key) })),
       clear: () => set({ surfaced: [] }),
     }),
     { name: 'intent-ide-invariant-flags' },
