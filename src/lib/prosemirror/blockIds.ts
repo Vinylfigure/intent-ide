@@ -5,6 +5,19 @@ import { BLOCK_ID_NODE_NAMES } from './schema'
 /** Node type names that carry a `blockId` attr. */
 export const BLOCK_ID_TYPES: ReadonlySet<string> = new Set(BLOCK_ID_NODE_NAMES)
 
+/**
+ * Position radius (not character count) used on both sides of a pure
+ * insertion's before/after drift-validation context — see
+ * ProposedEdit.insertionContext. Shared by the capture site (orchestrator.ts)
+ * and the apply-time check (applyProposedEdits.ts) so both derive their
+ * comparison window from the same fixed position offset rather than from the
+ * captured string's length: doc positions include non-character boundary
+ * slots at block edges, so a window that crosses a block boundary yields a
+ * string shorter than the position delta that produced it — inverting length
+ * back into a position offset would drift the window on every such crossing.
+ */
+export const INSERTION_CONTEXT_RADIUS = 40
+
 export interface BlockRef {
   blockId: string | null
   pos: number

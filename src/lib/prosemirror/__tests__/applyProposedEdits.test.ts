@@ -14,6 +14,8 @@ import {
   findAppliedEditFinalPosition,
   findTextInDoc,
 } from '../applyProposedEdits'
+import { blockTextRange } from '../blockIds'
+import { captureInsertionContext } from '@/lib/ai/orchestrator'
 import type { ProposedEdit } from '@/lib/annotations/types'
 
 /**
@@ -358,5 +360,127 @@ describe('applySingleEdit — drift validation for the single-suggestion apply p
     expect(result).toEqual({ ok: true, applied: [] })
     expect(view.state.doc.eq(before)).toBe(true)
     expect(dispatchCount).toBe(dispatchesBefore)
+  })
+})
+
+/**
+ * Regression suite for issue #40: pure insertions (targetText === '',
+ * from === to) have no target text to fingerprint, so the textBetween check
+ * alone always trivially passes. `insertionContext` (a verbatim before/after
+ * snippet captured at proposal time) is the only apply-time drift signal for
+ * them; a mismatch must abort the whole transaction like any other edit kind.
+ *
+ * Uses the real `captureInsertionContext` from orchestrator.ts (not a
+ * hand-rolled copy) so these tests exercise the actual capture logic, not a
+ * parallel implementation that could silently drift from it.
+ */
+describe('applyProposedEdits — insertion context drift (issue #40)', () => {
+  it('a valid, unchanged insertion applies normally', () => {
+    const view = mount(makeDoc())
+    const insertPos = blockTextRange(view.state.doc, 'b1', 'beta')!.to // right after "beta", before " gamma"
+    const ctx = captureInsertionContext(view.state.doc, insertPos)
+    const ins = edit({
+      id: 'pe_insert',
+      from: insertPos,
+      to: insertPos,
+      targetText: '',
+      newText: ' INSERTED',
+      relation: 'primary',
+      blockId: 'b1',
+      severity: 'must',
+      insertionContext: ctx,
+    })
+    setProposedEdits(view, [ins])
+
+    const result = applyProposedEdits(view, ['pe_insert'])
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.applied).toHaveLength(1)
+    expect(view.state.doc.textContent).toContain('beta INSERTED gamma')
+  })
+
+  it('an insertion whose captured context no longer matches the live document is rejected', () => {
+    const view = mount(makeDoc())
+    const insertPos = blockTextRange(view.state.doc, 'b1', 'beta')!.to
+    const ctx = captureInsertionContext(view.state.doc, insertPos)
+    const ins = edit({
+      id: 'pe_insert',
+      from: insertPos,
+      to: insertPos,
+      targetText: '',
+      newText: ' INSERTED',
+      relation: 'primary',
+      blockId: 'b1',
+      severity: 'must',
+      insertionContext: ctx,
+    })
+    setProposedEdits(view, [ins])
+
+    // Mutate text elsewhere within the captured context window (but not at the
+    // insertion point itself) — the plugin still maps the anchor's position
+    // through the transaction, but the surrounding text it once matched changed.
+    const range = blockTextRange(view.state.doc, 'b1', 'alpha')!
+    view.dispatch(view.state.tr.replaceWith(range.from, range.to, view.state.schema.text('ALPHA')))
+    const before = view.state.doc
+
+    const result = applyProposedEdits(view, ['pe_insert'])
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toMatch(/surrounding text/i)
+    // Whole transaction aborted — nothing was dispatched to the document.
+    expect(view.state.doc.eq(before)).toBe(true)
+  })
+
+  it('an insertion with no captured context (legacy data) still applies unvalidated', () => {
+    const view = mount(makeDoc())
+    const insertPos = blockTextRange(view.state.doc, 'b1', 'beta')!.to
+    const ins = edit({
+      id: 'pe_insert',
+      from: insertPos,
+      to: insertPos,
+      targetText: '',
+      newText: ' INSERTED',
+      relation: 'primary',
+      blockId: 'b1',
+      severity: 'must',
+      // No insertionContext — mirrors edits created before this field existed.
+    })
+    setProposedEdits(view, [ins])
+
+    const result = applyProposedEdits(view, ['pe_insert'])
+    expect(result.ok).toBe(true)
+  })
+
+  it('growing the document far from the insertion point does not invalidate an untouched insertion', () => {
+    // Regression for a window-clamping bug: re-deriving the validation window
+    // from a fresh `min(doc.content.size, pos + RADIUS)` clamp (instead of the
+    // captured beforeSpan/afterSpan) made it grow whenever the document's total
+    // size changed anywhere — even far from the insertion point — pulling in
+    // content that didn't exist at capture time and producing a false mismatch.
+    const view = mount(makeDoc())
+    const insertPos = blockTextRange(view.state.doc, 'b2', 'omega')!.to // end of the document's text
+    const ctx = captureInsertionContext(view.state.doc, insertPos)
+    // Clamped by the doc boundary at capture time: far less than the full radius.
+    expect(ctx.afterSpan).toBeLessThan(5)
+    const ins = edit({
+      id: 'pe_insert',
+      from: insertPos,
+      to: insertPos,
+      targetText: '',
+      newText: ' NEW',
+      relation: 'primary',
+      blockId: 'b2',
+      severity: 'must',
+      insertionContext: ctx,
+    })
+    setProposedEdits(view, [ins])
+
+    // Append a large new block AFTER the insertion point — grows the document's
+    // total size without touching anything the insertion's context captured.
+    const filler = p('b3', 'Z'.repeat(80))
+    view.dispatch(view.state.tr.insert(view.state.doc.content.size, filler))
+
+    const result = applyProposedEdits(view, ['pe_insert'])
+    expect(result.ok).toBe(true)
   })
 })

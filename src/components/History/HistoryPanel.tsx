@@ -435,9 +435,10 @@ export function HistoryPanel() {
 
       {commits.length > 0 && (
         <p className="text-[10px] text-muted-foreground/70 pt-1">
-          Version history is append-only at the application level (no edit or delete operations;
-          server-verified hashes make records tamper-evident) and is linked to the audit trail in
-          support of EU AI Act Art. 12 &amp; 14.
+          Applied and imported versions are append-only at the application level (no edit or
+          delete operations; server-verified hashes make records tamper-evident) and are linked to
+          the audit trail in support of EU AI Act Art. 12 &amp; 14. In-progress typing snapshots are
+          refreshed in place until an applied change or restore closes the session.
         </p>
       )}
 

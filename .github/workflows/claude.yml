@@ -1,0 +1,73 @@
+name: Claude
+
+on:
+  issues:
+    types: [opened, assigned]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+# Two @claude events on one issue never run simultaneously. This is a collision
+# control, not a dedup control — a duplicate event still queues and runs after
+# the first finishes. Dedup is handled one layer up by the
+# `overlord-work-order:` body-line check at dispatch time.
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+    runs-on: ubuntu-latest
+    # The primary cost bound. A stuck agent otherwise runs to GitHub's 6-hour
+    # default, burning the shared subscription quota that also feeds live
+    # sessions.
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      # Floating major includes the >= v1.0.94 bot-trigger security fix
+      # (CVE-2025-66032). Note: dispatch issues here are NOT bot-authored —
+      # verified 2026-07-30, the overlord writes as `Vinylfigure` (type User)
+      # via the claude-github-mcp-connector app; only the child's own comments
+      # are `claude[bot]`. The pin is ordinary dependency hygiene, not a
+      # response to bot-authored dispatch.
+      # Echo-retrigger needs no actor guard: `allowed_bots` defaults to "",
+      # so no bot can trigger this workflow at all.
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # --max-turns is the runaway bound, not the effort budget; per-order
+          # effort budgets live in the work-order spec.
+          #
+          # --allowedTools: derived from this repo's own ci.yml (npm ci, prisma
+          # generate, typecheck, lint, test, build) rather than copied from
+          # another stream's stack.
+          #
+          # Deliberately NOT granted: Bash(npx:*), Bash(npm:*), Bash(node:*).
+          # Those are environment runners -- they execute whatever follows, so
+          # such a rule is an arbitrary-execution grant wearing a narrow
+          # costume. Each command is named in full instead.
+          #
+          # Also NOT granted: `npx prisma migrate deploy`. CI runs it against a
+          # throwaway service container; a dispatched agent must never point a
+          # migration at a real database.
+          #
+          # Caveat for order authors: `npm run test` may require DATABASE_URL.
+          # If a done-means check needs it, say so in the order rather than
+          # assuming the runner has it.
+          claude_args: --max-turns 120 --allowedTools "Bash(npm ci),Bash(npm run typecheck),Bash(npm run lint),Bash(npm run test),Bash(npm run build),Bash(npx prisma generate),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git checkout:*),Bash(git log:*)"

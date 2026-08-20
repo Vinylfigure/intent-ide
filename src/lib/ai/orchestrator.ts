@@ -1,4 +1,5 @@
 import type { EditorState } from 'prosemirror-state'
+import type { Node as PMNode } from 'prosemirror-model'
 import type {
   CascadeEdgeType,
   CascadeEvidence,
@@ -9,7 +10,12 @@ import type {
 import { SEVERITY_ORDER } from '@/lib/annotations/types'
 import type { LLMConfig } from '@/stores/settingsStore'
 import { findTextInDoc } from '@/lib/prosemirror/applyProposedEdits'
-import { blockIdAtPos, blockTextRange, findBlockById } from '@/lib/prosemirror/blockIds'
+import {
+  blockIdAtPos,
+  blockTextRange,
+  findBlockById,
+  INSERTION_CONTEXT_RADIUS,
+} from '@/lib/prosemirror/blockIds'
 import { containsTerm, getDocGraph, getNeighborhood, type DocGraph } from '@/lib/graphrag/docGraph'
 import { fetchStructured, type CallStructuredFn } from '@/lib/ai/structuredClient'
 import { judgeMustCandidates, type JudgeFn } from '@/lib/ai/relevanceJudge'
@@ -35,7 +41,7 @@ const EDGE_TYPES: ReadonlySet<string> = new Set([
   'duplicates',
 ])
 
-const PROPOSE_EDIT_TOOL = {
+export const PROPOSE_EDIT_TOOL = {
   name: 'propose_edit',
   description:
     'Propose a change to one of the listed blocks that becomes inconsistent because of the primary edit. Call once per distinct affected block. Only propose edits where a figure, claim, name, or statement must be brought into agreement with the primary edit.',
@@ -83,12 +89,46 @@ function newId(): string {
   }
 }
 
-/** Build the primary ProposedEdit from the resolving agent's suggested edit. */
+/**
+ * Verbatim before/after snippet around a pure-insertion point, for apply-time
+ * drift validation (see applyProposedEdits.ts) — insertions have no target
+ * text to fingerprint, so this is the only signal that the surrounding
+ * document still looks like it did when the insertion was proposed.
+ *
+ * `beforeSpan`/`afterSpan` record the actual POSITION distance each snippet
+ * was captured over (== INSERTION_CONTEXT_RADIUS, unless clamped by a nearby
+ * doc boundary at capture time). Apply-time validation re-derives its window
+ * from these recorded spans, not from a fresh `doc.content.size` clamp —
+ * otherwise an edit anywhere else in the document that changes the doc's
+ * total size (even far from `pos`) would grow or shrink the live window
+ * relative to what was captured and produce a spurious mismatch.
+ */
+export function captureInsertionContext(
+  doc: PMNode,
+  pos: number,
+): { before: string; after: string; beforeSpan: number; afterSpan: number } {
+  const from = Math.max(0, pos - INSERTION_CONTEXT_RADIUS)
+  const to = Math.min(doc.content.size, pos + INSERTION_CONTEXT_RADIUS)
+  return {
+    before: doc.textBetween(from, pos),
+    after: doc.textBetween(pos, to),
+    beforeSpan: pos - from,
+    afterSpan: to - pos,
+  }
+}
+
+/**
+ * Build the primary ProposedEdit from the resolving agent's suggested edit.
+ * `doc` is only needed for pure insertions (from === to, targetText === '')
+ * to capture apply-time drift-validation context; omit it for replacements.
+ */
 export function primaryProposedEdit(
   edit: SuggestedEdit,
   targetText: string,
   blockId?: string,
+  doc?: PMNode,
 ): ProposedEdit {
+  const isInsertion = edit.from === edit.to && targetText === ''
   return {
     id: newId(),
     from: edit.from,
@@ -99,6 +139,7 @@ export function primaryProposedEdit(
     status: 'pending',
     targetText,
     ...(blockId ? { blockId } : {}),
+    ...(isInsertion && doc ? { insertionContext: captureInsertionContext(doc, edit.from) } : {}),
     // The primary edit is the user's own intent — always 'must', self-evidencing.
     severity: 'must',
     evidence: null,
@@ -186,13 +227,13 @@ export function deriveSeverity(
 }
 
 function buildEvidence(
-  state: EditorState,
+  doc: PMNode,
   input: ToolCallInput,
 ): CascadeEvidence | null {
   const sourceBlockId = input.source_block_id
   const quotedText = input.quoted_text?.trim()
   if (!sourceBlockId || !quotedText) return null
-  if (!blockTextRange(state.doc, sourceBlockId, quotedText)) return null
+  if (!blockTextRange(doc, sourceBlockId, quotedText)) return null
   const edgeType: CascadeEdgeType = EDGE_TYPES.has(input.edge_type ?? '')
     ? (input.edge_type as CascadeEdgeType)
     : 'references'
@@ -244,7 +285,74 @@ async function judgeEnabledFromStore(): Promise<boolean> {
  * a judge failure keeps the derived severities unchanged, never blocks.
  * Mutates the edits in place; returns true when any severity changed.
  */
-async function applyRelevanceJudge(
+/**
+ * Parse `propose_edit` tool calls into anchored, evidence-verified,
+ * severity-derived ProposedEdits. Pure with respect to the model: shared by
+ * every cascade mechanism that generates candidates via the propose_edit tool
+ * (the graph-scoped pipeline below, and the whole-doc ablation arms in
+ * `ablationArms.ts`) so anchoring/evidence/severity rules — the substrate the
+ * ablation holds constant — stay byte-identical across arms; only candidate
+ * SCOPING and the verify stage differ between them.
+ */
+export function resolveProposedEdits(
+  doc: PMNode,
+  toolCalls: { name: string; input: unknown }[],
+  scope: ReadonlySet<string>,
+  primary: { from: number; to: number; newText: string },
+  primaryBefore: string,
+): ProposedEdit[] {
+  const edits: ProposedEdit[] = []
+  for (const call of toolCalls) {
+    if (call.name !== 'propose_edit') continue
+    const input = call.input as ToolCallInput
+    const targetText = input?.target_text?.trim()
+    const newText = input?.new_text
+    if (!targetText || newText === undefined) continue
+
+    // Anchor by blockId first; fall back to first-occurrence only when the
+    // block can't be located, then re-derive which block we actually landed in.
+    let located = input.block_id ? blockTextRange(doc, input.block_id, targetText) : null
+    let resolvedBlockId = located ? input.block_id! : null
+    if (!located) {
+      located = findTextInDoc(doc, targetText)
+      if (located) resolvedBlockId = blockIdAtPos(doc, located.from)
+    }
+    if (!located || !resolvedBlockId) continue // unanchorable — drop rather than guess
+
+    // Scope gate: the edit must land inside the candidate set we sent.
+    if (!scope.has(resolvedBlockId)) continue
+    // Skip anything overlapping the primary range to avoid double-editing it.
+    if (located.from < primary.to && located.to > primary.from) continue
+    // Duplicate gate: repeated tool calls anchor to the same range (blockTextRange
+    // returns the first occurrence), and applying two replacements over one region
+    // in a single transaction corrupts the text — first proposal wins.
+    const anchored = located
+    if (edits.some((e) => anchored.from < e.to && anchored.to > e.from)) continue
+
+    const targetBlockText = findBlockById(doc, resolvedBlockId)?.node.textContent ?? ''
+    const evidence = buildEvidence(doc, input)
+    const severity = deriveSeverity(evidence, targetBlockText, primaryBefore, primary.newText)
+
+    edits.push({
+      id: newId(),
+      from: located.from,
+      to: located.to,
+      newText,
+      reason: input?.reason ?? 'Consistency with the primary edit.',
+      relation: 'cascade',
+      status: 'pending',
+      targetText,
+      blockId: resolvedBlockId,
+      severity,
+      evidence,
+    })
+  }
+
+  edits.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.from - b.from)
+  return edits
+}
+
+export async function applyRelevanceJudge(
   edits: ProposedEdit[],
   primary: { before: string; newText: string },
   doc: EditorState['doc'],
@@ -385,54 +493,7 @@ export async function proposeCascadeEdits(
     return []
   }
 
-  const edits: ProposedEdit[] = []
-  for (const call of toolCalls) {
-    if (call.name !== 'propose_edit') continue
-    const input = call.input as ToolCallInput
-    const targetText = input?.target_text?.trim()
-    const newText = input?.new_text
-    if (!targetText || newText === undefined) continue
-
-    // Anchor by blockId first; fall back to first-occurrence only when the
-    // block can't be located, then re-derive which block we actually landed in.
-    let located = input.block_id ? blockTextRange(doc, input.block_id, targetText) : null
-    let resolvedBlockId = located ? input.block_id! : null
-    if (!located) {
-      located = findTextInDoc(doc, targetText)
-      if (located) resolvedBlockId = blockIdAtPos(doc, located.from)
-    }
-    if (!located || !resolvedBlockId) continue // unanchorable — drop rather than guess
-
-    // Scope gate: the edit must land inside the neighborhood we sent.
-    if (!sentIds.has(resolvedBlockId)) continue
-    // Skip anything overlapping the primary range to avoid double-editing it.
-    if (located.from < primary.to && located.to > primary.from) continue
-    // Duplicate gate: repeated tool calls anchor to the same range (blockTextRange
-    // returns the first occurrence), and applying two replacements over one region
-    // in a single transaction corrupts the text — first proposal wins.
-    const anchored = located
-    if (edits.some((e) => anchored.from < e.to && anchored.to > e.from)) continue
-
-    const targetBlockText = findBlockById(doc, resolvedBlockId)?.node.textContent ?? ''
-    const evidence = buildEvidence(state, input)
-    const severity = deriveSeverity(evidence, targetBlockText, primaryBefore, primary.newText)
-
-    edits.push({
-      id: newId(),
-      from: located.from,
-      to: located.to,
-      newText,
-      reason: input?.reason ?? 'Consistency with the primary edit.',
-      relation: 'cascade',
-      status: 'pending',
-      targetText,
-      blockId: resolvedBlockId,
-      severity,
-      evidence,
-    })
-  }
-
-  edits.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.from - b.from)
+  const edits = resolveProposedEdits(doc, toolCalls, sentIds, primary, primaryBefore)
 
   // User toggle ("Verify must-severity citations"): when off, skip the judge
   // entirely — severities stay derived from graph structure + conflict checks.

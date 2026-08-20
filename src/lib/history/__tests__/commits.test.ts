@@ -154,6 +154,55 @@ async function fakeFetch(input: string, init?: { method?: string; body?: string 
       const existing = commits.find((c) => c.hash === body.hash)
       if (existing) return jsonResponse({ hash: existing.hash, existing: true })
 
+      // action: 'amend' — retention-only in-place replacement of a 'direct'
+      // commit, mirroring route.ts's handleAmend semantics for this fake.
+      if (body.action === 'amend') {
+        if (body.kind !== 'direct') {
+          return jsonResponse({ error: 'Only direct commits may be amended' }, 400)
+        }
+        const target = commits.find(
+          (c) => c.hash === body.targetHash && c.documentId === body.documentId,
+        )
+        if (!target) {
+          return jsonResponse(
+            { error: 'Amend target not found', reason: 'stale-head' },
+            409,
+          )
+        }
+        if (target.kind !== 'direct') {
+          return jsonResponse({ error: 'Amend target is not a direct commit' }, 400)
+        }
+        if (parentHash !== target.parentHash) {
+          return jsonResponse({ error: "parentHash must match the amend target's own parent" }, 400)
+        }
+        const hasChild = commits.some(
+          (c) => c.documentId === body.documentId && c.parentHash === target.hash,
+        )
+        if (hasChild) {
+          return jsonResponse(
+            { error: 'Stale head: the amend target already has a newer version', reason: 'stale-head' },
+            409,
+          )
+        }
+        commits = commits.filter((c) => c.hash !== target.hash)
+        commits.push({
+          hash: body.hash,
+          contentHash: body.contentHash,
+          documentId: body.documentId,
+          parentHash,
+          kind: body.kind,
+          message: body.message,
+          docJson: body.docJson,
+          blockIdsTouched: body.blockIdsTouched ?? '[]',
+          annotationId,
+          auditIds: body.auditIds ?? '[]',
+          actor: body.actor ?? 'human',
+          modelVersion: body.modelVersion ?? '',
+          createdAt: new Date(1700000000000 + clock++ * 1000).toISOString(),
+        })
+        return jsonResponse({ hash: body.hash })
+      }
+
       if (parentHash) {
         if (!commits.some((c) => c.hash === parentHash && c.documentId === body.documentId)) {
           return jsonResponse({ error: 'Unknown parent' }, 400)
@@ -379,7 +428,7 @@ describe('createCommit', () => {
   })
 
   it('retries ONCE against the new head on a 409 stale-head, then succeeds', async () => {
-    await createCommit({
+    const root = await createCommit({
       docJson: docJsonWithText('v1'),
       documentId: 'doc-1',
       kind: 'import',
@@ -388,6 +437,10 @@ describe('createCommit', () => {
 
     // The next POST is beaten by a concurrent writer → server 409s the first
     // attempt; the client must refetch the head, rehash, and land on top.
+    // The racer is itself a 'direct' commit, so the retry's own 'direct'
+    // write finds a 'direct' head and amends it in place rather than
+    // appending — collapsing the racer away, which is the retention feature
+    // working as intended (both are ordinary autosave snapshots).
     raceInjectionsRemaining = 1
     const postsBefore = historyPosts().length
     const result = await createCommit({
@@ -399,10 +452,10 @@ describe('createCommit', () => {
 
     expect(result.noop).toBe(false)
     expect(historyPosts().length).toBe(postsBefore + 2) // 409 attempt + retry
-    expect(commits).toHaveLength(3) // v1, racer, mine
+    expect(commits).toHaveLength(2) // v1, mine (the racer was amended away)
+    expect(commits.some((c) => c.message.startsWith('concurrent writer'))).toBe(false)
     const mine = commits.find((c) => c.hash === result.hash)!
-    const racer = commits.find((c) => c.message.startsWith('concurrent writer'))!
-    expect(mine.parentHash).toBe(racer.hash) // rebased onto the interloper
+    expect(mine.parentHash).toBe(root.hash) // stepped into the racer's slot
   })
 
   it('gives up (throws) when the head keeps moving after one retry', async () => {
@@ -482,22 +535,26 @@ describe('restoreCommit', () => {
   })
 
   it('flushes pending unsaved edits as a direct version BEFORE restoring (no typed tail lost)', async () => {
-    const { v2 , v1 } = await seedTwoVersions()
+    const { v2, v1 } = await seedTwoVersions()
 
     // The user typed after the last autosave: the editor is ahead of history.
+    // v2 is itself a 'direct' commit, so the flush amends it in place rather
+    // than appending a third row — the retention feature collapsing the
+    // pre-restore session into its final state before the restore lands.
     const typedJson = pmDocJson('version two plus unsaved typing')
     const view = makeView(typedJson)
     const target = await getCommit(v1)
 
     const result = await restoreCommit(view, target!, 'doc-1')
 
-    // v1, v2, flush, restore — the typed tail is preserved in the chain.
-    expect(commits).toHaveLength(4)
-    const flush = commits[2]
+    // v1, flush (replacing v2), restore — the typed tail is preserved.
+    expect(commits).toHaveLength(3)
+    expect(commits.some((c) => c.hash === v2)).toBe(false)
+    const flush = commits[1]
     expect(flush.kind).toBe('direct')
-    expect(flush.parentHash).toBe(v2)
+    expect(flush.parentHash).toBe(v1)
     expect(JSON.parse(flush.docJson)).toEqual(typedJson)
-    const restore = commits[3]
+    const restore = commits[2]
     expect(restore.hash).toBe(result.hash)
     expect(restore.parentHash).toBe(flush.hash)
     expect((view as any).state.doc.textContent).toBe('version one')
@@ -530,6 +587,82 @@ describe('restoreCommit', () => {
     // "Restore failed" toast is now TRUE.
     expect((view as any).state.doc.textContent).toBe('version two')
     expect(commits).toHaveLength(2)
+  })
+})
+
+describe("direct-commit retention (amend-in-place collapse)", () => {
+  it("collapses a run of 'direct' commits into one row, refreshed in place", async () => {
+    const root = await createCommit({
+      docJson: docJsonWithText('v0'),
+      documentId: 'doc-1',
+      kind: 'import',
+      message: 'Created "Test"',
+    })
+    await createCommit({ docJson: docJsonWithText('v1'), documentId: 'doc-1', kind: 'direct', message: 'Edited document' })
+    await createCommit({ docJson: docJsonWithText('v2'), documentId: 'doc-1', kind: 'direct', message: 'Edited document' })
+    const last = await createCommit({ docJson: docJsonWithText('v3'), documentId: 'doc-1', kind: 'direct', message: 'Edited document' })
+
+    // Exactly one 'direct' row survives the whole run, no matter how many
+    // autosave flushes happened — this is the retention policy in action.
+    expect(commits).toHaveLength(2) // root + one collapsed direct row
+    const survivor = commits.find((c) => c.kind === 'direct')!
+    expect(survivor.hash).toBe(last.hash)
+    expect(survivor.parentHash).toBe(root.hash)
+    expect(JSON.parse(survivor.docJson)).toEqual(docJsonWithText('v3'))
+  })
+
+  it("never amends across a compliance-relevant boundary — 'apply' survives untouched", async () => {
+    const root = await createCommit({
+      docJson: docJsonWithText('v0'),
+      documentId: 'doc-1',
+      kind: 'import',
+      message: 'Created "Test"',
+    })
+    await createCommit({ docJson: docJsonWithText('v1'), documentId: 'doc-1', kind: 'direct', message: 'Edited document' })
+    const applied = await createCommit({
+      docJson: docJsonWithText('v2'),
+      documentId: 'doc-1',
+      kind: 'apply',
+      message: 'AI change applied',
+      annotationId: 'ann-1',
+      auditIds: ['audit-9'],
+      actor: 'ai+human',
+    })
+    await createCommit({ docJson: docJsonWithText('v3'), documentId: 'doc-1', kind: 'direct', message: 'Edited document' })
+    const last = await createCommit({ docJson: docJsonWithText('v4'), documentId: 'doc-1', kind: 'direct', message: 'Edited document' })
+
+    // root, the pre-apply direct row (never amended — 'apply' is never an
+    // amend target, so it stays a permanent row once superseded), apply
+    // itself, and one collapsed post-apply direct row.
+    expect(commits).toHaveLength(4)
+    expect(commits.find((c) => c.hash === applied.hash)).toBeTruthy()
+    expect(commits.find((c) => c.hash === applied.hash)).toMatchObject({ kind: 'apply', actor: 'ai+human' })
+    const survivor = commits.find((c) => c.hash === last.hash)!
+    expect(survivor.parentHash).toBe(applied.hash) // new session starts on top of apply
+  })
+
+  it('blameBlock still resolves the compliance-relevant commit after later direct commits collapse', async () => {
+    await createCommit({
+      docJson: docJsonWithText('v0'),
+      documentId: 'doc-1',
+      kind: 'import',
+      message: 'Created "Test"',
+    })
+    const applied = await createCommit({
+      docJson: docJsonWithText('v1'),
+      documentId: 'doc-1',
+      kind: 'apply',
+      message: 'AI change applied',
+      blockIdsTouched: ['b1'],
+      annotationId: 'ann-1',
+      auditIds: ['audit-9'],
+      actor: 'ai+human',
+    })
+    await createCommit({ docJson: docJsonWithText('v2'), documentId: 'doc-1', kind: 'direct', message: 'Edited document' })
+    await createCommit({ docJson: docJsonWithText('v3'), documentId: 'doc-1', kind: 'direct', message: 'Edited document' })
+
+    const history = await listCommits('doc-1')
+    expect(blameBlock(history, 'b1')?.hash).toBe(applied.hash)
   })
 })
 

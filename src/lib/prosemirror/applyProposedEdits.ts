@@ -46,6 +46,43 @@ interface PendingRange {
   to: number
   targetText: string
   blockId?: string | null
+  /**
+   * See ProposedEdit.insertionContext — the only apply-time drift signal a pure
+   * insertion has. Plugin-anchored edits carry it through the proposedChange
+   * plugin; ad-hoc single-edit callers do not capture one yet, so their
+   * insertions fall through unvalidated (unchanged legacy behavior).
+   */
+  insertionContext?: { before: string; after: string; beforeSpan: number; afterSpan: number }
+}
+
+/**
+ * True if the live text immediately before/after `pos` still matches the
+ * verbatim snippet captured when the insertion was proposed. Insertions have
+ * no target text to fingerprint-search for, so this is the only apply-time
+ * drift check available for them.
+ *
+ * The comparison window is re-derived from the RECORDED `beforeSpan`/`afterSpan`
+ * position distances (never from the captured strings' length, and never from
+ * a fresh doc-size-based radius clamp):
+ * - Length-based reconstruction breaks across block boundaries, where doc
+ *   positions include non-character slots that don't correspond to characters.
+ * - A fresh `min(doc.content.size, pos + RADIUS)` clamp breaks whenever the
+ *   document's total size changes between proposal and apply for ANY reason
+ *   (e.g. text typed far away, near the end of the doc) — the window would
+ *   silently grow or shrink to include content that didn't exist at capture
+ *   time, producing a spurious mismatch even though nothing near `pos` moved.
+ * Reusing the exact spans captured at proposal time keeps the window's SIZE
+ * stable; only its clamp to the live `doc.content.size` can shrink it, which
+ * is itself a correct drift signal (the document got shorter near `pos`).
+ */
+function insertionContextMatches(
+  doc: PMNode,
+  pos: number,
+  ctx: { before: string; after: string; beforeSpan: number; afterSpan: number },
+): boolean {
+  const from = Math.max(0, pos - ctx.beforeSpan)
+  const to = Math.min(doc.content.size, pos + ctx.afterSpan)
+  return doc.textBetween(from, pos) === ctx.before && doc.textBetween(pos, to) === ctx.after
 }
 
 /**
@@ -62,9 +99,22 @@ function resolveEditRange(
   const safeTo = Math.min(edit.to, doc.content.size)
   const current = safeFrom <= safeTo ? doc.textBetween(safeFrom, safeTo) : ''
 
-  // Insertions (targetText:'' ⇒ from === to) trivially pass this check —
-  // they bypass fingerprint validation entirely (and render no decoration).
-  // Known limitation; do not rely on validation for insertion placement.
+  // Insertions (targetText:'' ⇒ from === to) have no target text to fingerprint,
+  // so the textBetween check below would trivially pass regardless of drift.
+  // Validate against the before/after context captured at proposal time instead;
+  // there is no fingerprint recovery for an insertion (nothing to search for), so
+  // a mismatch aborts — same fail-closed contract as every other edit kind. Edits
+  // carrying no captured context fall through unvalidated (legacy behavior).
+  if (safeFrom === safeTo && edit.targetText === '') {
+    if (edit.insertionContext && !insertionContextMatches(doc, safeFrom, edit.insertionContext)) {
+      return {
+        ok: false,
+        reason: 'Could not safely place an insertion — the surrounding text has changed. Re-run the annotation.',
+      }
+    }
+    return { ok: true, from: safeFrom, to: safeTo }
+  }
+
   if (current === edit.targetText) {
     return { ok: true, from: safeFrom, to: safeTo }
   }
