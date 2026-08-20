@@ -8,7 +8,12 @@ import {
   createProposedChangePlugin,
   setProposedEdits,
 } from '../plugins/proposedChangePlugin'
-import { applyProposedEdits, applySingleEdit } from '../applyProposedEdits'
+import {
+  applyProposedEdits,
+  applySingleEdit,
+  findAppliedEditFinalPosition,
+  findTextInDoc,
+} from '../applyProposedEdits'
 import { blockTextRange } from '../blockIds'
 import { captureInsertionContext } from '@/lib/ai/orchestrator'
 import type { ProposedEdit } from '@/lib/annotations/types'
@@ -129,6 +134,139 @@ describe('applyProposedEdits — no-op exclusion (M5)', () => {
     if (!result.ok) return
     expect(result.applied.map((a) => a.id)).toEqual(['pe_real'])
     expect(view.state.doc.textContent).toBe('ALTERED beta gammadelta beta OMEGA')
+  })
+})
+
+/**
+ * #44: `AppliedEdit.from/to` (as returned in `result.applied`) are the
+ * positions passed to `tr.replaceWith` at DISPATCH time — valid post-
+ * transaction only for the lowest-`from` edit in the batch, since edits
+ * dispatch descending by `from` and that one lands last. Any other edit's
+ * `AppliedEdit` position can be shifted by a different-length edit at a
+ * lower position applied after it. `findAppliedEditFinalPosition` re-derives
+ * the TRUE final position by ARITHMETIC over the batch's own deltas — a
+ * fingerprint-search-based first attempt was rejected on review because a
+ * short/common `newText` (a single corrected word or character) can
+ * coincidentally match pre-existing text elsewhere in the same block,
+ * silently returning the WRONG occurrence.
+ */
+describe('findAppliedEditFinalPosition — true post-transaction position, by arithmetic not text search (#44)', () => {
+  // b1 'one two three' (13 chars) at 1..14; b2 'alpha beta gamma' (16 chars)
+  // at 16..32.
+  function makeShrinkDoc(): PMNode {
+    return schema.node('doc', null, [
+      p('b1', 'one two three'),
+      p('b2', 'alpha beta gamma'),
+    ])
+  }
+
+  it('a lower-position, different-length cascade shifts the primary — result.applied is stale, arithmetic gives the true position', () => {
+    const view = mount(makeShrinkDoc())
+    const betaRange = findTextInDoc(view.state.doc, 'beta')!
+    const cascadeRange = findTextInDoc(view.state.doc, 'one two three')!
+    const primary = edit({
+      id: 'primary_1',
+      from: betaRange.from,
+      to: betaRange.to,
+      targetText: 'beta',
+      newText: 'B',
+      relation: 'primary',
+      blockId: 'b2',
+      severity: 'must',
+    })
+    const cascade = edit({
+      id: 'cascade_1',
+      from: cascadeRange.from,
+      to: cascadeRange.to,
+      targetText: 'one two three',
+      newText: 'X',
+      blockId: 'b1',
+    })
+    setProposedEdits(view, [primary, cascade])
+
+    const result = applyProposedEdits(view, ['primary_1', 'cascade_1'])
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(view.state.doc.textContent).toBe('Xalpha B gamma')
+
+    // result.applied still reports the stale, pre-transaction dispatch
+    // position — correct for the ledger entries, not a valid live position
+    // once the earlier cascade shrinks the doc by 12 chars.
+    const appliedPrimary = result.applied.find((ap) => ap.id === 'primary_1')!
+    expect(appliedPrimary).toMatchObject(betaRange)
+
+    const truePos = findAppliedEditFinalPosition(appliedPrimary, result.applied)
+    expect(truePos).toEqual({ from: betaRange.from - 12, to: betaRange.from - 12 + 1 })
+    expect(view.state.doc.textBetween(truePos.from, truePos.to)).toBe('B')
+    // Trusting the stale result.applied position would read past the end of
+    // the now-shrunk document entirely.
+    expect(view.state.doc.content.size).toBeLessThan(appliedPrimary.to)
+  })
+
+  it('a false-positive-prone collision (newText also occurs earlier in the same block) does not fool it — no text search happens at all (#44 review finding)', () => {
+    // b2 deliberately contains a decoy 'B' BEFORE the real edit target — the
+    // exact shape that broke a fingerprint-search-based first attempt: a
+    // block-scoped search for 'B' on the post-dispatch doc returns this
+    // decoy's position, not the real edit's.
+    const doc = schema.node('doc', null, [
+      p('b1', 'one two three'),
+      p('b2', 'B is a letter. alpha beta gamma'),
+    ])
+    const view = mount(doc)
+    const betaRange = findTextInDoc(view.state.doc, 'beta')!
+    const cascadeRange = findTextInDoc(view.state.doc, 'one two three')!
+    const decoyB = findTextInDoc(view.state.doc, 'B')!
+    expect(decoyB.from).toBeLessThan(betaRange.from) // confirms the decoy sorts first
+
+    const primary = edit({
+      id: 'primary_1',
+      from: betaRange.from,
+      to: betaRange.to,
+      targetText: 'beta',
+      newText: 'B',
+      relation: 'primary',
+      blockId: 'b2',
+      severity: 'must',
+    })
+    const cascade = edit({
+      id: 'cascade_1',
+      from: cascadeRange.from,
+      to: cascadeRange.to,
+      targetText: 'one two three',
+      newText: 'X',
+      blockId: 'b1',
+    })
+    setProposedEdits(view, [primary, cascade])
+
+    const result = applyProposedEdits(view, ['primary_1', 'cascade_1'])
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const appliedPrimary = result.applied.find((ap) => ap.id === 'primary_1')!
+    const truePos = findAppliedEditFinalPosition(appliedPrimary, result.applied)
+    // The arithmetic-derived position is the REAL edited 'B' (immediately
+    // after 'alpha '), not the decoy at the start of the block.
+    expect(view.state.doc.textBetween(Math.max(0, truePos.from - 6), truePos.from)).toBe('alpha ')
+    expect(view.state.doc.textBetween(truePos.from, truePos.to)).toBe('B')
+  })
+
+  it('an edit at a HIGHER position (dispatched before target, per descending order) does not shift it', () => {
+    const target = { id: 't', from: 10, to: 10, newText: 'X', targetText: '', blockId: null }
+    const higherCascade = { id: 'h', from: 50, to: 55, newText: 'YY', targetText: 'ZZZZZ', blockId: null }
+    expect(findAppliedEditFinalPosition(target, [target, higherCascade])).toEqual({ from: 10, to: 11 })
+  })
+
+  it('sums deltas from multiple lower-position edits, both shrinking and growing', () => {
+    const target = { id: 't', from: 50, to: 54, newText: 'Q', targetText: 'wxyz', blockId: null }
+    const shrink = { id: 's', from: 0, to: 5, newText: 'AB', targetText: 'ABCDE', blockId: null } // delta -3
+    const grow = { id: 'g', from: 10, to: 10, newText: 'ABCD', targetText: '', blockId: null } // delta +4
+    // net shift = -3 + 4 = +1
+    expect(findAppliedEditFinalPosition(target, [target, shrink, grow])).toEqual({ from: 51, to: 52 })
+  })
+
+  it('a pure deletion (newText === "") resolves to a zero-length range at its shifted position', () => {
+    const target = { id: 't', from: 20, to: 24, newText: '', targetText: 'abcd', blockId: null }
+    const shrink = { id: 's', from: 0, to: 10, newText: '', targetText: 'ZZZZZZZZZZ', blockId: null } // delta -10
+    expect(findAppliedEditFinalPosition(target, [target, shrink])).toEqual({ from: 10, to: 10 })
   })
 })
 

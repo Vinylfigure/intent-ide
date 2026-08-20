@@ -1,6 +1,7 @@
 import { EditorState } from 'prosemirror-state'
 import { inferScope } from '@/lib/prosemirror/helpers'
-import type { TextAnchor, Scope } from './types'
+import { findAppliedEditFinalPosition, type AppliedEdit } from '@/lib/prosemirror/applyProposedEdits'
+import type { TextAnchor, Scope, ProposedEdit } from './types'
 
 export function createAnchor(
   state: EditorState,
@@ -30,6 +31,37 @@ export function refreshAnchorAfterApply(
   applied: { from: number; to: number; newText: string },
 ): TextAnchor {
   return { ...anchor, from: applied.from, to: applied.from + applied.newText.length, text: applied.newText }
+}
+
+/**
+ * Refreshes `anchor` after a multi-region (`applyProposedEdits`) batch apply,
+ * to the PRIMARY edit's true post-transaction position — mirrors the
+ * single-edit `refreshAnchorAfterApply` call sites, extracted into one pure,
+ * directly-testable function (no view/doc dependency — see
+ * `findAppliedEditFinalPosition`'s doc comment for why arithmetic over the
+ * batch's own deltas, not a doc fingerprint search, derives that position)
+ * so the actual apply-time wiring in ResolutionActions.tsx has real
+ * regression coverage, not just the underlying position math (#44 review).
+ *
+ * Returns undefined (anchor left untouched) when: no edit in `proposed` is
+ * tagged `relation: 'primary'`; the primary wasn't in `appliedEdits` (it was
+ * rejected, or excluded as a no-op — `targetText === newText` — by
+ * `applyProposedEdits`); or the primary was a pure deletion (`newText===''`
+ * — no text for a future re-apply's fingerprint check to validate against,
+ * so refreshing here would let that check trivially pass on stale content,
+ * same reasoning as why insertions can't be fingerprint-validated).
+ */
+export function refreshedAnchorForMultiRegionApply(
+  anchor: TextAnchor,
+  proposed: ProposedEdit[],
+  appliedEdits: AppliedEdit[],
+): TextAnchor | undefined {
+  const appliedPrimary = appliedEdits.find(
+    (ap) => proposed.find((e) => e.id === ap.id)?.relation === 'primary',
+  )
+  if (!appliedPrimary || !appliedPrimary.newText) return undefined
+  const { from, to } = findAppliedEditFinalPosition(appliedPrimary, appliedEdits)
+  return refreshAnchorAfterApply(anchor, { from, to, newText: appliedPrimary.newText })
 }
 
 // Expand a selection to its full scope

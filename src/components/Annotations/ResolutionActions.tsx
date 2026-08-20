@@ -28,7 +28,7 @@ import {
 } from '@/lib/telemetry/modalDecisionBuffer'
 import { showAffectedMode } from '@/lib/annotations/showAffected'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
-import { refreshAnchorAfterApply } from '@/lib/annotations/anchoring'
+import { refreshAnchorAfterApply, refreshedAnchorForMultiRegionApply } from '@/lib/annotations/anchoring'
 import { createCommit } from '@/lib/history/commits'
 import { recordInvariant, shouldCaptureInvariant } from '@/lib/invariants/captureInvariant'
 import { runAndSurfaceInvariantChecks } from '@/lib/invariants/invariantCascade'
@@ -225,20 +225,23 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
       if (changeSetId) {
         useChangesStore.getState().updateChangeSetStatus(changeSetId, 'approved')
       }
-      // NOTE: the anchor is deliberately NOT refreshed here (unlike the
-      // single-edit path below). applyProposedEdits resolves every accepted
-      // edit's from/to against the PRE-transaction doc and returns those
-      // unmapped positions in `result.applied` — correct for the ledger
-      // entry above (an explicit "resolved old range" convention), but NOT a
-      // valid live position once other edits in the same batch, positioned
-      // earlier in the doc with a different replacement length, shift
-      // everything after them. Refreshing the anchor from `appliedPrimary`
-      // here would risk writing an out-of-bounds or wrong position onto the
-      // annotation. Filed as a follow-up (task: multi-region anchor refresh)
-      // — a real fix needs the primary's true post-apply position re-derived
-      // by fingerprint match against the live doc, not trusted from
-      // `result.applied`.
-      updateAnnotation(annotation.id, { status: 'applied' })
+      // Refresh the primary edit's anchor to its TRUE post-transaction
+      // position — mirrors the single-edit path below (see
+      // refreshedAnchorForMultiRegionApply's doc comment for why
+      // result.applied's own position can't be trusted for anything but the
+      // lowest-`from` edit in the batch — #44). Returns undefined for a
+      // missing/rejected/no-op/pure-deletion primary; the anchor is then
+      // left unrefreshed, matching today's behavior rather than risking a
+      // wrong or empty-text anchor.
+      const refreshedAnchor = refreshedAnchorForMultiRegionApply(
+        annotation.anchor,
+        proposed,
+        result.applied,
+      )
+      updateAnnotation(annotation.id, {
+        status: 'applied',
+        ...(refreshedAnchor ? { anchor: refreshedAnchor } : {}),
+      })
       // Every accepted edit may have been a no-op (applied is empty): the doc
       // did not change, so record no version commit and say so — a "0 changes"
       // success toast or an empty ledger commit would fabricate history.
