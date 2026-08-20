@@ -5,7 +5,9 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useChangesStore } from '@/stores/changesStore'
 import { generateId } from '@/lib/utils/id'
-import { AI_APPLY_META } from '@/lib/prosemirror/applyProposedEdits'
+import { applySingleEdit } from '@/lib/prosemirror/applyProposedEdits'
+import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
+import { refreshAnchorAfterApply } from '@/lib/annotations/anchoring'
 import { captureAndResolveInBackground } from '@/lib/voice/pipeline'
 import type { ConversationMessage, SuggestedEdit } from '@/lib/annotations/types'
 import { AgentMarkdown } from '@/components/ui/AgentMarkdown'
@@ -31,30 +33,51 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
   const handleApplyEdit = (edit: SuggestedEdit) => {
     if (!view) return
 
-    // AI_APPLY_META keeps the direct-edit cascade trigger from re-offering a
-    // cascade on this AI-driven per-message apply.
-    const tr = view.state.tr.replaceWith(
-      edit.from,
-      edit.to,
-      view.state.schema.text(edit.newText)
-    )
-    tr.setMeta(AI_APPLY_META, true)
-    view.dispatch(tr)
+    const annotation = useAnnotationStore.getState().getById(annotationId || '')
+
+    // Same fail-closed fingerprint/block-scoped-recovery validation the
+    // multi-region cascade path gets from applyProposedEdits — this
+    // per-message apply previously dispatched a raw, unvalidated replaceWith,
+    // so a document that changed since the edit was proposed (e.g. an earlier
+    // message in the same thread already applied) could silently misapply.
+    const result = applySingleEdit(view, {
+      id: annotationId || generateId(),
+      from: edit.from,
+      to: edit.to,
+      newText: edit.newText,
+      targetText: annotation?.anchor.text ?? '',
+      blockId: blockIdAtPos(view.state.doc, edit.from) ?? undefined,
+    })
+    if (!result.ok) {
+      useToastStore.getState().addToast(result.reason, 'error')
+      return
+    }
+    if (result.applied.length === 0) {
+      useToastStore.getState().addToast('No changes were needed — the text already matches', 'info')
+      return
+    }
+    const applied = result.applied[0]
 
     useChangesStore.getState().addEntry({
       id: generateId(),
-      documentId: useAnnotationStore.getState().getById(annotationId || '')?.documentId ?? 'unknown',
+      documentId: annotation?.documentId ?? 'unknown',
       rootAnnotationId: annotationId ?? null,
       annotationId: annotationId || '',
       timestamp: Date.now(),
       description: `Applied suggested edit from conversation`,
-      beforeSlice: '',
-      afterSlice: edit.newText,
-      from: edit.from,
-      to: edit.to,
+      beforeSlice: applied.targetText,
+      afterSlice: applied.newText,
+      from: applied.from,
+      to: applied.to,
       pmStep: null,
       undone: false,
     })
+
+    if (annotation) {
+      useAnnotationStore.getState().update(annotation.id, {
+        anchor: refreshAnchorAfterApply(annotation.anchor, applied),
+      })
+    }
   }
 
   return (
