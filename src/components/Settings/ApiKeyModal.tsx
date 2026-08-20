@@ -20,6 +20,8 @@ export function ApiKeyModal() {
   const setShow = useSettingsStore((s) => s.setShowApiKeyModal)
   const judgeEnabled = useSettingsStore((s) => s.judgeEnabled)
   const setJudgeEnabled = useSettingsStore((s) => s.setJudgeEnabled)
+  const invariantEntailmentEnabled = useSettingsStore((s) => s.invariantEntailmentEnabled)
+  const setInvariantEntailmentEnabled = useSettingsStore((s) => s.setInvariantEntailmentEnabled)
   const embeddingsEnabled = useSettingsStore((s) => s.embeddingsEnabled)
   const setEmbeddingsEnabled = useSettingsStore((s) => s.setEmbeddingsEnabled)
   const telemetryEnabled = useSettingsStore((s) => s.telemetryEnabled)
@@ -229,6 +231,29 @@ export function ApiKeyModal() {
                 <span className="block text-xs text-muted">
                   Extra small model call that double-checks each cited conflict before it is
                   marked &ldquo;must change&rdquo;.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={invariantEntailmentEnabled}
+                onChange={(e) => setInvariantEntailmentEnabled(e.target.checked)}
+                className="mt-0.5 accent-ink"
+              />
+              <span className="text-sm text-ink leading-snug">
+                Check declared facts for meaning, not just figures
+                <span className="block text-xs text-muted">
+                  Off by default. When on, applying a change also asks whether any passage
+                  contradicts a fact you declared in words rather than numbers (&ldquo;thirty
+                  days&rdquo;). Sends those passages to your provider; the figure-matching check
+                  stays on your machine either way.
+                </span>
+                <span className="block text-xs text-muted">
+                  {provider === 'claude'
+                    ? 'Runs on Haiku, not your selected model.'
+                    : `Runs on your selected model (${llmConfig.model}) — only Claude has a cheaper model wired up for this.`}
                 </span>
               </span>
             </label>
