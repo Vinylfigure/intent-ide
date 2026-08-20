@@ -3,8 +3,13 @@ name: CI
 on:
   push:
     branches: [main]
+  # No `branches:` filter here on purpose. That filter matches the pull
+  # request's BASE branch, so a PR stacked on another PR's branch was skipped
+  # entirely — intent-ide#46 reached a merge with no `verify` run ever having
+  # happened, and once `verify` became a required check a never-reported check
+  # blocked the merge permanently. GitHub also fires no run when it retargets
+  # a stacked PR's base after the parent merges, so the gap did not self-heal.
   pull_request:
-    branches: [main]
 
 jobs:
   verify:
