@@ -210,7 +210,7 @@ export async function runAndSurfaceInvariantChecks(
   try {
     if (useDocumentStore.getState().activeDocumentId !== documentId) return
 
-    const invariants = await listInvariants(documentId)
+    const { invariants } = await listInvariants(documentId)
     if (useDocumentStore.getState().activeDocumentId !== documentId) return
 
     const violations: InvariantViolation[] = checkInvariants(state.doc, invariants)
