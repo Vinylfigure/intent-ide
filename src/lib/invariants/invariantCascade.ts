@@ -7,7 +7,7 @@ import { useDocumentStore } from '@/stores/documentStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useInvariantFlagStore } from '@/stores/invariantFlagStore'
 import { generateId } from '@/lib/utils/id'
-import { listInvariants, resolveInvariant } from './captureInvariant'
+import { listInvariants, resolveInvariant, type Invariant, type ListInvariantsCursor } from './captureInvariant'
 import { checkInvariants, type InvariantViolation } from './invariantCheckRunner'
 import { checkEntailmentInvariants, type EntailmentCheckDeps } from './entailmentCheck'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -172,6 +172,57 @@ function primaryAnchor(doc: EditorState['doc'], violation: InvariantViolation): 
   return null
 }
 
+// Defensive bound on how many pages `listAllInvariants` will walk. Not a
+// real limit in practice: `GET /api/invariants` computes the live set from a
+// scan of at most SUPERSEDE_SCAN_CAP (2000) rows regardless of cursor, so at
+// the route's own DEFAULT_LIMIT (100) a genuinely-exhaustive walk of that
+// scan window never exceeds 20 pages — this only guards against an
+// unforeseen cursor bug looping forever.
+const MAX_INVARIANT_PAGES = 25
+
+/**
+ * Walks every page of a document's live invariants (#59 — the check runner
+ * previously read only `GET /api/invariants`'s first page, silently
+ * excluding older declared facts once a document passed the route's
+ * DEFAULT_LIMIT of 100). Returns `null` if the active document changed
+ * during the walk, so the caller can abort exactly as it already does for
+ * the single-page case, rather than tagging a flag with the wrong
+ * document's id.
+ *
+ * A `scanTruncated` page means the route's own scan window was cut off
+ * before reaching the end of this document's raw rows — this is a
+ * pre-existing, disclosed limit of the route itself (see its doc-comment),
+ * not something a caller can page around, so it is only logged here, not
+ * treated as an error.
+ */
+async function listAllInvariants(documentId: string): Promise<Invariant[] | null> {
+  const invariants: Invariant[] = []
+  let cursor: ListInvariantsCursor | undefined
+  let scanTruncated = false
+
+  for (let page = 0; page < MAX_INVARIANT_PAGES; page++) {
+    const result = await listInvariants(documentId, cursor)
+    if (useDocumentStore.getState().activeDocumentId !== documentId) return null
+
+    invariants.push(...result.invariants)
+    scanTruncated = scanTruncated || result.scanTruncated
+    if (!result.nextCursor || !result.nextCursorId) {
+      if (scanTruncated) {
+        console.warn(
+          `[invariants] Check runner's page walk for document ${documentId} stopped within a truncated scan window — older invariants may be unreachable this run.`,
+        )
+      }
+      return invariants
+    }
+    cursor = { before: result.nextCursor, beforeId: result.nextCursorId }
+  }
+
+  console.warn(
+    `[invariants] Check runner hit its ${MAX_INVARIANT_PAGES}-page safety bound for document ${documentId} — stopping early.`,
+  )
+  return invariants
+}
+
 /**
  * Runs the deterministic doc-CI lane for a document against its current
  * editor state and appends one resolved 'flag' annotation per violated
@@ -180,10 +231,10 @@ function primaryAnchor(doc: EditorState['doc'], violation: InvariantViolation): 
  *
  * Two guards keep this from becoming an unbounded nuisance:
  * - Doc-switch race: `state` is read from a caller-captured EditorView after
- *   an async round-trip (`listInvariants`); if the active document changed
- *   in the meantime, `state` and `documentId` would disagree — abort rather
- *   than tag a flag with the wrong document's id (same guard as the sibling
- *   `directEditCascade.ts`).
+ *   an async round-trip (now potentially several, via `listAllInvariants`);
+ *   if the active document changed in the meantime, `state` and
+ *   `documentId` would disagree — abort rather than tag a flag with the
+ *   wrong document's id (same guard as the sibling `directEditCascade.ts`).
  * - Re-flag dedup: the check re-runs on every apply, so without a dedup an
  *   unresolved conflict would re-surface as a brand-new annotation on every
  *   future apply anywhere in the document, forever. Dedup state lives in its
@@ -210,8 +261,8 @@ export async function runAndSurfaceInvariantChecks(
   try {
     if (useDocumentStore.getState().activeDocumentId !== documentId) return
 
-    const { invariants } = await listInvariants(documentId)
-    if (useDocumentStore.getState().activeDocumentId !== documentId) return
+    const invariants = await listAllInvariants(documentId)
+    if (invariants === null) return // active document changed mid-page-walk
 
     const violations: InvariantViolation[] = checkInvariants(state.doc, invariants)
 

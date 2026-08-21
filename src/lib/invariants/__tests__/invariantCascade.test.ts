@@ -220,6 +220,87 @@ describe('runAndSurfaceInvariantChecks', () => {
     expect(next.doc.textBetween(cascade.from, cascade.to)).toBe(cascade.targetText)
   })
 
+  it('pages past listInvariants()\'s first page to catch a violation living on an older page (#59)', async () => {
+    // Simulates a document with > 100 live invariants: the fixture's real
+    // conflicting invariant sits on the SECOND page, past the route's
+    // DEFAULT_LIMIT of 100 — proving the runner doesn't stop at page one.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      invariantRecord({
+        id: `inv-filler-${i}`,
+        // No numeric token in the statement, so `checkInvariants` skips these
+        // before ever touching the document — they exist only to fill page 1.
+        statement: `some unrelated policy note number ${i}`,
+        blockIds: JSON.stringify([]),
+      }),
+    )
+    const page2 = [invariantRecord()] // the real DECLARE_TEXT/CONFLICT_TEXT fixture
+
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push(url)
+        const isFirstPage = !url.includes('before=')
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            isFirstPage
+              ? {
+                  invariants: page1,
+                  nextCursor: '2026-08-17T00:00:00.000Z',
+                  nextCursorId: 'inv-filler-99',
+                  scanTruncated: false,
+                }
+              : { invariants: page2, nextCursor: null, nextCursorId: null, scanTruncated: false },
+        } as Response
+      }),
+    )
+    const state = EditorState.create({ schema, doc: DOC })
+
+    await runAndSurfaceInvariantChecks('doc-A', state)
+
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toContain('before=')
+    expect(calls[1]).toContain('beforeId=inv-filler-99')
+    expect(useAnnotationStore.getState().annotations).toHaveLength(1)
+  })
+
+  it('aborts the page walk (and flags nothing) when the active document changes between pages', async () => {
+    const page1 = [invariantRecord({ id: 'inv-filler-0', statement: 'no figures here', blockIds: '[]' })]
+    let call = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        call++
+        if (call === 1) {
+          useDocumentStore.setState({ activeDocumentId: 'doc-B' })
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              invariants: page1,
+              nextCursor: '2026-08-17T00:00:00.000Z',
+              nextCursorId: 'inv-filler-0',
+              scanTruncated: false,
+            }),
+          } as Response
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ invariants: [invariantRecord()], nextCursor: null, nextCursorId: null, scanTruncated: false }),
+        } as Response
+      }),
+    )
+    const state = EditorState.create({ schema, doc: DOC })
+
+    await runAndSurfaceInvariantChecks('doc-A', state)
+
+    expect(call).toBe(1) // the second page is never fetched once the doc has switched
+    expect(useAnnotationStore.getState().annotations).toHaveLength(0)
+  })
+
   it('produces no flag for an invariant already resolved (#35: dismissing a flag stops it being checked)', async () => {
     // Simulates what GET /api/invariants returns once a "Nevermind" resolve
     // has landed: the live row for this fact now has status 'resolved', not
