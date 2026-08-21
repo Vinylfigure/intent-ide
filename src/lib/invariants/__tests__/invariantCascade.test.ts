@@ -227,9 +227,17 @@ describe('runAndSurfaceInvariantChecks', () => {
     const page1 = Array.from({ length: 100 }, (_, i) =>
       invariantRecord({
         id: `inv-filler-${i}`,
-        // No numeric token in the statement, so `checkInvariants` skips these
-        // before ever touching the document — they exist only to fill page 1.
-        statement: `some unrelated policy note number ${i}`,
+        // Digit-free by construction (the distinguishing index lives only in
+        // `id`, never in the statement text) — `extractChangedTokens` finds
+        // no numeric token, so `checkInvariants` skips these before ever
+        // touching the document. They exist only to fill page 1; a statement
+        // with an embedded 2+-digit index (e.g. "note number 42") would still
+        // usually be safe here too, but only because "unrelated"/"policy"/
+        // "note" happen to win `checkInvariants`' specificity-based required-
+        // term selection and never appear in either fixture block — a
+        // coincidence of that heuristic, not a guarantee. Keeping the index
+        // out of the statement removes that coincidence entirely.
+        statement: 'some unrelated policy note with no figures at all',
         blockIds: JSON.stringify([]),
       }),
     )

@@ -194,6 +194,14 @@ const MAX_INVARIANT_PAGES = 25
  * pre-existing, disclosed limit of the route itself (see its doc-comment),
  * not something a caller can page around, so it is only logged here, not
  * treated as an error.
+ *
+ * Disclosed carry-forward limitation: each page is its own GET, computing
+ * the live (supersede-resolved) set fresh from the DB at that moment. If a
+ * "Nevermind" resolve for a row already returned on an earlier page lands
+ * mid-walk, that row's now-stale `active` copy stays in the accumulated
+ * result — a real but narrow widening of a race that already existed
+ * (single-request) pre-#59; multiple sequential requests widen the window
+ * rather than introduce it.
  */
 async function listAllInvariants(documentId: string): Promise<Invariant[] | null> {
   const invariants: Invariant[] = []
@@ -218,7 +226,8 @@ async function listAllInvariants(documentId: string): Promise<Invariant[] | null
   }
 
   console.warn(
-    `[invariants] Check runner hit its ${MAX_INVARIANT_PAGES}-page safety bound for document ${documentId} — stopping early.`,
+    `[invariants] Check runner hit its ${MAX_INVARIANT_PAGES}-page safety bound for document ${documentId} — stopping early.` +
+      (scanTruncated ? ' The route’s own scan window was also truncated within those pages.' : ''),
   )
   return invariants
 }
