@@ -83,12 +83,50 @@ export function shouldCaptureInvariant(acceptedIds: string[], primaryId: string)
   return acceptedIds.includes(primaryId)
 }
 
-/** All invariants declared for a document, newest first. */
-export async function listInvariants(documentId: string): Promise<Invariant[]> {
-  const res = await fetch(`/api/invariants?documentId=${encodeURIComponent(documentId)}`)
+export interface ListInvariantsCursor {
+  before: string
+  beforeId: string
+}
+
+export interface ListInvariantsPage {
+  invariants: Invariant[]
+  /** Cursor for the next page, or null once the reachable live set is exhausted. */
+  nextCursor: string | null
+  nextCursorId: string | null
+  /**
+   * True when the route's own scan window (`SUPERSEDE_SCAN_CAP`) cut off
+   * before reaching the end of this document's raw rows — see the doc-comment
+   * on `GET /api/invariants`. A null `nextCursor` alongside `scanTruncated:
+   * true` means "no more pages within what the route scanned," not "no more
+   * live invariants exist."
+   */
+  scanTruncated: boolean
+}
+
+/**
+ * One page of a document's live invariants, newest first. Pass the previous
+ * page's `{ nextCursor, nextCursorId }` (renamed here to `before`/`beforeId`
+ * to match the route's own query param names) to fetch the next page; omit
+ * `cursor` for the first page.
+ */
+export async function listInvariants(
+  documentId: string,
+  cursor?: ListInvariantsCursor,
+): Promise<ListInvariantsPage> {
+  const params = new URLSearchParams({ documentId })
+  if (cursor) {
+    params.set('before', cursor.before)
+    params.set('beforeId', cursor.beforeId)
+  }
+  const res = await fetch(`/api/invariants?${params.toString()}`)
   if (!res.ok) throw new Error(`Failed to load invariants (HTTP ${res.status})`)
   const data = await res.json()
-  return data.invariants ?? []
+  return {
+    invariants: data.invariants ?? [],
+    nextCursor: data.nextCursor ?? null,
+    nextCursorId: data.nextCursorId ?? null,
+    scanTruncated: data.scanTruncated ?? false,
+  }
 }
 
 export interface ResolveInvariantParams {

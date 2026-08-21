@@ -14,6 +14,8 @@ import {
 // wrapper without re-testing the route itself (covered in route.test.ts).
 // ---------------------------------------------------------------------------
 
+const MOCK_PAGE_SIZE = 2
+
 let store: Invariant[] = []
 let nextId = 0
 let failNextPost = false
@@ -73,13 +75,39 @@ function fetchStub(url: string, init?: RequestInit) {
     store.push(invariant)
     return Promise.resolve(jsonResponse({ invariant }))
   }
-  // GET — mirrors the real route's "exclude superseded rows" computation.
-  const documentId = new URL(url, 'http://localhost').searchParams.get('documentId')
+  // GET — mirrors the real route's "exclude superseded rows" + before/beforeId
+  // cursor computation (see route.test.ts for the route's own coverage,
+  // including the supersede-scan-cap/tiebreak edge cases). MOCK_PAGE_SIZE is
+  // deliberately much smaller than the route's real DEFAULT_LIMIT/MAX_LIMIT —
+  // this file is only pinning listInvariants()'s cursor-passthrough contract,
+  // not the route's actual page-size values.
+  const parsed = new URL(url, 'http://localhost')
+  const documentId = parsed.searchParams.get('documentId')
+  const before = parsed.searchParams.get('before')
+  const beforeId = parsed.searchParams.get('beforeId')
   const supersededIds = new Set(store.filter((r) => r.supersedesId).map((r) => r.supersedesId as string))
-  const invariants = [...store]
+  const live = [...store]
     .filter((r) => r.documentId === documentId && !supersededIds.has(r.id))
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-  return Promise.resolve(jsonResponse({ invariants }))
+  const windowed =
+    before && beforeId
+      ? live.filter((r) => {
+          const rt = new Date(r.createdAt).getTime()
+          const bt = new Date(before).getTime()
+          return rt !== bt ? rt < bt : r.id < beforeId
+        })
+      : live
+  const invariants = windowed.slice(0, MOCK_PAGE_SIZE)
+  const last = invariants[invariants.length - 1]
+  const hasMore = windowed.length > MOCK_PAGE_SIZE
+  return Promise.resolve(
+    jsonResponse({
+      invariants,
+      nextCursor: hasMore && last ? last.createdAt : null,
+      nextCursorId: hasMore && last ? last.id : null,
+      scanTruncated: false,
+    }),
+  )
 }
 
 beforeEach(() => {
@@ -182,21 +210,49 @@ describe('listInvariants', () => {
       blockIds: ['blk-hr'],
     })
 
-    const invariants = await listInvariants('doc-1')
+    const { invariants, nextCursor, nextCursorId, scanTruncated } = await listInvariants('doc-1')
     expect(invariants).toHaveLength(2)
     expect(invariants[0].statement).toBe('Termination notices go through HR.')
     expect(invariants[1].statement).toBe('Terminations are now 30 days.')
     expect(JSON.parse(invariants[1].blockIds)).toEqual(['blk-terminations'])
+    expect(nextCursor).toBeNull()
+    expect(nextCursorId).toBeNull()
+    expect(scanTruncated).toBe(false)
   })
 
   it('excludes a resolved invariant\'s original row, keeping the resolution row live (#35)', async () => {
     const original = await captureInvariant({ documentId: 'doc-1', statement: 'Terminations are now 30 days.' })
     await resolveInvariant({ documentId: 'doc-1', invariantId: original.id, status: 'resolved' })
 
-    const invariants = await listInvariants('doc-1')
+    const { invariants } = await listInvariants('doc-1')
     expect(invariants).toHaveLength(1)
     expect(invariants[0].status).toBe('resolved')
     expect(invariants[0].supersedesId).toBe(original.id)
+  })
+
+  it('fetches a second page via the returned cursor — the wrapper matches what the route (PR #57) can already do (#58)', async () => {
+    // MOCK_PAGE_SIZE is 2, so 3 declared facts force a second page.
+    await captureInvariant({ documentId: 'doc-1', statement: 'Fact one.' })
+    await captureInvariant({ documentId: 'doc-1', statement: 'Fact two.' })
+    await captureInvariant({ documentId: 'doc-1', statement: 'Fact three.' })
+
+    const page1 = await listInvariants('doc-1')
+    expect(page1.invariants).toHaveLength(2)
+    expect(page1.invariants.map((i) => i.statement)).toEqual(['Fact three.', 'Fact two.'])
+    expect(page1.nextCursor).not.toBeNull()
+    expect(page1.nextCursorId).not.toBeNull()
+
+    const page2 = await listInvariants('doc-1', {
+      before: page1.nextCursor as string,
+      beforeId: page1.nextCursorId as string,
+    })
+    expect(page2.invariants).toHaveLength(1)
+    expect(page2.invariants[0].statement).toBe('Fact one.')
+    // Second page is the remaining slice, not a repeat of page one.
+    const page1Ids = new Set(page1.invariants.map((i) => i.id))
+    expect(page1Ids.has(page2.invariants[0].id)).toBe(false)
+    expect(page2.nextCursor).toBeNull()
+    expect(page2.nextCursorId).toBeNull()
   })
 })
 
