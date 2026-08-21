@@ -28,7 +28,13 @@ vi.mock('@/lib/db', () => ({
       findMany: async (args: any) => {
         return rows
           .filter((r) => (args.where?.documentId ? r.documentId === args.where.documentId : true))
-          .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .sort((a, b) => {
+            const dt = b.createdAt.getTime() - a.createdAt.getTime()
+            // Matches the route's orderBy: [{createdAt:'desc'},{id:'desc'}] —
+            // a secondary sort is required for the tests below to exercise
+            // the real tie-break behavior rather than incidental array order.
+            return dt !== 0 ? dt : b.id.localeCompare(a.id)
+          })
           .slice(0, args.take)
       },
       create: async ({ data }: any) => {
@@ -218,7 +224,7 @@ describe('GET /api/invariants', () => {
     expect(rows.find((r) => r.id === original.id)?.status).toBe('active')
   })
 
-  it('pages past MAX_LIMIT via the before cursor, returning the next slice (not a repeat of page one)', async () => {
+  it('pages past MAX_LIMIT via the before/beforeId cursor, returning the next slice (not a repeat of page one)', async () => {
     const MAX_LIMIT = 200
     const total = MAX_LIMIT + 40
     for (let i = 0; i < total; i++) {
@@ -232,9 +238,13 @@ describe('GET /api/invariants', () => {
     expect(page1.invariants[0].statement).toBe(`fact ${total - 1}`)
     expect(page1.invariants[199].statement).toBe(`fact ${total - 200}`)
     expect(page1.nextCursor).toBeTruthy()
+    expect(page1.nextCursorId).toBeTruthy()
+    expect(page1.scanTruncated).toBe(false)
 
     const page2Res = await GET(
-      getRequest(`documentId=doc-1&limit=200&before=${encodeURIComponent(page1.nextCursor)}`),
+      getRequest(
+        `documentId=doc-1&limit=200&before=${encodeURIComponent(page1.nextCursor)}&beforeId=${encodeURIComponent(page1.nextCursorId)}`,
+      ),
     )
     const page2 = await page2Res.json()
     expect(page2.invariants).toHaveLength(40)
@@ -247,6 +257,21 @@ describe('GET /api/invariants', () => {
     }
     // The live set is exhausted — no further page.
     expect(page2.nextCursor).toBeNull()
+    expect(page2.nextCursorId).toBeNull()
+  })
+
+  it('a before param with no matching beforeId is treated as no cursor at all (page one again), not a crash', async () => {
+    for (let i = 0; i < 5; i++) {
+      await POST(postRequest({ documentId: 'doc-1', statement: `fact ${i}` }))
+    }
+    const page1Res = await GET(getRequest('documentId=doc-1&limit=2'))
+    const page1 = await page1Res.json()
+
+    const noBeforeIdRes = await GET(
+      getRequest(`documentId=doc-1&limit=2&before=${encodeURIComponent(page1.nextCursor)}`),
+    )
+    const noBeforeId = await noBeforeIdRes.json()
+    expect(noBeforeId.invariants).toEqual(page1.invariants)
   })
 
   it('before cursor still respects the supersede chain across the page boundary', async () => {
@@ -279,13 +304,76 @@ describe('GET /api/invariants', () => {
     expect(page1.nextCursor).toBeTruthy()
 
     const page2Res = await GET(
-      getRequest(`documentId=doc-1&limit=3&before=${encodeURIComponent(page1.nextCursor)}`),
+      getRequest(
+        `documentId=doc-1&limit=3&before=${encodeURIComponent(page1.nextCursor)}&beforeId=${encodeURIComponent(page1.nextCursorId)}`,
+      ),
     )
     const page2 = await page2Res.json()
     // 7 rows created (1 original + 5 filler + 1 resolve), minus the
     // superseded original = 6 live rows; page one took 3, page two the rest.
     expect(page2.invariants).toHaveLength(3)
     expect(page2.invariants.some((inv: { id: string }) => inv.id === original.id)).toBe(false)
+  })
+
+  it('breaks createdAt ties deterministically via id, never dropping or duplicating a row across pages', async () => {
+    // Four rows sharing the exact same createdAt millisecond — reachable in
+    // production via concurrent POSTs racing each other.
+    const tiedTime = new Date(1700000000000)
+    for (const id of ['tied-0', 'tied-1', 'tied-2', 'tied-3']) {
+      rows.push({
+        id,
+        documentId: 'doc-1',
+        statement: `statement for ${id}`,
+        blockIds: '[]',
+        checkKind: 'deterministic',
+        status: 'active',
+        provenanceCommitHash: null,
+        supersedesId: null,
+        createdAt: tiedTime,
+      })
+    }
+
+    const page1Res = await GET(getRequest('documentId=doc-1&limit=2'))
+    const page1 = await page1Res.json()
+    expect(page1.invariants).toHaveLength(2)
+    expect(page1.nextCursor).toBeTruthy()
+    expect(page1.nextCursorId).toBeTruthy()
+
+    const page2Res = await GET(
+      getRequest(
+        `documentId=doc-1&limit=2&before=${encodeURIComponent(page1.nextCursor)}&beforeId=${encodeURIComponent(page1.nextCursorId)}`,
+      ),
+    )
+    const page2 = await page2Res.json()
+    expect(page2.invariants).toHaveLength(2)
+    expect(page2.nextCursor).toBeNull()
+
+    const allIds = [...page1.invariants, ...page2.invariants].map((inv: { id: string }) => inv.id)
+    // All four tied rows show up exactly once across both pages combined.
+    expect(new Set(allIds).size).toBe(4)
+    expect([...allIds].sort()).toEqual(['tied-0', 'tied-1', 'tied-2', 'tied-3'])
+  })
+
+  it('flags scanTruncated when the document has more raw rows than SUPERSEDE_SCAN_CAP, so a null nextCursor is not mistaken for "no more data"', async () => {
+    const SUPERSEDE_SCAN_CAP = 2000
+    for (let i = 0; i < SUPERSEDE_SCAN_CAP + 5; i++) {
+      rows.push({
+        id: `bulk-${i}`,
+        documentId: 'doc-1',
+        statement: `bulk fact ${i}`,
+        blockIds: '[]',
+        checkKind: 'deterministic',
+        status: 'active',
+        provenanceCommitHash: null,
+        supersedesId: null,
+        createdAt: new Date(1700000000000 + i * 1000),
+      })
+    }
+
+    const res = await GET(getRequest('documentId=doc-1&limit=10'))
+    const data = await res.json()
+    expect(data.invariants).toHaveLength(10)
+    expect(data.scanTruncated).toBe(true)
   })
 
   it('follows a two-level supersede chain, surfacing only the newest terminal row', async () => {
