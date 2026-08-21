@@ -218,6 +218,76 @@ describe('GET /api/invariants', () => {
     expect(rows.find((r) => r.id === original.id)?.status).toBe('active')
   })
 
+  it('pages past MAX_LIMIT via the before cursor, returning the next slice (not a repeat of page one)', async () => {
+    const MAX_LIMIT = 200
+    const total = MAX_LIMIT + 40
+    for (let i = 0; i < total; i++) {
+      await POST(postRequest({ documentId: 'doc-1', statement: `fact ${i}` }))
+    }
+
+    const page1Res = await GET(getRequest('documentId=doc-1&limit=200'))
+    const page1 = await page1Res.json()
+    expect(page1.invariants).toHaveLength(200)
+    // Newest-first: page one holds facts total-1 .. 40.
+    expect(page1.invariants[0].statement).toBe(`fact ${total - 1}`)
+    expect(page1.invariants[199].statement).toBe(`fact ${total - 200}`)
+    expect(page1.nextCursor).toBeTruthy()
+
+    const page2Res = await GET(
+      getRequest(`documentId=doc-1&limit=200&before=${encodeURIComponent(page1.nextCursor)}`),
+    )
+    const page2 = await page2Res.json()
+    expect(page2.invariants).toHaveLength(40)
+    // Page two continues where page one left off — no overlap with page one.
+    expect(page2.invariants[0].statement).toBe(`fact ${total - 201}`)
+    expect(page2.invariants[39].statement).toBe('fact 0')
+    const page1Ids = new Set(page1.invariants.map((inv: { id: string }) => inv.id))
+    for (const inv of page2.invariants) {
+      expect(page1Ids.has(inv.id)).toBe(false)
+    }
+    // The live set is exhausted — no further page.
+    expect(page2.nextCursor).toBeNull()
+  })
+
+  it('before cursor still respects the supersede chain across the page boundary', async () => {
+    // Seed enough rows that the superseded original and its resolve row can
+    // land on different pages, then verify the original never reappears.
+    const created = await POST(
+      postRequest({ documentId: 'doc-1', statement: 'Terminations are now 30 days.' }),
+    )
+    const original = (await created.json()).invariant
+    for (let i = 0; i < 5; i++) {
+      await POST(postRequest({ documentId: 'doc-1', statement: `filler ${i}` }))
+    }
+    // The resolve row is newest, so it lands on page one; the original it
+    // supersedes is oldest, so it would land on page two if not excluded.
+    rows.push({
+      id: `inv-${nextId++}`,
+      documentId: 'doc-1',
+      statement: original.statement,
+      blockIds: original.blockIds,
+      checkKind: original.checkKind,
+      status: 'resolved',
+      provenanceCommitHash: original.provenanceCommitHash,
+      supersedesId: original.id,
+      createdAt: new Date(1700000000000 + clock++ * 1000),
+    })
+
+    const page1Res = await GET(getRequest('documentId=doc-1&limit=3'))
+    const page1 = await page1Res.json()
+    expect(page1.invariants).toHaveLength(3)
+    expect(page1.nextCursor).toBeTruthy()
+
+    const page2Res = await GET(
+      getRequest(`documentId=doc-1&limit=3&before=${encodeURIComponent(page1.nextCursor)}`),
+    )
+    const page2 = await page2Res.json()
+    // 7 rows created (1 original + 5 filler + 1 resolve), minus the
+    // superseded original = 6 live rows; page one took 3, page two the rest.
+    expect(page2.invariants).toHaveLength(3)
+    expect(page2.invariants.some((inv: { id: string }) => inv.id === original.id)).toBe(false)
+  })
+
   it('follows a two-level supersede chain, surfacing only the newest terminal row', async () => {
     const created = await POST(postRequest({ documentId: 'doc-1', statement: 'Terminations are now 30 days.' }))
     const original = (await created.json()).invariant

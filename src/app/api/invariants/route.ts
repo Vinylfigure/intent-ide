@@ -30,15 +30,14 @@ const MAX_LIMIT = 200
 // and their resolve/supersede rows) GET scans to compute the live set. Rows
 // beyond this cutoff (ordered newest-first) are invisible to this endpoint —
 // a disclosed limit, not silently unbounded, matching this app's public-
-// exposure hardening posture elsewhere (e.g. /api/audit's body cap).
-// Disclosed interaction (#35 review): there is no offset/cursor param on
-// this route (pre-existing, not introduced here), so a document whose live
-// set exceeds MAX_LIMIT has no way to fetch a second page — each resolve now
-// leaves BOTH the original and its resolution row present in the DB (only
-// the original drops out of the live view), so an actively-dismissed
-// document's live-row count grows faster post-#35 than pre-#35. Acceptable
-// for now given expected per-document invariant volume; a real follow-up if
-// it becomes user-visible.
+// exposure hardening posture elsewhere (e.g. /api/audit's body cap). The
+// `before` cursor below (#56) lets a caller page past MAX_LIMIT, but it pages
+// over the live set computed from THIS scan window — a document whose live
+// set exceeds SUPERSEDE_SCAN_CAP still has rows beyond the cutoff that no
+// cursor value can reach. Each resolve now leaves BOTH the original and its
+// resolution row present in the DB (only the original drops out of the live
+// view), so an actively-dismissed document's live-row count grows faster
+// post-#35 than pre-#35.
 const SUPERSEDE_SCAN_CAP = 2000
 
 /**
@@ -48,6 +47,12 @@ const SUPERSEDE_SCAN_CAP = 2000
  * the row recording that resolution (status 'resolved'|'superseded') takes
  * its place in the result if it is itself still live — which it always is
  * unless something later supersedes it too.
+ *
+ * `&before=<ISO>` (#56) pages past the first page: only live rows strictly
+ * older than that timestamp are returned, mirroring /api/history's cursor.
+ * The response's `nextCursor` is the createdAt of the last row on this page
+ * (or null if this page reached the end of the live set) — pass it as the
+ * next request's `before` to keep paging.
  */
 export async function GET(request: NextRequest) {
   try {
@@ -62,6 +67,10 @@ export async function GET(request: NextRequest) {
       ? Math.min(Math.max(Math.floor(rawLimit), 1), MAX_LIMIT)
       : DEFAULT_LIMIT
 
+    const beforeParam = searchParams.get('before')
+    const before = beforeParam ? new Date(beforeParam) : null
+    const useBefore = before !== null && !Number.isNaN(before.getTime())
+
     const scanned = await prisma.docInvariant.findMany({
       where: { documentId },
       orderBy: { createdAt: 'desc' },
@@ -71,8 +80,16 @@ export async function GET(request: NextRequest) {
     const supersededIds = new Set(
       scanned.filter((r) => r.supersedesId).map((r) => r.supersedesId as string),
     )
-    const invariants = scanned.filter((r) => !supersededIds.has(r.id)).slice(0, limit)
-    return NextResponse.json({ invariants })
+    const live = scanned.filter((r) => !supersededIds.has(r.id))
+    // The cursor filters the LIVE set (not the raw scan) — supersede status
+    // is resolved above from the full scan window so a resolve row on an
+    // earlier page still correctly hides the original it supersedes on a
+    // later one, even though the resolve row itself isn't on that later page.
+    const page = useBefore ? live.filter((r) => r.createdAt.getTime() < before.getTime()) : live
+    const invariants = page.slice(0, limit)
+    const nextCursor =
+      page.length > limit ? invariants[invariants.length - 1].createdAt.toISOString() : null
+    return NextResponse.json({ invariants, nextCursor })
   } catch (err) {
     console.error('[/api/invariants GET] Error:', err)
     return NextResponse.json(
