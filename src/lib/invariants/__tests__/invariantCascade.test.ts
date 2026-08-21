@@ -220,6 +220,65 @@ describe('runAndSurfaceInvariantChecks', () => {
     expect(next.doc.textBetween(cascade.from, cascade.to)).toBe(cascade.targetText)
   })
 
+  it('caps BOTH annotation creation and toasts to one pass\'s worth when many violations surface at once, then surfaces the rest across later applies (#62)', async () => {
+    // 25 unrelated invariants, each with its own declare/conflict block pair
+    // (checkInvariants returns at most one violation per invariant, so this
+    // is the minimal way to get many simultaneous violations in one apply).
+    const VIOLATION_COUNT = 25
+    const blocks: PMNode[] = []
+    const invariants: Invariant[] = []
+    for (let i = 0; i < VIOLATION_COUNT; i++) {
+      const declareBlockId = `b-declare-${i}`
+      const conflictBlockId = `b-conflict-${i}`
+      blocks.push(p(declareBlockId, `Widget ${i} costs 30 dollars under the updated policy.`))
+      blocks.push(p(conflictBlockId, `Note: widget ${i} costs 45 dollars as of last quarter.`))
+      invariants.push(
+        invariantRecord({
+          id: `inv-${i}`,
+          statement: `widget ${i} costs 30 dollars`,
+          blockIds: JSON.stringify([declareBlockId]),
+        }),
+      )
+    }
+    const doc = schema.node('doc', null, blocks)
+    stubListInvariants(invariants)
+    const state = EditorState.create({ schema, doc })
+
+    await runAndSurfaceInvariantChecks('doc-A', state)
+
+    // Only one pass's worth of NEW annotations lands — capping just the
+    // toast while still creating all 25 annotations would still dump 25
+    // items into AnnotationPanel/localStorage in one shot, reproducing the
+    // burst the fix is supposed to remove.
+    expect(useAnnotationStore.getState().annotations).toHaveLength(3)
+
+    // One summary toast for the pass, not one per violation and not a
+    // separate "N more" promise about annotations that don't exist yet.
+    const toasts = useToastStore.getState().toasts
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].message).toBe('3 declared facts may no longer hold — see Annotations')
+
+    // The other 22 were never dedup-marked, so a later apply (the next
+    // natural breakpoint) picks up the next batch — nothing is lost, it's
+    // spread out instead of dumped all at once.
+    useToastStore.setState({ toasts: [] })
+    await runAndSurfaceInvariantChecks('doc-A', state)
+    expect(useAnnotationStore.getState().annotations).toHaveLength(6)
+    expect(useToastStore.getState().toasts).toHaveLength(1)
+    expect(useToastStore.getState().toasts[0].message).toBe('3 declared facts may no longer hold — see Annotations')
+  })
+
+  it('uses singular grammar when exactly one violation surfaces in a pass (#62 boundary)', async () => {
+    stubListInvariants([invariantRecord()])
+    const state = EditorState.create({ schema, doc: DOC })
+
+    await runAndSurfaceInvariantChecks('doc-A', state)
+
+    const toasts = useToastStore.getState().toasts
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].message).toBe('A declared fact may no longer hold — see Annotations')
+  })
+
   it('produces no flag for an invariant already resolved (#35: dismissing a flag stops it being checked)', async () => {
     // Simulates what GET /api/invariants returns once a "Nevermind" resolve
     // has landed: the live row for this fact now has status 'resolved', not

@@ -31,6 +31,32 @@ const FLAG_ACTIONS: ResolutionAction[] = [
   { label: 'Nevermind', kind: 'dismiss', handler: 'dismiss' },
 ]
 
+/**
+ * Notification-burst guard (issue #62): a single apply can surface many
+ * violations at once (e.g. a long-lived document that just crossed
+ * `listInvariants`' first-page ceiling — #59/#61 removed that ceiling
+ * entirely). Capping only the TOAST count (an earlier version of this fix)
+ * doesn't actually satisfy CLAUDE.md's Event Segmentation constraint — it
+ * just relocates the burst into `annotationStore` (unbounded, un-reveal-
+ * gated, and `AnnotationPanel` re-renders on every `add`) and an uncapped
+ * `localStorage`-persisted array (unlike `invariantFlagStore`'s own
+ * `MAX_SURFACED` bound). So this caps ANNOTATION CREATION itself, per pass:
+ * at most `MAX_FLAGS_PER_PASS` violations are surfaced (annotation + dedup
+ * mark) per call. Anything past the cap is left un-dedup-marked, so it is
+ * simply re-evaluated — and gets its own chance to surface — on the NEXT
+ * apply, rather than being force-fit into a rollup or a fabricated multi-
+ * violation annotation. Each apply is itself a natural breakpoint, so
+ * spreading reveals across applies is Event Segmentation, not a workaround
+ * for it. This is deliberately not routed through the per-edit flow-state
+ * reveal mechanism (`cascadeReveal.ts`): that machinery buffers a single
+ * primary edit's `proposedChangePlugin` anchors against the read-line, and
+ * these are many independent, already-`resolved` flags with no shared
+ * primary — CascadeList's "why this proposal?" path also assumes one
+ * primary block per annotation, which doesn't hold across unrelated
+ * invariants.
+ */
+const MAX_FLAGS_PER_PASS = 3
+
 // Shared with `invariantIdFromFlagKey` below — the one source of truth for
 // this key's shape, so construction and parsing can't drift apart.
 const INVARIANT_KEY_MARKER = 'invariant'
@@ -258,8 +284,11 @@ export async function runAndSurfaceInvariantChecks(
     if (violations.length === 0) return
 
     const flagStore = useInvariantFlagStore.getState()
+    let surfacedCount = 0
 
     for (const violation of violations) {
+      if (surfacedCount >= MAX_FLAGS_PER_PASS) break
+
       const key = violationKey(documentId, violation)
       if (flagStore.hasSurfaced(key)) continue
 
@@ -267,7 +296,9 @@ export async function runAndSurfaceInvariantChecks(
       const cascade = conflictEdit(state.doc, violation)
       // Both anchors must resolve against the live doc, or there is nothing
       // stable to point the flag at (e.g. every declaring block was since
-      // deleted) — skip rather than surface a flag anchored to nothing.
+      // deleted) — skip rather than surface a flag anchored to nothing. This
+      // does NOT consume the per-pass cap — an unanchorable violation was
+      // never going to become an annotation regardless of budget.
       if (!primary || !cascade) continue
 
       const now = Date.now()
@@ -297,7 +328,21 @@ export async function runAndSurfaceInvariantChecks(
       useAnnotationStore.getState().add(annotation)
       useChangesStore.getState().ensureChangeSetForAnnotation(annotation)
       flagStore.markSurfaced(key)
+      surfacedCount++
+    }
+
+    // One toast for the whole pass, matching the convention used everywhere
+    // else in this codebase for a batch action (`ResolutionActions.tsx`'s
+    // "Applied N changes" / "N related sections found") rather than one
+    // toast per violation. Violations left un-dedup-marked above (past the
+    // cap) are simply not mentioned here — they haven't been surfaced yet,
+    // so a toast pointing at them would be a promise this pass didn't keep.
+    if (surfacedCount === 1) {
       useToastStore.getState().addToast('A declared fact may no longer hold — see Annotations', 'info')
+    } else if (surfacedCount > 1) {
+      useToastStore
+        .getState()
+        .addToast(`${surfacedCount} declared facts may no longer hold — see Annotations`, 'info')
     }
   } catch (err) {
     console.warn('[invariants] Check runner failed:', err)
