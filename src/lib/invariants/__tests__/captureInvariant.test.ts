@@ -15,6 +15,11 @@ import {
 // ---------------------------------------------------------------------------
 
 const MOCK_PAGE_SIZE = 2
+// Deliberately tiny (vs. the route's real SUPERSEDE_SCAN_CAP=2000) so a
+// scanTruncated:true response is cheap to trigger in a unit test — this file
+// only pins listInvariants()'s passthrough of that flag, not the route's own
+// scan-cap value or logic (covered in route.test.ts).
+const MOCK_SCAN_CAP = 5
 
 let store: Invariant[] = []
 let nextId = 0
@@ -75,37 +80,48 @@ function fetchStub(url: string, init?: RequestInit) {
     store.push(invariant)
     return Promise.resolve(jsonResponse({ invariant }))
   }
-  // GET — mirrors the real route's "exclude superseded rows" + before/beforeId
-  // cursor computation (see route.test.ts for the route's own coverage,
-  // including the supersede-scan-cap/tiebreak edge cases). MOCK_PAGE_SIZE is
-  // deliberately much smaller than the route's real DEFAULT_LIMIT/MAX_LIMIT —
-  // this file is only pinning listInvariants()'s cursor-passthrough contract,
-  // not the route's actual page-size values.
+  // GET — mirrors the real route's scan-then-dedupe-then-page pipeline (see
+  // route.test.ts for the route's own exhaustive coverage): a capped,
+  // (createdAt desc, id desc)-ordered scan; supersede exclusion computed from
+  // THAT scan window; a before/beforeId cursor applied to the live set; and a
+  // NaN-safe cursor validity check (an unparseable `before` is treated as no
+  // cursor, exactly like the route, rather than silently returning an empty
+  // page). MOCK_PAGE_SIZE/MOCK_SCAN_CAP are deliberately much smaller than the
+  // route's real constants — this file only pins listInvariants()'s
+  // passthrough of the route's contract, not the route's own values.
   const parsed = new URL(url, 'http://localhost')
   const documentId = parsed.searchParams.get('documentId')
-  const before = parsed.searchParams.get('before')
-  const beforeId = parsed.searchParams.get('beforeId')
-  const supersededIds = new Set(store.filter((r) => r.supersedesId).map((r) => r.supersedesId as string))
-  const live = [...store]
-    .filter((r) => r.documentId === documentId && !supersededIds.has(r.id))
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-  const windowed =
-    before && beforeId
-      ? live.filter((r) => {
-          const rt = new Date(r.createdAt).getTime()
-          const bt = new Date(before).getTime()
-          return rt !== bt ? rt < bt : r.id < beforeId
-        })
-      : live
-  const invariants = windowed.slice(0, MOCK_PAGE_SIZE)
+  const beforeParam = parsed.searchParams.get('before')
+  const beforeIdParam = parsed.searchParams.get('beforeId')
+  const beforeDate = beforeParam ? new Date(beforeParam) : null
+  const useBefore = beforeDate !== null && !Number.isNaN(beforeDate.getTime()) && !!beforeIdParam
+
+  const scanned = store
+    .filter((r) => r.documentId === documentId)
+    .sort((a, b) => {
+      const dt = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      return dt !== 0 ? dt : b.id.localeCompare(a.id)
+    })
+    .slice(0, MOCK_SCAN_CAP)
+  const scanTruncated = scanned.length >= MOCK_SCAN_CAP
+  const supersededIds = new Set(scanned.filter((r) => r.supersedesId).map((r) => r.supersedesId as string))
+  const live = scanned.filter((r) => !supersededIds.has(r.id))
+  const page = useBefore
+    ? live.filter((r) => {
+        const rt = new Date(r.createdAt).getTime()
+        const bt = beforeDate!.getTime()
+        return rt !== bt ? rt < bt : r.id < (beforeIdParam as string)
+      })
+    : live
+  const invariants = page.slice(0, MOCK_PAGE_SIZE)
   const last = invariants[invariants.length - 1]
-  const hasMore = windowed.length > MOCK_PAGE_SIZE
+  const hasMore = page.length > MOCK_PAGE_SIZE
   return Promise.resolve(
     jsonResponse({
       invariants,
       nextCursor: hasMore && last ? last.createdAt : null,
       nextCursorId: hasMore && last ? last.id : null,
-      scanTruncated: false,
+      scanTruncated,
     }),
   )
 }
@@ -253,6 +269,79 @@ describe('listInvariants', () => {
     expect(page1Ids.has(page2.invariants[0].id)).toBe(false)
     expect(page2.nextCursor).toBeNull()
     expect(page2.nextCursorId).toBeNull()
+
+    // Paging past the exhausted cursor returns an empty page, not an error.
+    const page3 = await listInvariants('doc-1', {
+      before: page2.invariants[0].createdAt,
+      beforeId: page2.invariants[0].id,
+    })
+    expect(page3.invariants).toEqual([])
+    expect(page3.nextCursor).toBeNull()
+    expect(page3.nextCursorId).toBeNull()
+  })
+
+  it('a before param with no matching beforeId is treated as no cursor at all (page one again)', async () => {
+    await captureInvariant({ documentId: 'doc-1', statement: 'Fact one.' })
+    await captureInvariant({ documentId: 'doc-1', statement: 'Fact two.' })
+    await captureInvariant({ documentId: 'doc-1', statement: 'Fact three.' })
+
+    const page1 = await listInvariants('doc-1')
+    // Cast past the type: production code always sends both fields together
+    // (ListInvariantsCursor requires both), but the route treats a lone
+    // `before` as no cursor at all — this pins that the wrapper's fetch
+    // still round-trips that fail-safe rather than assuming callers are
+    // well-behaved.
+    const noBeforeId = await listInvariants('doc-1', {
+      before: page1.nextCursor as string,
+      beforeId: '',
+    } as unknown as { before: string; beforeId: string })
+    expect(noBeforeId.invariants).toEqual(page1.invariants)
+  })
+
+  it('breaks createdAt ties deterministically via id, never dropping or duplicating a row across pages', async () => {
+    // Four rows sharing the exact same createdAt millisecond — reachable in
+    // production via concurrent POSTs racing each other (mirrors the
+    // equivalent route.test.ts tiebreak regression test).
+    const tiedTime = new Date(1700000000000).toISOString()
+    for (const id of ['tied-0', 'tied-1', 'tied-2', 'tied-3']) {
+      store.push({
+        id,
+        documentId: 'doc-1',
+        statement: `statement for ${id}`,
+        blockIds: '[]',
+        checkKind: 'deterministic',
+        status: 'active',
+        provenanceCommitHash: null,
+        supersedesId: null,
+        createdAt: tiedTime,
+      })
+    }
+
+    const page1 = await listInvariants('doc-1')
+    expect(page1.invariants).toHaveLength(2)
+    expect(page1.nextCursor).not.toBeNull()
+    expect(page1.nextCursorId).not.toBeNull()
+
+    const page2 = await listInvariants('doc-1', {
+      before: page1.nextCursor as string,
+      beforeId: page1.nextCursorId as string,
+    })
+    expect(page2.invariants).toHaveLength(2)
+    expect(page2.nextCursor).toBeNull()
+
+    const allIds = [...page1.invariants, ...page2.invariants].map((i) => i.id)
+    expect(new Set(allIds).size).toBe(4)
+    expect([...allIds].sort()).toEqual(['tied-0', 'tied-1', 'tied-2', 'tied-3'])
+  })
+
+  it('round-trips scanTruncated:true, so a null nextCursor is not mistaken for "no more data"', async () => {
+    // MOCK_SCAN_CAP is 5 — six rows for the same document overflows it.
+    for (let i = 0; i < 6; i++) {
+      await captureInvariant({ documentId: 'doc-1', statement: `fact ${i}` })
+    }
+
+    const { scanTruncated } = await listInvariants('doc-1')
+    expect(scanTruncated).toBe(true)
   })
 })
 
