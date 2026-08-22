@@ -108,13 +108,32 @@ describe('continueThread audit logging', () => {
     expect(changeSet?.auditRecordIds).toContain('audit-99')
   })
 
-  it('flags auditFailed on the returned message when the audit write rejects, without dropping the reply', async () => {
+  it('flags auditFailed when the audit write resolves null — the real failure signal, since logResolutionAudit never rejects on a write failure', async () => {
     const { auditLogger, resolver } = await loadModules()
-    vi.mocked(auditLogger.logResolutionAudit).mockRejectedValue(new Error('audit endpoint down'))
+    // logAuditEvent's own try/catch swallows every real failure and resolves null;
+    // it never rejects. A test that only exercised .catch() would assert a mode the
+    // real implementation can't produce and miss this actual failure path.
+    vi.mocked(auditLogger.logResolutionAudit).mockResolvedValue(null)
     stubFetch('Follow-up agent reply')
 
     const annotation = makeAnnotation()
     const message = await resolver.continueThread(annotation, 'Another follow-up', makeEditorState())
+
+    expect(message.content).toBe('Follow-up agent reply')
+
+    await flushMicrotasks()
+
+    expect(message.auditFailed).toBe(true)
+    expect(message.auditId).toBeUndefined()
+  })
+
+  it('flags auditFailed as a defensive backstop if logResolutionAudit unexpectedly throws', async () => {
+    const { auditLogger, resolver } = await loadModules()
+    vi.mocked(auditLogger.logResolutionAudit).mockRejectedValue(new Error('unexpected throw'))
+    stubFetch('Follow-up agent reply')
+
+    const annotation = makeAnnotation()
+    const message = await resolver.continueThread(annotation, 'Yet another follow-up', makeEditorState())
 
     expect(message.content).toBe('Follow-up agent reply')
 

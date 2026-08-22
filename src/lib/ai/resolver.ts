@@ -602,9 +602,13 @@ ${annotation.type === 'edit'
       if (auditId) {
         message.auditId = auditId
         useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
+      } else {
+        // logResolutionAudit resolves null (never rejects) on a write failure —
+        // this is the real failure signal, not the .catch() below.
+        message.auditFailed = true
       }
     }).catch((e) => {
-      // EU AI Act ledger write failed — surface incomplete coverage, don't drop silently
+      // Defensive backstop for a throw before logResolutionAudit's own try/catch.
       console.error('Audit log failed (continueThread)', e)
       message.auditFailed = true
     })
