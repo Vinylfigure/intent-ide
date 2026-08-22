@@ -5,6 +5,124 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-08-20] Stranded branch recovery — answer placement + accessibility (PR #50)
+
+Recovers the salvageable half of `claude/pr-audit-sidebar-options-nvwfu8`, a branch that drifted 32 commits behind `main` and 4 ahead with no PR ever opened.
+
+### Added
+- **`layoutStore`:** `answerPlacement: 'sidebar' | 'floating'`, persisted with a stale-value fallback normalizer. `computeFloatingPosition()` — DOM-free, unit-tested clamping math. `FloatingAnswer` — a draggable panel parked beside the passage it answers, dock-to-sidebar and Escape-to-close.
+
+### Fixed
+- ~18 icon-only controls gained `aria-label`/`aria-pressed`/`aria-expanded`; literal escaped-glyph characters (`✎`/`✕`/`⎘`) that were rendering as raw text repaired.
+- History/Audit moved behind an overflow menu so the sidebar rail's five tabs stop overflowing their container.
+- `FloatingAnswer`'s drag pointermove/pointerup listeners are now removed on unmount, not just on the next pointerup.
+
+### Process
+- Pre-push adversarial review: one HIGH (an e2e spec's `History` button assertion was orphaned by the overflow-menu move but never updated — fixed by pulling forward the spec fix that already existed for this on the dropped CI commit), one MEDIUM (the held-answer reveal-poll effect wasn't gated like its sibling cascade-reveal effect, so sidebar + floating views of the same answer could double-flash). Both fixed before push.
+- Deliberately dropped: the stranded branch's CI/CODEOWNERS commit touched `.github/workflows/**`, which an unattended session cannot write — needs an operator-attended session. Two non-machinery files from that same commit (Playwright sandbox config, a more robust FalkorDB-down probe) were pulled forward since dropping them would have introduced a regression.
+- `npm run test` — 924 passing + 10 skipped. `npx playwright test tests/cascade-review.spec.ts` gets past the History-tab click; remaining failure reproduced identically on unmodified `main` (pre-existing, out of scope).
+
+Closes #49
+
+## [2026-08-20] Apply-time drift validation extended to every edit path (PRs #43, #45, #46)
+
+The multi-region cascade-batch apply path already validated proposals against live-document drift before applying. Pure insertions and both single-edit apply call sites (`ResolutionActions.tsx`'s ≤1-edit case, `ConversationThread.tsx`'s per-message apply) did not.
+
+### Added
+- **PR #43 — insertion drift validation:** `ProposedEdit.insertionContext` (`{before, after, beforeSpan, afterSpan}`) captured at proposal time, re-derived and verbatim-matched at apply time; a mismatch aborts the whole transaction (no fingerprint recovery exists for an insertion).
+- **PR #45 — single-edit drift validation:** `resolveEditRange`/`applySingleEdit`, extracted behavior-preserving from `applyProposedEdits`'s existing loop, now back both single-edit call sites. `refreshAnchorAfterApply()` keeps `annotation.anchor` in sync after a successful apply.
+- **PR #46 — multi-region anchor refresh (closes #44):** `findAppliedEditFinalPosition` derives a batch-applied edit's true post-transaction position by summing the length deltas of edits dispatched after it, instead of a fingerprint search.
+
+### Fixed
+- Insertion capture/validate uses a fixed position-space radius (`INSERTION_CONTEXT_RADIUS`) shared between capture and validation, not string length (which doesn't survive ProseMirror block-boundary crossings) and not a live re-clamp against current doc size (unstable against unrelated edits elsewhere).
+- `#45` round 1 found its own new drift gate regressed repeated "Tweak it" applies (stale `annotation.anchor` after a successful apply); round 2 found round 1's anchor-refresh fix used pre-transaction positions invalid for any non-lowest-`from` edit in a multi-region batch, and **descoped** that gap rather than ship it wrong — filed as #44.
+- `#46` round 1's first fix re-derived the true position by fingerprint search; proven unsafe (a short replacement can coincidentally match pre-existing text elsewhere in the block) and replaced with arithmetic, which has no false-positive surface.
+
+### Process
+- `#43`: one round of review, two bugs fixed before push. `#45`: two rounds, both real findings fixed (one by a targeted fix, one by honest descoping). `#46`: two rounds, round 1 HIGH (fingerprint-search collision risk) fixed by switching to arithmetic, round 2 verdict MERGE.
+- Test counts, checked out and re-run fresh against each actual merge commit (the PR bodies' own self-reported counts undercounted — #31 and #41 also landed in this same merge window): 854 + 10 skipped at #43 (`403355c`); 868 + 10 skipped at #45 (`a2c5347`); 878 + 10 skipped at #46 (`537f385`).
+
+#43 closes #40 and files #42; #45 closes #42 and files #44; #46 closes #44.
+
+## [2026-08-20] DocCommit retention/collapse for 'direct' history versions (PR #41)
+
+`DocCommit` had no retention policy. `'direct'` autosave-flush commits (no AI provenance, no audit linkage) fired on every 5s debounce, doc-switch, and unmount — an actively-edited document accumulated a full-document-snapshot row roughly every 5 seconds, forever, on the shared public demo's Turso free-tier database.
+
+### Added
+- **`action: 'amend'` on `POST /api/history`:** a new `'direct'` write replaces the current HEAD in place if and only if that head is *also* a `'direct'` commit with no child yet — one continuous editing session collapses to one row, refreshed on every autosave. `import`/`apply`/`restore` are hard-rejected (400) as amend targets or sources; this is a narrowly-scoped, structurally-enforced exception to the append-only rule, not a general relaxation of it.
+
+### Fixed
+- **TOCTOU race (pre-push adversarial review, HIGH, reproduced):** the amend target was read once outside the `$transaction`, and the in-transaction re-check only detected a newly-appended child, not the target having been fully deleted-and-replaced by a second concurrent amend — turning a normally-recoverable stale-head race into an unhandled 500 instead of the documented 409. Fixed by moving the entire read-validate-delete-create sequence inside the transaction. Verified concretely: the regression test fails against the reverted pre-fix code (`[200, 500]`) and passes against the fix (`[200, 409]`).
+
+### Disclosed
+- Two genuinely concurrent `'direct'` writers (e.g. two browser tabs) can amend over each other with no merge — judged acceptable since `'direct'` carries no compliance weight, stated plainly in `docs/compliance.md`.
+- `npm run test` — 850 passing + 10 skipped at merge (`3984757`, checked out and re-run fresh).
+
+Closes #39
+
+## [2026-08-19 → 2026-08-20] Legacy project-UI cleanup + migration hardening (PRs #36, #38)
+
+### Removed
+- **PR #36:** `src/components/Layout/ProjectSidebar.tsx` and `src/stores/projectStore.ts` — the pre-Phase-8 project UI, superseded by `DocumentHubSidebar.tsx`/`documentStore.ts` since 2026-03-16. Verified zero live references repo-wide; `documentStore.ts`'s legacy migration reads its localStorage key directly and never imported the deleted store.
+
+### Fixed
+- **PR #38 (closes #37):** `runLegacyProjectMigration()` could throw on malformed `intent-ide-projects` data; because `hasMigratedLegacyProjects` was only set on the non-throwing path, an affected user's migration would silently fail and silently retry (and fail again) forever. Fixed with per-project and per-document failure isolation, an outer catch-all so migration never retries forever against unrecoverable data, and a `safeSet()` wrapper (verified against zustand's actual persist internals) that swallows a `QuotaExceededError` without losing the state change.
+
+### Process
+- The real production symptom was traced against zustand's actual `onRehydrateStorage` wiring rather than assumed: the app's hydrate path already swallows a callback throw, so pre-fix this was a silent permanent migration failure, not a visible boot-loop crash — `runLegacyProjectMigration` is also a public store action reachable by direct calls, where a throw does propagate, so the fix still mattered.
+- Two rounds of adversarial review, each catching a coarser isolation boundary than the data required (project-level, then document-level).
+- `npm run test` — 749 passing + 10 skipped after #36; 860 passing + 10 skipped at #38's merge (`00e88c8`, checked out and re-run fresh — #31 and #41 also landed in this window).
+
+Closes #33, #37
+
+## [2026-08-18 → 2026-08-20] Fleet Autonomy Machinery — work-loop skill, dispatch channel, CI fix (PRs #28, #30, #47)
+
+Extends the fleet-autonomy machinery instantiated 2026-08-16 (below).
+
+### Added
+- **PR #28:** `.claude/skills/work-loop/SKILL.md` committed — the armed work-loop Routine's spec had existed only as a scheduler payload. Adapted from janus to this repo's own toolkit (`test`/`add-feature`/`build-component`/`add-api-route` skills, a spawned subagent for adversarial review); makes the headless permission boundary explicit (no writes to `.claude/hooks/**`, `.github/workflows/**`, `.claude/settings.json` from an unattended firing) with a preflight-before-starting step.
+- **PR #30:** `claude.yml` dispatch workflow — the portfolio registry claimed this stream accepted dispatched work orders with no workflow actually present. Permission grant derived from this repo's own `ci.yml`; deliberately withholds `npx:*`/`npm:*`/`node:*` and `prisma migrate deploy`. Dispatch secret still needs setting on the repo (operator action) before an order can run.
+
+### Fixed
+- **PR #47:** `ci.yml`'s `pull_request` trigger filtered on `branches: [main]` — matching the PR's *base*, not head — so a PR stacked on another PR's branch got zero CI runs, and a base-branch retarget after the base merges fires no workflow run either. Invisible until `verify` became a required status check, at which point a stacked PR (#46) sat permanently blocked until an empty commit forced a run. Fixed by dropping the base-branch filter from `pull_request` (kept on `push`).
+
+## [2026-08-18 → 2026-08-20] Ablation harness scaffolding for arms B/D/E (PR #31)
+
+Scaffolds the graph-scoped-vs-whole-doc cascade ablation (#19) with arms B (whole-doc plan-then-patch + self-verify), D (whole-doc free edits + deterministic verify/repair), and E (cheap-model variants) — all runnable today with no live provider key. Arm C (shipped `proposeCascadeEdits`) is unchanged and used as-is; arm A is intentionally out of scope.
+
+### Added
+- `src/lib/graphrag/ablationArms.ts` implementing the three arms, sharing `resolveProposedEdits`/`applyRelevanceJudge` (extracted, behavior-preserving, from `orchestrator.ts`) as common substrate so arms differ only in candidate generation, not anchoring/evidence/severity logic.
+- 67 new tests exercising all 3 arms × cheap-model on/off × every existing EditPropBench fixture with scripted calls — proves the harness runs cleanly and produces the right metrics shape; not a quality gate on B/D's actual numbers, which the still-blocked live run exists to measure.
+
+### Fixed
+- Adversarial review found the first version of arm B collapsed plan-then-patch into a single call (architecturally arm A + verify, not arm B) — fixed into a genuine two-stage PLAN-then-scoped-PATCH pipeline before push.
+
+### Process
+- `npm run test` — 816 passing + 10 skipped (+67 new).
+- Live run against a real provider stays blocked on #19 (operator-supplied key). No provider is faked anywhere in this change.
+
+Closes #27
+
+## [2026-08-20] Document Invariant Ledger — doc-CI complete (PRs #29, #34, #48, #52)
+
+Closes the "tests for prose" spike (#20) in four phases: a user-declared fact captured at semantic-commit time becomes a runnable assertion that every later apply regression-tests, with a failing fact surfacing as a cascade flag naming the invariant it broke.
+
+### Added
+- **Phase 1 (#26, PR #29):** `DocInvariant` Prisma model, `POST/GET /api/invariants`, `captureInvariant.ts`. Append-only — no PATCH/DELETE route exists.
+- **Phase 2 (#32, PR #34):** `invariantCheckRunner.ts` deterministic check lane, reusing the cascade's own `extractChangedTokens` + `containsTerm` rather than new extraction logic. Numeric comparison is value-equality, not string-equality (`$30` / `30` / `30.00` are one figure). Surfaced through the existing `CascadeList` via `invariantCascade.ts`.
+- **Phase 3 (#35, PR #48):** `POST /api/invariants/resolve` — a status transition appends a new row with `supersedesId` pointing at its target instead of mutating it, mirroring the `DocCommit.parentHash` chain. `supersedesId` is a DB-enforced unique column; the route reports a clean 409 on the race.
+- **Phase 4 (#51, PR #52):** the LLM entailment lane — `entailmentCheck.ts`, `classifyCheckKind`, and the `invariantEntailmentEnabled` setting.
+
+### Fixed
+- **`checkKind: 'entailment'` was dead weight from Phase 1 until Phase 4.** No code path had ever created *or* checked an entailment-kind invariant, so any declared fact the figure-matching lane structurally cannot check — word-form numbers, calendar-date fragments, plural variants, claims with no exact-match anchor — was captured as `'deterministic'` and then silently skipped forever.
+
+### Security / Privacy
+- The entailment lane is gated on `invariantEntailmentEnabled`, **default OFF** and rehydrate-backfilled to OFF (anything other than an explicit stored `true` resolves to off — same rule as `telemetryEnabled`). It is the only doc-CI path that spends money and sends document text; the deterministic lane stays local and always-on regardless. Runs on a user-initiated apply only, never on typing. Its graph build passes `skipLlm`/`skipEmbeddings`/`skipGraphiti`, so it is a cache hit and never itself a network call.
+
+### Process
+- Pre-push adversarial review returned **NO-MERGE with 2 HIGH findings**, both reproducible, both fixed with regression tests before the PR was opened — see `audit.md` for the full record. Headline: a classifier mirroring only the receiving lane's *first* skip gate left plural-variant and calendar-date statements in **neither** lane, while the pre-existing hardcoded `'deterministic'` default would have made the new lane a permanent no-op on every existing ledger. One fix (runtime fallthrough in `runAndSurfaceInvariantChecks`) closed both, and closed the second without a backfill migration.
+- Not exercised: the entailment lane has never run against a live provider — every test injects a scripted judge. Needs an operator-supplied key, same constraint as #19.
+
 ## [2026-08-16] Fleet-Autonomy Machinery (branch `claude/fleet-status-machinery`)
 
 Instantiated the Janus-style fleet-autonomy machinery — repo-level automation plumbing only, zero `src/` changes, 731-test suite untouched.

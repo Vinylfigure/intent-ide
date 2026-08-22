@@ -30,15 +30,16 @@ const MAX_LIMIT = 200
 // and their resolve/supersede rows) GET scans to compute the live set. Rows
 // beyond this cutoff (ordered newest-first) are invisible to this endpoint —
 // a disclosed limit, not silently unbounded, matching this app's public-
-// exposure hardening posture elsewhere (e.g. /api/audit's body cap).
-// Disclosed interaction (#35 review): there is no offset/cursor param on
-// this route (pre-existing, not introduced here), so a document whose live
-// set exceeds MAX_LIMIT has no way to fetch a second page — each resolve now
-// leaves BOTH the original and its resolution row present in the DB (only
-// the original drops out of the live view), so an actively-dismissed
-// document's live-row count grows faster post-#35 than pre-#35. Acceptable
-// for now given expected per-document invariant volume; a real follow-up if
-// it becomes user-visible.
+// exposure hardening posture elsewhere (e.g. /api/audit's body cap). The
+// `before`/`beforeId` cursor below (#56) lets a caller page past MAX_LIMIT,
+// but it pages over the live set computed from THIS scan window — a document
+// whose live set exceeds SUPERSEDE_SCAN_CAP still has rows beyond the cutoff
+// that no cursor value can reach (surfaced to callers as `scanTruncated` on
+// the response, so a null `nextCursor` there isn't mistaken for "no more
+// data exists"). Each resolve now leaves BOTH the original and its
+// resolution row present in the DB (only the original drops out of the live
+// view), so an actively-dismissed document's live-row count grows faster
+// post-#35 than pre-#35.
 const SUPERSEDE_SCAN_CAP = 2000
 
 /**
@@ -48,6 +49,24 @@ const SUPERSEDE_SCAN_CAP = 2000
  * the row recording that resolution (status 'resolved'|'superseded') takes
  * its place in the result if it is itself still live — which it always is
  * unless something later supersedes it too.
+ *
+ * `&before=<ISO>&beforeId=<id>` (#56) pages past the first page: only live
+ * rows strictly after the given (createdAt, id) pair — in the same
+ * createdAt-desc/id-desc order the query itself uses — are returned. Both
+ * must be given together; either alone is treated as no cursor. `createdAt`
+ * alone is not a safe cursor key: two rows created in the same millisecond
+ * (concurrent POSTs) would tie under a timestamp-only comparison, silently
+ * dropping or duplicating one of them across the page boundary. `id` breaks
+ * the tie deterministically instead — it doesn't need to be chronologically
+ * meaningful, only stable, and `orderBy` below sorts by it explicitly so
+ * every request (and thus every page) sees the same tie order.
+ *
+ * The response's `nextCursor`/`nextCursorId` are that pair for the last row
+ * on this page, or both null once the live set (within the scan window
+ * below) is exhausted. `scanTruncated: true` means this document has more
+ * raw rows than `SUPERSEDE_SCAN_CAP` — in that case a null `nextCursor` means
+ * only "no more pages within what this endpoint scanned," not "no more live
+ * invariants exist"; older ones beyond the scan window are unreachable here.
  */
 export async function GET(request: NextRequest) {
   try {
@@ -62,17 +81,43 @@ export async function GET(request: NextRequest) {
       ? Math.min(Math.max(Math.floor(rawLimit), 1), MAX_LIMIT)
       : DEFAULT_LIMIT
 
+    const beforeParam = searchParams.get('before')
+    const beforeIdParam = searchParams.get('beforeId')
+    const beforeDate = beforeParam ? new Date(beforeParam) : null
+    const useBefore =
+      beforeDate !== null && !Number.isNaN(beforeDate.getTime()) && !!beforeIdParam
+
     const scanned = await prisma.docInvariant.findMany({
       where: { documentId },
-      orderBy: { createdAt: 'desc' },
+      // Secondary sort by id makes ordering deterministic across separate
+      // requests even when two rows share a createdAt millisecond — required
+      // for the cursor's tiebreak below to mean the same thing on every page.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: SUPERSEDE_SCAN_CAP,
       select: INVARIANT_SELECT,
     })
+    const scanTruncated = scanned.length >= SUPERSEDE_SCAN_CAP
     const supersededIds = new Set(
       scanned.filter((r) => r.supersedesId).map((r) => r.supersedesId as string),
     )
-    const invariants = scanned.filter((r) => !supersededIds.has(r.id)).slice(0, limit)
-    return NextResponse.json({ invariants })
+    const live = scanned.filter((r) => !supersededIds.has(r.id))
+    // The cursor filters the LIVE set (not the raw scan) — supersede status
+    // is resolved above from the full scan window so a resolve row on an
+    // earlier page still correctly hides the original it supersedes on a
+    // later one, even though the resolve row itself isn't on that later page.
+    const page = useBefore
+      ? live.filter((r) => {
+          const rt = r.createdAt.getTime()
+          const bt = beforeDate!.getTime()
+          return rt !== bt ? rt < bt : r.id < (beforeIdParam as string)
+        })
+      : live
+    const invariants = page.slice(0, limit)
+    const last = invariants[invariants.length - 1]
+    const hasMore = page.length > limit
+    const nextCursor = hasMore && last ? last.createdAt.toISOString() : null
+    const nextCursorId = hasMore && last ? last.id : null
+    return NextResponse.json({ invariants, nextCursor, nextCursorId, scanTruncated })
   } catch (err) {
     console.error('[/api/invariants GET] Error:', err)
     return NextResponse.json(
