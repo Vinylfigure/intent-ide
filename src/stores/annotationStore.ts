@@ -53,6 +53,14 @@ export function finalizeInterruptedAnnotations(annotations: Annotation[]): Annot
   })
 }
 
+// Sibling stores (invariantFlagStore's MAX_SURFACED, changesStore's
+// MAX_PERSISTED_ENTRIES) already cap their persisted arrays; this store had
+// neither a cap nor quota-error handling, so a long-lived session's
+// unbounded `annotations` array could eventually blow the localStorage
+// quota (see #64). 500 matches changesStore's reference cap.
+const MAX_PERSISTED_ANNOTATIONS = 500
+const EMERGENCY_ANNOTATIONS = 100
+
 interface AnnotationState {
   annotations: Annotation[]
   activeAnnotationId: string | null
@@ -110,11 +118,51 @@ export const useAnnotationStore = create<AnnotationState>()(
     }),
     {
       name: 'intent-ide-annotations',
+      partialize: (state) => ({
+        annotations: state.annotations.slice(-MAX_PERSISTED_ANNOTATIONS),
+        activeAnnotationId: state.activeAnnotationId,
+      }),
+      storage: {
+        getItem: (name: string) => {
+          try {
+            const raw = localStorage.getItem(name)
+            return raw ? JSON.parse(raw) : null
+          } catch {
+            return null
+          }
+        },
+        setItem: (name: string, value: unknown) => {
+          try {
+            localStorage.setItem(name, JSON.stringify(value))
+          } catch {
+            // Quota exceeded — emergency prune and retry.
+            // Zustand persist v4 wraps in { state: {...}, version: N }.
+            try {
+              const parsed = JSON.parse(JSON.stringify(value)) as Record<string, unknown>
+              const inner = (parsed.state ?? parsed) as Record<string, unknown>
+              inner.annotations = ((inner.annotations as unknown[]) ?? []).slice(-EMERGENCY_ANNOTATIONS)
+              localStorage.setItem(name, JSON.stringify(parsed))
+            } catch {
+              // Silently fail — in-memory state is still valid.
+            }
+          }
+        },
+        removeItem: (name: string) => localStorage.removeItem(name),
+      },
       onRehydrateStorage: () => (state) => {
         if (state) {
           state.annotations = finalizeInterruptedAnnotations(
             migrateAnnotations(state.annotations)
           )
+          // The persisted cap above can evict the annotation activeAnnotationId
+          // pointed at (only possible once >MAX_PERSISTED_ANNOTATIONS accumulate,
+          // which the uncapped store could never hit before now).
+          if (
+            state.activeAnnotationId &&
+            !state.annotations.some((a) => a.id === state.activeAnnotationId)
+          ) {
+            state.activeAnnotationId = null
+          }
         }
       },
     }
