@@ -48,6 +48,10 @@ export interface ConversationMessage {
   content: string
   suggestedEdit: SuggestedEdit | null
   timestamp: number
+  /** Audit trail ID for EU AI Act compliance (set after async logging) */
+  auditId?: string
+  /** Set when the compliance audit-log write failed, so the UI can flag incomplete coverage */
+  auditFailed?: boolean
 }
 
 export interface Annotation {
