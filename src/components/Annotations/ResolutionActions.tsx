@@ -41,6 +41,18 @@ interface ResolutionActionsProps {
   annotation: Annotation
 }
 
+// Handlers whose case body only opens SemanticCommitModal (setPendingHandler
+// + openCommitModal) — no decision has actually happened yet at the point
+// handleAction runs. 'add-to-doc' is conditionally modal-gated: only when
+// there's a suggestedEdit to review (see its case body below); with no
+// suggestedEdit it decides immediately in the same synchronous call.
+const ALWAYS_MODAL_GATED_HANDLERS = new Set(['apply-edit', 'act-on-thought', 'change-from-answer'])
+
+function opensCommitModal(handler: string, hasSuggestedEdit: boolean): boolean {
+  if (ALWAYS_MODAL_GATED_HANDLERS.has(handler)) return true
+  return handler === 'add-to-doc' && hasSuggestedEdit
+}
+
 export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   const updateAnnotation = useAnnotationStore((s) => s.update)
   const view = useEditorStore((s) => s.view)
@@ -426,12 +438,17 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     // Log human oversight decision if we have an audit trail (non-blocking)
     const auditId = annotation.resolution?.auditId
     const approvalAction = handlerToApprovalAction(handler)
+    const modalGated = opensCommitModal(handler, Boolean(annotation.resolution?.suggestedEdit) && Boolean(view))
     if (auditId && approvalAction) {
       recordHumanDecision(auditId, approvalAction)
-    } else if (!auditId && approvalAction && annotation.resolution?.auditFailed) {
+    } else if (!auditId && approvalAction && annotation.resolution?.auditFailed && !modalGated) {
       // Known failure (not just "write still in flight") — the human-oversight
       // override record has nowhere to link to. Warn instead of skipping
-      // silently — see #77.
+      // silently — see #77. Skipped for handlers that only open the commit
+      // modal here (no decision has happened yet): recordApplyCommit's own
+      // toast covers those once the user actually confirms, so this doesn't
+      // fire early for a decision that hasn't happened, or double up with
+      // that toast on confirm.
       useToastStore.getState().addToast(
         'This decision could not be recorded — the audit trail for this resolution failed to save.',
         'error'
