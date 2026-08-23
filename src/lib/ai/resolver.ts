@@ -168,9 +168,12 @@ export async function resolveAnnotation(
         if (auditId) {
           madsResult.resolution.auditId = auditId
           useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
+        } else {
+          // logAuditEvent never rejects — a real write failure resolves null, not a throw
+          madsResult.resolution.auditFailed = true
         }
       }).catch((e) => {
-        // EU AI Act ledger write failed — surface incomplete coverage, don't drop silently
+        // Defensive backstop for a throw before logResolutionAudit's own try/catch
         console.error('Audit log failed (MADS)', e)
         madsResult.resolution.auditFailed = true
       })
@@ -271,9 +274,12 @@ ${annotation.type === 'edit'
       if (auditId) {
         resolution.auditId = auditId
         useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
+      } else {
+        // logAuditEvent never rejects — a real write failure resolves null, not a throw
+        resolution.auditFailed = true
       }
     }).catch((e) => {
-      // EU AI Act ledger write failed — surface incomplete coverage, don't drop silently
+      // Defensive backstop for a throw before logResolutionAudit's own try/catch
       console.error('Audit log failed (single-agent)', e)
       resolution.auditFailed = true
     })
@@ -332,7 +338,14 @@ export async function streamResolveAnnotation(
         if (auditId) {
           madsResult.resolution.auditId = auditId
           useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
+        } else {
+          // logAuditEvent never rejects — a real write failure resolves null, not a throw
+          madsResult.resolution.auditFailed = true
         }
+      }).catch((e) => {
+        // Defensive backstop for a throw before logResolutionAudit's own try/catch
+        console.error('Audit log failed (streaming MADS)', e)
+        madsResult.resolution.auditFailed = true
       })
       if (madsResult.uncertaintyFlags.length > 0) {
         madsResult.resolution.uncertaintyFlags = madsResult.uncertaintyFlags
@@ -475,9 +488,12 @@ ${annotation.type === 'edit'
       if (auditId) {
         resolution.auditId = auditId
         useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
+      } else {
+        // logAuditEvent never rejects — a real write failure resolves null, not a throw
+        resolution.auditFailed = true
       }
     }).catch((e) => {
-      // EU AI Act ledger write failed — surface incomplete coverage, don't drop silently
+      // Defensive backstop for a throw before logResolutionAudit's own try/catch
       console.error('Audit log failed (single-agent)', e)
       resolution.auditFailed = true
     })
