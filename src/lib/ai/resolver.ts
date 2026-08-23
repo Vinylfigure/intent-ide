@@ -137,10 +137,14 @@ export async function resolveAnnotation(
   editorState: EditorState,
 ): Promise<Resolution> {
   const config = useSettingsStore.getState().llmConfig
-  const sessionContext = useSessionStore.getState().context
 
   // Context compaction: if session history is large, compress before proceeding
   await maybeCompactContext()
+
+  // Re-read after compaction — compaction mutates the store in place, and a
+  // reference captured before the await would still point at the pre-compaction
+  // (uncompacted) history.
+  const sessionContext = useSessionStore.getState().context
 
   // Build context
   const localBlock = getBlockText(editorState, annotation.anchor.from)
@@ -302,9 +306,11 @@ export async function streamResolveAnnotation(
   onChunk: (partialContent: string) => void,
 ): Promise<Resolution> {
   const config = useSettingsStore.getState().llmConfig
-  const sessionContext = useSessionStore.getState().context
 
   await maybeCompactContext()
+
+  // Re-read after compaction — see resolveAnnotation's identical comment.
+  const sessionContext = useSessionStore.getState().context
 
   const localBlock = getBlockText(editorState, annotation.anchor.from)
   const sectionText = getSectionText(editorState, annotation.anchor.from)
@@ -498,6 +504,12 @@ export async function continueThread(
   editorState: EditorState,
 ): Promise<ConversationMessage> {
   const config = useSettingsStore.getState().llmConfig
+
+  // Context compaction: unlike the other two call sites, follow-up threads can
+  // grow annotationHistory indefinitely with no compaction check otherwise ever
+  // firing on this path.
+  await maybeCompactContext()
+
   const sessionContext = useSessionStore.getState().context
 
   // Build context
