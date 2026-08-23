@@ -445,6 +445,16 @@ export function AnnotationCard({
         </div>
       )}
 
+      {/* Audit-write failure warning (EU AI Act Art. 12 gap — see #77) */}
+      {showDetail && !held && annotation.resolution?.auditFailed && (
+        <div className="mt-3 mx-1 p-2 border border-red-300 bg-red-50 rounded-xl flex items-center gap-2">
+          <span className="text-red-600 text-xs font-bold shrink-0">⚠</span>
+          <p className="text-xs text-red-800">
+            Audit record for this resolution failed to save — this change has no linked compliance record.
+          </p>
+        </div>
+      )}
+
       {/* Inline provocation callout (when MADS raised an unresolved objection; hidden while held) */}
       {showDetail && !held && annotation.resolution?.provocation && (
         <div className="mt-3 mx-1 p-3 border border-amber-300 bg-amber-50 rounded-xl shadow-sm">

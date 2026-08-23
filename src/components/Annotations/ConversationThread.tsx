@@ -118,6 +118,11 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
               <span className="text-[10px] font-mono text-muted">
                 {formatTimestamp(message.timestamp)}
               </span>
+              {message.auditFailed && (
+                <p className="mt-1 text-[10px] text-red-700 flex items-center gap-1">
+                  <span className="font-bold">⚠</span> Audit record failed to save for this response
+                </p>
+              )}
 
               {message.suggestedEdit && (
                 <>

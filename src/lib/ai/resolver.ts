@@ -48,6 +48,34 @@ function resolveAdaptiveVerbosity(annotation: Annotation): Verbosity {
   return annotation.verbosity || getDefaultVerbosity(annotation.anchor.scope, annotation.type)
 }
 
+/**
+ * Apply an audit-write outcome to a Resolution. Mutates `resolution` in place
+ * (so the field survives if this settles before the resolution is ever
+ * stored) and also pushes the outcome through the store (so a subscriber
+ * still gets notified, and the persisted snapshot still gets written, if the
+ * resolution was already stored by the time this settles). See #77.
+ */
+function syncResolutionAuditOutcome(annotationId: string, resolution: Resolution, auditId: string | null) {
+  if (auditId) {
+    resolution.auditId = auditId
+    useAnnotationStore.getState().updateResolutionAuditStatus(annotationId, resolution, { auditId })
+  } else {
+    resolution.auditFailed = true
+    useAnnotationStore.getState().updateResolutionAuditStatus(annotationId, resolution, { auditFailed: true })
+  }
+}
+
+/** Same outcome-sync contract as {@link syncResolutionAuditOutcome}, for a ConversationMessage. */
+function syncMessageAuditOutcome(annotationId: string, message: ConversationMessage, auditId: string | null) {
+  if (auditId) {
+    message.auditId = auditId
+    useAnnotationStore.getState().updateMessage(annotationId, message.id, { auditId })
+  } else {
+    message.auditFailed = true
+    useAnnotationStore.getState().updateMessage(annotationId, message.id, { auditFailed: true })
+  }
+}
+
 function buildReviewProgress(currentAnnotationId: string): string {
   const annotations = useAnnotationStore.getState().annotations
   const total = annotations.length
@@ -165,17 +193,15 @@ export async function resolveAnnotation(
         responseId: crypto.randomUUID(),
         usedMADS: true,
       }).then((auditId) => {
+        // logAuditEvent never rejects — a real write failure resolves null, not a throw
+        syncResolutionAuditOutcome(annotation.id, madsResult.resolution, auditId)
         if (auditId) {
-          madsResult.resolution.auditId = auditId
           useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
-        } else {
-          // logAuditEvent never rejects — a real write failure resolves null, not a throw
-          madsResult.resolution.auditFailed = true
         }
       }).catch((e) => {
         // Defensive backstop for a throw before logResolutionAudit's own try/catch
         console.error('Audit log failed (MADS)', e)
-        madsResult.resolution.auditFailed = true
+        syncResolutionAuditOutcome(annotation.id, madsResult.resolution, null)
       })
       // Pass MADS uncertainty flags for visualization (Claude fallback)
       if (madsResult.uncertaintyFlags.length > 0) {
@@ -271,17 +297,15 @@ ${annotation.type === 'edit'
       responseId,
       usedMADS: false,
     }).then((auditId) => {
+      // logAuditEvent never rejects — a real write failure resolves null, not a throw
+      syncResolutionAuditOutcome(annotation.id, resolution, auditId)
       if (auditId) {
-        resolution.auditId = auditId
         useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
-      } else {
-        // logAuditEvent never rejects — a real write failure resolves null, not a throw
-        resolution.auditFailed = true
       }
     }).catch((e) => {
       // Defensive backstop for a throw before logResolutionAudit's own try/catch
       console.error('Audit log failed (single-agent)', e)
-      resolution.auditFailed = true
+      syncResolutionAuditOutcome(annotation.id, resolution, null)
     })
 
     // Attach multi-region cascade edits (best-effort)
@@ -335,17 +359,15 @@ export async function streamResolveAnnotation(
         responseId: crypto.randomUUID(),
         usedMADS: true,
       }).then((auditId) => {
+        // logAuditEvent never rejects — a real write failure resolves null, not a throw
+        syncResolutionAuditOutcome(annotation.id, madsResult.resolution, auditId)
         if (auditId) {
-          madsResult.resolution.auditId = auditId
           useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
-        } else {
-          // logAuditEvent never rejects — a real write failure resolves null, not a throw
-          madsResult.resolution.auditFailed = true
         }
       }).catch((e) => {
         // Defensive backstop for a throw before logResolutionAudit's own try/catch
         console.error('Audit log failed (streaming MADS)', e)
-        madsResult.resolution.auditFailed = true
+        syncResolutionAuditOutcome(annotation.id, madsResult.resolution, null)
       })
       if (madsResult.uncertaintyFlags.length > 0) {
         madsResult.resolution.uncertaintyFlags = madsResult.uncertaintyFlags
@@ -485,17 +507,15 @@ ${annotation.type === 'edit'
       responseId,
       usedMADS: false,
     }).then((auditId) => {
+      // logAuditEvent never rejects — a real write failure resolves null, not a throw
+      syncResolutionAuditOutcome(annotation.id, resolution, auditId)
       if (auditId) {
-        resolution.auditId = auditId
         useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
-      } else {
-        // logAuditEvent never rejects — a real write failure resolves null, not a throw
-        resolution.auditFailed = true
       }
     }).catch((e) => {
       // Defensive backstop for a throw before logResolutionAudit's own try/catch
       console.error('Audit log failed (single-agent)', e)
-      resolution.auditFailed = true
+      syncResolutionAuditOutcome(annotation.id, resolution, null)
     })
 
     // Attach multi-region cascade edits (best-effort)
@@ -627,18 +647,16 @@ ${annotation.type === 'edit'
       responseId,
       usedMADS: false,
     }).then((auditId) => {
+      // logResolutionAudit resolves null (never rejects) on a write failure —
+      // this is the real failure signal, not the .catch() below.
+      syncMessageAuditOutcome(annotation.id, message, auditId)
       if (auditId) {
-        message.auditId = auditId
         useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
-      } else {
-        // logResolutionAudit resolves null (never rejects) on a write failure —
-        // this is the real failure signal, not the .catch() below.
-        message.auditFailed = true
       }
     }).catch((e) => {
       // Defensive backstop for a throw before logResolutionAudit's own try/catch.
       console.error('Audit log failed (continueThread)', e)
-      message.auditFailed = true
+      syncMessageAuditOutcome(annotation.id, message, null)
     })
 
     return message

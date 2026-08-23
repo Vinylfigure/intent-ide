@@ -125,6 +125,15 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         : annotation.resolution?.auditId
           ? [annotation.resolution.auditId]
           : []
+    // Warn rather than silently apply with a zero-audit-links version — see
+    // #77. Only fires when the write is KNOWN to have failed (auditFailed),
+    // not merely still in flight (which would false-positive on a fast click).
+    if (auditIds.length === 0 && annotation.resolution?.auditFailed) {
+      useToastStore.getState().addToast(
+        'Audit record for this resolution failed to save — applying anyway, but this version has no linked compliance record.',
+        'error'
+      )
+    }
     const transcript = annotation.transcript.trim()
     const message = !transcript
       ? 'AI change applied'
@@ -419,6 +428,14 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     const approvalAction = handlerToApprovalAction(handler)
     if (auditId && approvalAction) {
       recordHumanDecision(auditId, approvalAction)
+    } else if (!auditId && approvalAction && annotation.resolution?.auditFailed) {
+      // Known failure (not just "write still in flight") — the human-oversight
+      // override record has nowhere to link to. Warn instead of skipping
+      // silently — see #77.
+      useToastStore.getState().addToast(
+        'This decision could not be recorded — the audit trail for this resolution failed to save.',
+        'error'
+      )
     }
 
     switch (handler) {
