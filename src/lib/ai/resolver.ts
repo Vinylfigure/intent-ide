@@ -776,10 +776,24 @@ async function performCompaction(
     const compacted = data.content
 
     if (compacted && compacted.length < history.length) {
-      session.updateContext({
-        annotationHistory: `[Compacted session summary]\n${compacted}`,
-        totalTokens: Math.ceil(compacted.length / CHARS_PER_TOKEN),
-      })
+      // A concurrent, unrelated resolution's appendToHistory() can land while
+      // this compaction's LLM call is still in flight. appendToHistory only
+      // ever appends onto the live annotationHistory, so if it's still
+      // prefixed by the exact string we summarized, anything after that
+      // prefix is a suffix appended during the round-trip — preserve it
+      // instead of clobbering it with the whole-field overwrite below. If
+      // the live history no longer starts with what we summarized (e.g. a
+      // session reset), the summary is based on stale data, so skip the
+      // write rather than guess at how to merge it.
+      const currentHistory = useSessionStore.getState().context.annotationHistory
+      if (currentHistory.startsWith(history)) {
+        const appendedSuffix = currentHistory.slice(history.length)
+        const newHistory = `[Compacted session summary]\n${compacted}${appendedSuffix}`
+        session.updateContext({
+          annotationHistory: newHistory,
+          totalTokens: Math.ceil(newHistory.length / CHARS_PER_TOKEN),
+        })
+      }
     }
   } catch {
     // Non-blocking — if compaction fails, continue with existing context
