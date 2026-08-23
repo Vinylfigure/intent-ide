@@ -586,19 +586,46 @@ ${annotation.type === 'edit'
 
     const data = await response.json()
     const content = data.content
+    const responseId = data.responseId ?? crypto.randomUUID()
 
     // Update session context
     useSessionStore.getState().appendToHistory(
       `[${annotation.type}] Follow-up: "${followUp.slice(0, 50)}..." → Agent responded.`
     )
 
-    return {
+    const message: ConversationMessage = {
       id: generateId(),
       role: 'agent',
       content,
       suggestedEdit: annotation.type === 'edit' ? parseSuggestedEdit(content, annotation) : null,
       timestamp: Date.now(),
     }
+
+    // Audit log for follow-up thread messages (non-blocking, same pattern as the other call sites)
+    logResolutionAudit({
+      annotationType: annotation.type,
+      transcript: followUp,
+      modelName: config.provider,
+      modelVersion: config.model,
+      promptVersion: 'RESOLVER_v1',
+      responseId,
+      usedMADS: false,
+    }).then((auditId) => {
+      if (auditId) {
+        message.auditId = auditId
+        useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
+      } else {
+        // logResolutionAudit resolves null (never rejects) on a write failure —
+        // this is the real failure signal, not the .catch() below.
+        message.auditFailed = true
+      }
+    }).catch((e) => {
+      // Defensive backstop for a throw before logResolutionAudit's own try/catch.
+      console.error('Audit log failed (continueThread)', e)
+      message.auditFailed = true
+    })
+
+    return message
   } catch (err) {
     return {
       id: generateId(),
