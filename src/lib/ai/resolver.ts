@@ -692,12 +692,23 @@ const CHARS_PER_TOKEN = 4
 // keeps sub-agent calls cheap rather than a hard fraction of the window.
 const COMPACTION_THRESHOLD_TOKENS = 64000
 
+// Module-level in-flight guard: resolveAnnotation/streamResolveAnnotation/
+// continueThread can all call maybeCompactContext() in quick succession
+// (rapid double-click, two annotations resolving at once). Without this,
+// each concurrent caller independently observes history above threshold,
+// fires its own compaction request, and races on the final updateContext()
+// write — last writer wins, silently discarding the other compaction's
+// result (and the LLM spend that produced it). Callers that arrive while a
+// compaction is already running await that SAME promise instead of firing
+// their own.
+let compactionInFlight: Promise<void> | null = null
+
 /**
  * Check if the session context is getting too large and compact it.
  * Per agent-orchestration.mdc Section 3: trigger summarization when
  * context exceeds 50% of the model's maximum context window.
  */
-async function maybeCompactContext(): Promise<void> {
+export async function maybeCompactContext(): Promise<void> {
   const session = useSessionStore.getState()
   const history = session.context.annotationHistory
 
@@ -707,6 +718,20 @@ async function maybeCompactContext(): Promise<void> {
 
   if (estimatedTokens < COMPACTION_THRESHOLD_TOKENS) return
 
+  if (compactionInFlight) return compactionInFlight
+
+  compactionInFlight = performCompaction(session, history)
+  try {
+    await compactionInFlight
+  } finally {
+    compactionInFlight = null
+  }
+}
+
+async function performCompaction(
+  session: ReturnType<typeof useSessionStore.getState>,
+  history: string,
+): Promise<void> {
   const config = useSettingsStore.getState().llmConfig
 
   const prompt = CONTEXT_COMPRESSION_PROMPT.replace('{{history}}', history)
