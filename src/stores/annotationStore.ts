@@ -66,6 +66,20 @@ interface AnnotationState {
   activeAnnotationId: string | null
   add: (annotation: Annotation) => void
   update: (id: string, patch: Partial<Annotation>) => void
+  /**
+   * Patches `resolution.auditId`/`auditFailed` after an async audit write
+   * settles, but only if `resolution` (by reference) is still the annotation's
+   * current resolution — a re-resolve (badge override, re-run) that replaced
+   * it in the meantime is left untouched rather than stomped by a stale
+   * audit-write outcome. See #77: this is the notification half of the fix;
+   * the caller (resolver.ts) also mutates `resolution` in place so the field
+   * survives even if this fires before the resolution has been stored at all.
+   */
+  updateResolutionAuditStatus: (
+    id: string,
+    resolution: Resolution,
+    patch: Pick<Resolution, 'auditId'> | Pick<Resolution, 'auditFailed'>
+  ) => void
   remove: (id: string) => void
   setActive: (id: string | null) => void
   addMessage: (id: string, message: ConversationMessage) => void
@@ -85,6 +99,14 @@ export const useAnnotationStore = create<AnnotationState>()(
         set((s) => ({
           annotations: s.annotations.map((a) =>
             a.id === id ? { ...a, ...patch } : a
+          ),
+        })),
+      updateResolutionAuditStatus: (id, resolution, patch) =>
+        set((s) => ({
+          annotations: s.annotations.map((a) =>
+            a.id === id && a.resolution === resolution
+              ? { ...a, resolution: { ...a.resolution, ...patch } }
+              : a
           ),
         })),
       remove: (id) =>

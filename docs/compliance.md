@@ -74,9 +74,13 @@ non-repudiable signatures.
 **Linkage to the audit ledger — including the failure path.** Versions of kind `apply` carry the
 ids of the audit records covering the underlying AI inference, a direct join to the Article 12
 audit ledger (`AuditLog`, written via the append-only `src/app/api/audit/route.ts` /
-`src/lib/audit/auditLogger.ts`). When an audit write fails at inference time, the resolution is
-flagged in the UI (`auditFailed`) and the linked version records **zero** audit ids — the gap is
-surfaced, not papered over.
+`src/lib/audit/auditLogger.ts`). When an audit write fails at inference time, `resolver.ts` routes
+the `auditFailed` flag through `useAnnotationStore`'s `updateResolutionAuditStatus`/`updateMessage`
+actions (not a bare object mutation — a subscriber-notifying, persisted store write) and the UI
+surfaces it: a warning callout on the resolution card and on the conversation message it belongs
+to (`AnnotationCard.tsx`, `ConversationThread.tsx`), plus a toast at apply/decision time
+(`ResolutionActions.tsx`) when the linked version would otherwise carry **zero** audit ids or the
+human-oversight override record has nowhere to link to. The gap is surfaced, not papered over.
 
 **Retention.** Audit records carry a `dataRetentionDays` default of 2555 days (7 years);
 compliance-relevant document versions (`'import' | 'apply' | 'restore'`) are retained indefinitely
