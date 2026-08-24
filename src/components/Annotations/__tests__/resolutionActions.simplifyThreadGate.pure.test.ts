@@ -30,6 +30,20 @@ function makeConversation(): ConversationMessage[] {
   ]
 }
 
+// Source-faithful re-implementation of the stale-write guard added for #92:
+// annotationStore's `update(id, patch)` spreads the patch over the existing
+// annotation, so `conversation` keeps its prior array reference unless the
+// patch itself touches it. A reference mismatch (or a missing annotation —
+// deleted mid-flight) means another write landed on this annotation while
+// the summarize request was in flight, and the stale summary must be
+// discarded rather than applied on top of it.
+function shouldApplySimplifySummary(
+  conversationSnapshot: ConversationMessage[],
+  liveConversation: ConversationMessage[] | undefined,
+): boolean {
+  return liveConversation !== undefined && liveConversation === conversationSnapshot
+}
+
 // Regression for #88: a failed simplifyThread request must never overwrite
 // real conversation history with the synthesized error string.
 describe('Simplify thread destructive-write gate (#88)', () => {
@@ -65,5 +79,41 @@ describe('Simplify thread destructive-write gate (#88)', () => {
 
     expect(next).toHaveLength(1)
     expect(next[0].content).toBe('Error: is the wrong word to use here.')
+  })
+})
+
+// Regression for #92: a successful simplify must not clobber a conversation
+// that changed (another reply, or another simplify) while the request for
+// this one was still in flight.
+describe('Simplify thread stale-write guard (#92)', () => {
+  it('discards the summary when the conversation changed while the request was in flight', () => {
+    const snapshot = makeConversation()
+    const liveConversation = [...snapshot, {
+      id: 'm4', role: 'agent' as const, content: 'A reply that landed mid-flight', suggestedEdit: null, timestamp: 4,
+    }]
+
+    expect(shouldApplySimplifySummary(snapshot, liveConversation)).toBe(false)
+  })
+
+  it('discards the summary when the annotation was deleted while the request was in flight', () => {
+    const snapshot = makeConversation()
+
+    expect(shouldApplySimplifySummary(snapshot, undefined)).toBe(false)
+  })
+
+  it('applies the summary when the conversation is unchanged since the request started', () => {
+    const snapshot = makeConversation()
+
+    expect(shouldApplySimplifySummary(snapshot, snapshot)).toBe(true)
+  })
+
+  it('discards the summary even when the live conversation is deep-equal but a different array (another simplify replaced it)', () => {
+    const snapshot = makeConversation()
+    // A second, unrelated simplify (or any conversation-touching write)
+    // always produces a fresh array — even one that happens to contain the
+    // same messages is evidence of a write this request didn't see.
+    const liveConversation = makeConversation()
+
+    expect(shouldApplySimplifySummary(snapshot, liveConversation)).toBe(false)
   })
 })

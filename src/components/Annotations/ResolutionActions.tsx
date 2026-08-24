@@ -733,11 +733,32 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
             e.stopPropagation()
             if (isSimplifying) return
             setIsSimplifying(true)
+            const conversationSnapshot = annotation.conversation
             try {
               const result = await simplifyThread(annotation)
               if (result.requestFailed) {
                 useToastStore.getState().addToast(
                   'Simplifying this thread failed — the conversation was left unchanged.',
+                  'error'
+                )
+                return
+              }
+              // The conversation is a store-owned reference that is only
+              // reassigned when its own content changes (annotationStore's
+              // plain `update` spreads the patch over the existing
+              // annotation, so an unrelated field write leaves `conversation`
+              // pointing at the same array). A reference mismatch here means
+              // another reply (or another simplify) landed on this
+              // annotation while this request was in flight — applying the
+              // stale summary on top would silently discard that write.
+              const live = useAnnotationStore.getState().getById(annotation.id)
+              if (!live) {
+                // Nothing to retry — the annotation itself is gone.
+                return
+              }
+              if (live.conversation !== conversationSnapshot) {
+                useToastStore.getState().addToast(
+                  'This conversation changed while simplifying — try again.',
                   'error'
                 )
                 return
@@ -751,6 +772,12 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
                   timestamp: Date.now(),
                 }],
               })
+            } catch (err) {
+              console.error('Simplify thread failed unexpectedly:', err)
+              useToastStore.getState().addToast(
+                'Simplifying this thread failed — the conversation was left unchanged.',
+                'error'
+              )
             } finally {
               setIsSimplifying(false)
             }
