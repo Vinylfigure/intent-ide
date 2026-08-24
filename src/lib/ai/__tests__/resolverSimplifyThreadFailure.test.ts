@@ -74,6 +74,38 @@ describe('simplifyThread requestFailed signal (#88)', () => {
     expect(result.content).toContain('network down')
   })
 
+  it('flags requestFailed on a 200 response with no usable content (e.g. a tool-call-only completion)', async () => {
+    const resolver = await loadResolver()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        statusText: 'OK',
+        json: async () => ({ content: null }),
+      }),
+    )
+
+    const result = await resolver.simplifyThread(makeAnnotation())
+
+    expect(result.requestFailed).toBe(true)
+  })
+
+  it('flags requestFailed on a 200 response with an empty-string content', async () => {
+    const resolver = await loadResolver()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        statusText: 'OK',
+        json: async () => ({ content: '   ' }),
+      }),
+    )
+
+    const result = await resolver.simplifyThread(makeAnnotation())
+
+    expect(result.requestFailed).toBe(true)
+  })
+
   it('leaves requestFailed unset on a successful reply, including one that reads like an error', async () => {
     const resolver = await loadResolver()
     // A model is free to summarize starting with the word "Error" (e.g. discussing

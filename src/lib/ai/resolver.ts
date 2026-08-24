@@ -729,6 +729,13 @@ ${annotation.conversation.map((msg) => `${msg.role === 'user' ? 'User' : 'Agent'
     }
 
     const data = await response.json()
+    // A 200 response can still carry no usable content (e.g. a tool-call-only
+    // completion, or a quirky BYOK-compatible endpoint) — that is a failure
+    // from this caller's perspective too, not a valid one-line summary, so it
+    // must set requestFailed just like a thrown/non-ok response does.
+    if (typeof data.content !== 'string' || data.content.trim() === '') {
+      throw new Error('Simplification returned no content')
+    }
     return { content: data.content }
   } catch (err) {
     return {
