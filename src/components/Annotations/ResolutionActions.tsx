@@ -61,6 +61,7 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   const [pendingHandler, setPendingHandler] = useState<string | null>(null)
   const [showTweakInput, setShowTweakInput] = useState(false)
   const [tweakText, setTweakText] = useState('')
+  const [isSimplifying, setIsSimplifying] = useState(false)
   // Plugin statuses at modal-open time — cancel restores these so an
   // abandoned review session never leaks its toggles into the inline surfaces.
   const commitSnapshotRef = useRef<CommitStatusSnapshot | null>(null)
@@ -730,20 +731,34 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         <button
           onClick={async (e) => {
             e.stopPropagation()
-            const summary = await simplifyThread(annotation)
-            updateAnnotation(annotation.id, {
-              conversation: [{
-                id: generateId(),
-                role: 'agent',
-                content: summary,
-                suggestedEdit: null,
-                timestamp: Date.now(),
-              }],
-            })
+            if (isSimplifying) return
+            setIsSimplifying(true)
+            try {
+              const result = await simplifyThread(annotation)
+              if (result.requestFailed) {
+                useToastStore.getState().addToast(
+                  'Simplifying this thread failed — the conversation was left unchanged.',
+                  'error'
+                )
+                return
+              }
+              updateAnnotation(annotation.id, {
+                conversation: [{
+                  id: generateId(),
+                  role: 'agent',
+                  content: result.content,
+                  suggestedEdit: null,
+                  timestamp: Date.now(),
+                }],
+              })
+            } finally {
+              setIsSimplifying(false)
+            }
           }}
-          className="px-3 py-1.5 text-xs font-medium rounded bg-warm text-muted hover:bg-border transition-colors"
+          disabled={isSimplifying}
+          className="px-3 py-1.5 text-xs font-medium rounded bg-warm text-muted hover:bg-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Simplify thread
+          {isSimplifying ? 'Simplifying…' : 'Simplify thread'}
         </button>
       )}
     </div>

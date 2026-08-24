@@ -56,10 +56,12 @@ export interface ConversationMessage {
    * Set by `continueThread` (src/lib/ai/resolver.ts) when its `/api/resolve`
    * request failed and `content` is a synthesized error string rather than a
    * model reply — the error text is otherwise indistinguishable from a real
-   * one-line answer. NOT currently set by every function that can return an
-   * error-shaped message (e.g. `streamResolveAnnotation`'s own catch, or
-   * `simplifyThread`, which returns a bare string with no way to flag this at
-   * all) — a caller consuming one of those must not assume the same coverage.
+   * one-line answer. `simplifyThread` carries the same signal on its own
+   * `SimplifyThreadResult` return type rather than on a `ConversationMessage`
+   * (it summarizes to a string, not a message). NOT currently set by every
+   * function that can return an error-shaped message (e.g.
+   * `streamResolveAnnotation`'s own catch) — a caller consuming one of those
+   * must not assume the same coverage.
    */
   requestFailed?: boolean
 }
