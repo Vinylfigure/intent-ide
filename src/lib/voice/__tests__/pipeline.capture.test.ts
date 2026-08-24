@@ -46,6 +46,11 @@ vi.mock('mermaid', () => ({
   },
 }))
 
+// Imported after the mock above so this resolves to the same mocked module
+// instance validateMermaid's dynamic `await import('mermaid')` returns —
+// lets one test override `parse` for a single call via mockImplementationOnce.
+import mermaid from 'mermaid'
+
 vi.mock('@/lib/ai/resolver', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/ai/resolver')>()
   return {
@@ -697,6 +702,47 @@ describe('(g) mermaid guard on resolution content', () => {
     expect(
       getAnnotation(id).conversation.some((m) => 'auditFailed' in m),
     ).toBe(false)
+  })
+
+  it('an annotation removed between the stream resolving and the retry firing never sends a correction request for a diagram it never saw (#91)', async () => {
+    const INVALID_DIAGRAM = 'Here is the flow:\n\n```mermaid\ngrph BROKEN\n```\n\nOne caption.'
+    const { stub, calls } = makeFetchStub({ streamText: INVALID_DIAGRAM })
+    vi.stubGlobal('fetch', stub)
+
+    // The mermaid guard calls validateMermaid → mermaid.parse() BEFORE the
+    // pipeline's retry callback runs — the exact "between the stream
+    // finishing and the retry firing" window the issue describes. Deleting
+    // the annotation from inside this one-shot parse failure reproduces the
+    // real "user dismissed the card mid-flight" race deterministically,
+    // without a fixed sleep.
+    let targetId = ''
+    vi.mocked(mermaid.parse).mockImplementationOnce(async () => {
+      if (targetId) useAnnotationStore.getState().remove(targetId)
+      throw new Error('Parse error: bad node')
+    })
+
+    const id = captureAndResolveInBackground('dig', 'diagram this', FROM, TO, {
+      suggestedType: 'dig',
+      skipClassify: true,
+    })!
+    targetId = id
+
+    // The annotation is gone, so there is no `status === 'resolved'` to poll
+    // for — wait for the (only expected) initial /api/resolve call, then give
+    // an incorrect retry a window to have fired before asserting it didn't.
+    await waitFor(() => calls.some((c) => c.url.includes('/api/resolve')))
+    await new Promise((r) => setTimeout(r, 50))
+
+    expect(useAnnotationStore.getState().getById(id)).toBeUndefined()
+    const retryCalls = calls.filter(
+      (c) =>
+        c.url.includes('/api/resolve') &&
+        (c.body?.messages ?? []).some((m: { content: string }) =>
+          m.content.includes('The mermaid diagram failed to parse'),
+        ),
+    )
+    expect(retryCalls).toHaveLength(0)
+    expect(calls.filter((c) => c.url.includes('/api/resolve'))).toHaveLength(1)
   })
 })
 

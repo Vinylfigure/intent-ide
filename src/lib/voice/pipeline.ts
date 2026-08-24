@@ -317,7 +317,15 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
             // added above) — continueThread would ask the model to correct
             // a diagram it has never seen. Read the live annotation and
             // inline the broken source directly into the correction prompt.
-            const fresh = annotationStore.getById(id) ?? current
+            // If the annotation was deleted mid-flight, there is no live
+            // snapshot to read — falling back to `current` would reintroduce
+            // that exact stale-conversation defect, so fail closed instead:
+            // throw, which ensureRenderableMermaid's contract degrades to
+            // the ORIGINAL (pre-correction-attempt) content.
+            const fresh = annotationStore.getById(id)
+            if (!fresh) {
+              throw new Error('Annotation was removed before the mermaid correction could be requested')
+            }
             const brokenSource = extractMermaidFence(resolution.content)?.code ?? ''
             const correction = `The mermaid diagram failed to parse: ${parseError}.\n\nHere is the diagram source:\n\`\`\`\n${brokenSource}\n\`\`\`\n\nReply with either a corrected single \`\`\`mermaid block or plain prose.`
             // This retry's message is discarded below (only .content is kept)
