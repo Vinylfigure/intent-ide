@@ -74,7 +74,10 @@ export function ChangesPanel() {
             const expanded = expandedIds.has(changeSet.id)
             return (
               <div key={changeSet.id} className="px-4 py-4">
-                <div className="flex items-start justify-between gap-3">
+                {/* flex-wrap + basis-40: when the title and the pill cluster cannot
+                    share the row, the cluster drops to its own line instead of
+                    being painted over by the overflowing title. */}
+                <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
                   <button
                     onClick={() => {
                       setExpandedIds((prev) => {
@@ -84,20 +87,22 @@ export function ChangesPanel() {
                         return next
                       })
                     }}
-                    className="min-w-0 flex-1 text-left"
+                    className="min-w-0 flex-1 basis-40 text-left"
                   >
-                    <div className="flex items-center gap-2">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono ${STATUS_STYLES[changeSet.status]}`}>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className={`shrink-0 px-2 py-0.5 rounded text-[10px] font-mono ${STATUS_STYLES[changeSet.status]}`}>
                         {changeSet.status}
                       </span>
-                      <span className="text-sm font-medium text-ink">{changeSet.title}</span>
+                      <span className="min-w-0 truncate text-sm font-medium text-ink" title={changeSet.title}>
+                        {changeSet.title}
+                      </span>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {changeSet.annotationIds.length} annotations, {changeSet.entries.length} applied changes, {changeSet.auditRecordIds.length} audit events
                     </p>
                   </button>
 
-                  <div className="flex flex-wrap justify-end gap-1">
+                  <div className="flex shrink-0 flex-wrap justify-end gap-1">
                     {STATUS_OPTIONS.map((status) => (
                       <button
                         key={status}
