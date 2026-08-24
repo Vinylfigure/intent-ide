@@ -312,8 +312,15 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
         resolution.content = await ensureRenderableMermaid(
           resolution.content,
           async (parseError) => {
-            const correction = `The mermaid diagram failed to parse: ${parseError}. Reply with either a corrected single \`\`\`mermaid block or plain prose.`
-            const message = await continueThread(current, correction, view.state)
+            // The stale `current` snapshot's conversation predates the
+            // streamed answer (it only holds the empty placeholder message
+            // added above) — continueThread would ask the model to correct
+            // a diagram it has never seen. Read the live annotation and
+            // inline the broken source directly into the correction prompt.
+            const fresh = annotationStore.getById(id) ?? current
+            const brokenSource = extractMermaidFence(resolution.content)?.code ?? ''
+            const correction = `The mermaid diagram failed to parse: ${parseError}.\n\nHere is the diagram source:\n\`\`\`\n${brokenSource}\n\`\`\`\n\nReply with either a corrected single \`\`\`mermaid block or plain prose.`
+            const message = await continueThread(fresh, correction, view.state)
             // continueThread reports a failed /api/resolve call as an
             // error-shaped message rather than throwing. Returning it would
             // read as a fence-less "plain prose" retry and replace the real

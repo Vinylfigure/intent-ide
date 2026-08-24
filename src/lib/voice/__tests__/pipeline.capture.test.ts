@@ -108,6 +108,8 @@ interface FetchStubOptions {
   streamText?: string
   /** Respond non-ok to ONLY the mermaid-guard's correction retry. */
   failMermaidRetry?: boolean
+  /** Respond 200 with blank content to ONLY the mermaid-guard's correction retry. */
+  blankMermaidRetry?: boolean
 }
 
 function makeFetchStub(options: FetchStubOptions = {}) {
@@ -137,11 +139,20 @@ function makeFetchStub(options: FetchStubOptions = {}) {
       const userContent = (body?.messages ?? [])
         .map((m: { content: string }) => m.content)
         .join('\n')
-      if (
-        options.failMermaidRetry &&
-        userContent.includes('The mermaid diagram failed to parse')
-      ) {
+      // Only the mermaid-guard's non-streamed correction retry carries this
+      // phrase as its LAST message — check the last message specifically so
+      // a later, unrelated request whose history merely contains a prior
+      // correction can't be mistaken for the retry itself.
+      const isMermaidRetry =
+        !body?.stream &&
+        String((body?.messages ?? []).at(-1)?.content ?? '').includes(
+          'The mermaid diagram failed to parse',
+        )
+      if (options.failMermaidRetry && isMermaidRetry) {
         return { ok: false, status: 500, statusText: 'retry boom', json: async () => ({}) }
+      }
+      if (options.blankMermaidRetry && isMermaidRetry) {
+        return jsonResponse({ content: '', responseId: 'test-resp-1' })
       }
       // MADS branch shapes — mirrored from tests/cascade-review.spec.ts
       let content: string
@@ -573,6 +584,12 @@ describe('(g) mermaid guard on resolution content', () => {
         ),
     )
     expect(retries).toHaveLength(1)
+    // The correction prompt must carry the actual broken diagram source —
+    // otherwise the model is asked to fix a diagram it has never seen.
+    const retryMessages = retries[0].body?.messages ?? []
+    expect(
+      retryMessages.some((m: { content: string }) => m.content.includes('grph BROKEN')),
+    ).toBe(true)
 
     const content = getAnnotation(id).resolution?.content ?? ''
     expect(content).not.toContain('```mermaid')
@@ -603,6 +620,27 @@ describe('(g) mermaid guard on resolution content', () => {
     expect(content).toContain('Here is the flow:')
     expect(content).toContain('One caption.')
     // Degraded, not raw: the broken source survives as a plain code block.
+    expect(content).not.toContain('```mermaid')
+    expect(content).toContain('```\ngrph BROKEN\n```')
+  })
+
+  it('a retry that resolves 200 with blank content degrades the ORIGINAL answer instead of returning blank', async () => {
+    const INVALID_DIAGRAM = 'Here is the flow:\n\n```mermaid\ngrph BROKEN\n```\n\nOne caption.'
+    // A blank-but-ok retry is not something the caller can throw on — the
+    // guard itself must refuse to trust it as a deliberate plain-prose reply.
+    const { stub } = makeFetchStub({ streamText: INVALID_DIAGRAM, blankMermaidRetry: true })
+    vi.stubGlobal('fetch', stub)
+
+    const id = captureAndResolveInBackground('dig', 'diagram this', FROM, TO, {
+      suggestedType: 'dig',
+      skipClassify: true,
+    })!
+    await waitFor(() => getAnnotation(id).status === 'resolved')
+
+    const content = getAnnotation(id).resolution?.content ?? ''
+    expect(content).toBeTruthy()
+    expect(content).toContain('Here is the flow:')
+    expect(content).toContain('One caption.')
     expect(content).not.toContain('```mermaid')
     expect(content).toContain('```\ngrph BROKEN\n```')
   })

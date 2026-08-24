@@ -53,10 +53,13 @@ export interface ConversationMessage {
   /** Set when the compliance audit-log write failed, so the UI can flag incomplete coverage */
   auditFailed?: boolean
   /**
-   * Set when the underlying request failed and `content` is a synthesized error
-   * string rather than a model reply. Callers that branch on the answer (rather
-   * than just displaying it) must check this — the error text is otherwise
-   * indistinguishable from a real one-line answer.
+   * Set by `continueThread` (src/lib/ai/resolver.ts) when its `/api/resolve`
+   * request failed and `content` is a synthesized error string rather than a
+   * model reply — the error text is otherwise indistinguishable from a real
+   * one-line answer. NOT currently set by every function that can return an
+   * error-shaped message (e.g. `streamResolveAnnotation`'s own catch, or
+   * `simplifyThread`, which returns a bare string with no way to flag this at
+   * all) — a caller consuming one of those must not assume the same coverage.
    */
   requestFailed?: boolean
 }
