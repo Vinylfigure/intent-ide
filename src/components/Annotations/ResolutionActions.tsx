@@ -752,7 +752,11 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
               // annotation while this request was in flight — applying the
               // stale summary on top would silently discard that write.
               const live = useAnnotationStore.getState().getById(annotation.id)
-              if (!live || live.conversation !== conversationSnapshot) {
+              if (!live) {
+                // Nothing to retry — the annotation itself is gone.
+                return
+              }
+              if (live.conversation !== conversationSnapshot) {
                 useToastStore.getState().addToast(
                   'This conversation changed while simplifying — try again.',
                   'error'
@@ -768,6 +772,12 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
                   timestamp: Date.now(),
                 }],
               })
+            } catch (err) {
+              console.error('Simplify thread failed unexpectedly:', err)
+              useToastStore.getState().addToast(
+                'Simplifying this thread failed — the conversation was left unchanged.',
+                'error'
+              )
             } finally {
               setIsSimplifying(false)
             }
