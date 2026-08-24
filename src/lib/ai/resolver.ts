@@ -538,6 +538,11 @@ export async function continueThread(
   annotation: Annotation,
   followUp: string,
   editorState: EditorState,
+  // Fires once the audit write settles. Needed by callers that discard the
+  // returned message (e.g. the mermaid-correction retry in pipeline.ts,
+  // which only reads `.content`) — without this hook, a failed audit write
+  // on those calls has no object left for anyone to ever read it from.
+  onAuditOutcome?: (message: ConversationMessage) => void,
 ): Promise<ConversationMessage> {
   const config = useSettingsStore.getState().llmConfig
 
@@ -653,10 +658,12 @@ ${annotation.type === 'edit'
       if (auditId) {
         useChangesStore.getState().linkAuditToAnnotation(annotation, auditId)
       }
+      onAuditOutcome?.(message)
     }).catch((e) => {
       // Defensive backstop for a throw before logResolutionAudit's own try/catch.
       console.error('Audit log failed (continueThread)', e)
       syncMessageAuditOutcome(annotation.id, message, null)
+      onAuditOutcome?.(message)
     })
 
     return message

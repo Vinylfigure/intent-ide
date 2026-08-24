@@ -313,7 +313,18 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
           resolution.content,
           async (parseError) => {
             const correction = `The mermaid diagram failed to parse: ${parseError}. Reply with either a corrected single \`\`\`mermaid block or plain prose.`
-            const message = await continueThread(current, correction, view.state)
+            // This retry's message is discarded below (only .content is kept)
+            // and never stored in the annotation's conversation, so nothing
+            // else will ever see its audit outcome — surface a failure here,
+            // the only place that still has a handle on it.
+            const message = await continueThread(current, correction, view.state, (correctionMessage) => {
+              if (correctionMessage.auditFailed) {
+                useToastStore.getState().addToast(
+                  'Audit record for the mermaid-diagram correction failed to save — the diagram was still corrected, but this retry has no linked compliance record.',
+                  'error',
+                )
+              }
+            })
             return message.content
           },
         )

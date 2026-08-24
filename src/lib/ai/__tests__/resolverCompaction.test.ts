@@ -91,7 +91,10 @@ function makeFetchStub() {
     const body = init?.body ? JSON.parse(init.body) : null
 
     if (url.includes('/api/audit')) {
-      return jsonResponse({ auditId: 'audit-test-1' })
+      // The real route returns { id }, not { auditId } — logAuditEvent reads
+      // data.id, so the wrong key here would silently resolve every write to
+      // null (see the identical fix in pipeline.capture.test.ts).
+      return jsonResponse({ id: 'audit-test-1' })
     }
     if (url.includes('/api/resolve')) {
       const messages = body?.messages ?? []

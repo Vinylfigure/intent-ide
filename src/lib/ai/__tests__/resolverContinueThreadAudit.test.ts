@@ -142,4 +142,36 @@ describe('continueThread audit logging', () => {
     expect(message.auditFailed).toBe(true)
     expect(message.auditId).toBeUndefined()
   })
+
+  it('invokes the optional onAuditOutcome callback with the final message, for callers that discard the return value', async () => {
+    const { auditLogger, resolver } = await loadModules()
+    vi.mocked(auditLogger.logResolutionAudit).mockResolvedValue(null)
+    stubFetch('Corrected diagram reply')
+
+    const annotation = makeAnnotation()
+    const outcomes: Array<{ auditFailed?: boolean; auditId?: string }> = []
+    await resolver.continueThread(annotation, 'correction follow-up', makeEditorState(), (message) => {
+      outcomes.push({ auditFailed: message.auditFailed, auditId: message.auditId })
+    })
+
+    await flushMicrotasks()
+
+    expect(outcomes).toEqual([{ auditFailed: true, auditId: undefined }])
+  })
+
+  it('onAuditOutcome sees a successful auditId too, not just failures', async () => {
+    const { auditLogger, resolver } = await loadModules()
+    vi.mocked(auditLogger.logResolutionAudit).mockResolvedValue('audit-77')
+    stubFetch('Corrected diagram reply')
+
+    const annotation = makeAnnotation()
+    const outcomes: Array<{ auditFailed?: boolean; auditId?: string }> = []
+    await resolver.continueThread(annotation, 'correction follow-up', makeEditorState(), (message) => {
+      outcomes.push({ auditFailed: message.auditFailed, auditId: message.auditId })
+    })
+
+    await flushMicrotasks()
+
+    expect(outcomes).toEqual([{ auditFailed: undefined, auditId: 'audit-77' }])
+  })
 })
