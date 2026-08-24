@@ -71,16 +71,27 @@ scheme prevents their after-the-fact modification — but they are asserted by t
 time, not cryptographically signed by an independent authority. They are attribution records, not
 non-repudiable signatures.
 
-**Linkage to the audit ledger — including the failure path.** Versions of kind `apply` carry the
-ids of the audit records covering the underlying AI inference, a direct join to the Article 12
-audit ledger (`AuditLog`, written via the append-only `src/app/api/audit/route.ts` /
-`src/lib/audit/auditLogger.ts`). When an audit write fails at inference time, `resolver.ts` routes
-the `auditFailed` flag through `useAnnotationStore`'s `updateResolutionAuditStatus`/`updateMessage`
-actions (not a bare object mutation — a subscriber-notifying, persisted store write) and the UI
-surfaces it: a warning callout on the resolution card and on the conversation message it belongs
-to (`AnnotationCard.tsx`, `ConversationThread.tsx`), plus a toast at apply/decision time
-(`ResolutionActions.tsx`) when the linked version would otherwise carry **zero** audit ids or the
-human-oversight override record has nowhere to link to. The gap is surfaced, not papered over.
+**Linkage to the audit ledger — including the failure and race paths.** Versions of kind `apply`
+carry the ids of the audit records covering the underlying AI inference, a direct join to the
+Article 12 audit ledger (`AuditLog`, written via the append-only `src/app/api/audit/route.ts` /
+`src/lib/audit/auditLogger.ts`). The audit write is fire-and-forget (the apply path never awaits
+it, by design), so a version's audit linkage is a snapshot taken at apply time
+(`resolveApplyAuditIds` in `src/lib/annotations/applyAuditLinkage.ts`), not a guarantee the write
+ever completes first. Two distinct cases both leave a version with **zero** audit ids: the write
+fails — `resolver.ts` routes the `auditFailed` flag through `useAnnotationStore`'s
+`updateResolutionAuditStatus`/`updateMessage` actions and the UI surfaces it (a warning callout on
+the resolution card and on the conversation message it belongs to in `AnnotationCard.tsx` /
+`ConversationThread.tsx`, plus a toast in `ResolutionActions.tsx` — at apply time when the linked
+version would otherwise carry zero audit ids, or at decision time when a human-oversight override
+record has nowhere to link to) — or the write simply hasn't settled yet when the user applies,
+which has no UI signal and is indistinguishable from "will never succeed" at apply time. Neither
+case is backfilled if a pending write later
+succeeds — `DocCommit` is append-only, and there is no code path that attaches a late-arriving
+audit id to an already-created version. Both gaps are surfaced, not papered over; the race case is
+tracked as accepted-and-documented rather than closed, since closing it fully (awaiting the write
+before apply, or backfilling `auditIds` after the fact) would either add apply-path latency or
+require its own design pass on what, if anything, may mutate on an append-only record — see
+issue #83.
 
 **Retention.** Audit records carry a `dataRetentionDays` default of 2555 days (7 years);
 compliance-relevant document versions (`'import' | 'apply' | 'restore'`) are retained indefinitely
