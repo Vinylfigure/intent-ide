@@ -667,6 +667,7 @@ ${annotation.type === 'edit'
       content: `Error: ${err instanceof Error ? err.message : 'Thread continuation failed'}. Please try again.`,
       suggestedEdit: null,
       timestamp: Date.now(),
+      requestFailed: true,
     }
   }
 }

@@ -314,6 +314,12 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
           async (parseError) => {
             const correction = `The mermaid diagram failed to parse: ${parseError}. Reply with either a corrected single \`\`\`mermaid block or plain prose.`
             const message = await continueThread(current, correction, view.state)
+            // continueThread reports a failed /api/resolve call as an
+            // error-shaped message rather than throwing. Returning it would
+            // read as a fence-less "plain prose" retry and replace the real
+            // answer with the error text — throw so the guard degrades the
+            // ORIGINAL content instead.
+            if (message.requestFailed) throw new Error(message.content)
             return message.content
           },
         )

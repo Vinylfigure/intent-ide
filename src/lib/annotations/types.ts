@@ -52,6 +52,13 @@ export interface ConversationMessage {
   auditId?: string
   /** Set when the compliance audit-log write failed, so the UI can flag incomplete coverage */
   auditFailed?: boolean
+  /**
+   * Set when the underlying request failed and `content` is a synthesized error
+   * string rather than a model reply. Callers that branch on the answer (rather
+   * than just displaying it) must check this — the error text is otherwise
+   * indistinguishable from a real one-line answer.
+   */
+  requestFailed?: boolean
 }
 
 export interface Annotation {

@@ -106,6 +106,8 @@ interface FetchStubOptions {
   resolveGate?: Promise<void>
   /** Content for streamed (SSE) resolutions. */
   streamText?: string
+  /** Respond non-ok to ONLY the mermaid-guard's correction retry. */
+  failMermaidRetry?: boolean
 }
 
 function makeFetchStub(options: FetchStubOptions = {}) {
@@ -135,6 +137,12 @@ function makeFetchStub(options: FetchStubOptions = {}) {
       const userContent = (body?.messages ?? [])
         .map((m: { content: string }) => m.content)
         .join('\n')
+      if (
+        options.failMermaidRetry &&
+        userContent.includes('The mermaid diagram failed to parse')
+      ) {
+        return { ok: false, status: 500, statusText: 'retry boom', json: async () => ({}) }
+      }
       // MADS branch shapes — mirrored from tests/cascade-review.spec.ts
       let content: string
       if (userContent.includes('Find every edge case')) {
@@ -573,6 +581,30 @@ describe('(g) mermaid guard on resolution content', () => {
     // Presentation-layer message carries the degraded content too.
     const lastAgent = [...getAnnotation(id).conversation].reverse().find((m) => m.role === 'agent')
     expect(lastAgent?.content).toBe(content)
+  })
+
+  it('a retry whose own /api/resolve call fails degrades the ORIGINAL answer instead of replacing it with the error string', async () => {
+    const INVALID_DIAGRAM = 'Here is the flow:\n\n```mermaid\ngrph BROKEN\n```\n\nOne caption.'
+    // continueThread reports a failed /api/resolve as an error-shaped message
+    // rather than throwing. That message carries no mermaid fence, so before
+    // the requestFailed signal existed the guard read it as a deliberate
+    // plain-prose retry and returned it as the final answer.
+    const { stub } = makeFetchStub({ streamText: INVALID_DIAGRAM, failMermaidRetry: true })
+    vi.stubGlobal('fetch', stub)
+
+    const id = captureAndResolveInBackground('dig', 'diagram this', FROM, TO, {
+      suggestedType: 'dig',
+      skipClassify: true,
+    })!
+    await waitFor(() => getAnnotation(id).status === 'resolved')
+
+    const content = getAnnotation(id).resolution?.content ?? ''
+    expect(content).not.toContain('Thread continuation failed')
+    expect(content).toContain('Here is the flow:')
+    expect(content).toContain('One caption.')
+    // Degraded, not raw: the broken source survives as a plain code block.
+    expect(content).not.toContain('```mermaid')
+    expect(content).toContain('```\ngrph BROKEN\n```')
   })
 
   it('content without a fence never touches the guard (no retry calls)', async () => {
