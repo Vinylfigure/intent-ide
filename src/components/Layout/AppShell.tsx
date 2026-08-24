@@ -18,6 +18,7 @@ import { ToastContainer } from '@/components/Layout/ToastContainer'
 import { FloatingIconBar } from '@/components/Editor/FloatingIconBar'
 import { CommandPalette } from '@/components/Layout/CommandPalette'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useLayoutStore, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } from '@/stores/layoutStore'
 import { useEditorStore } from '@/stores/editorStore'
 import { useVoiceStore } from '@/stores/voiceStore'
 import { useDocumentStore } from '@/stores/documentStore'
@@ -59,6 +60,30 @@ export function AppShell() {
   const [showCommandPalette, setShowCommandPalette] = useState(false)
   const [showAgentConfig, setShowAgentConfig] = useState(false)
   const showApiKeyModal = useSettingsStore((s) => s.showApiKeyModal)
+  const sidebarWidth = useLayoutStore((s) => s.sidebarWidth)
+  const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth)
+
+  // Drag-to-resize: pointer capture keeps move events on the handle even when
+  // the cursor leaves it; the store clamps every value, so drags can't strand
+  // the rail. Width persists via the layout store.
+  const startSidebarResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const handle = e.currentTarget
+    const startX = e.clientX
+    const startWidth = useLayoutStore.getState().sidebarWidth
+    handle.setPointerCapture(e.pointerId)
+    const onMove = (ev: PointerEvent) => {
+      useLayoutStore.getState().setSidebarWidth(startWidth + (ev.clientX - startX))
+    }
+    const stop = () => {
+      handle.removeEventListener('pointermove', onMove)
+      handle.removeEventListener('pointerup', stop)
+      handle.removeEventListener('pointercancel', stop)
+    }
+    handle.addEventListener('pointermove', onMove)
+    handle.addEventListener('pointerup', stop)
+    handle.addEventListener('pointercancel', stop)
+  }
   const isRecording = useVoiceStore((s) => s.isRecording)
   const activeDocumentId = useDocumentStore((s) => s.activeDocumentId)
   const isDirty = useDocumentStore((s) => s.isDirty)
@@ -186,9 +211,11 @@ export function AppShell() {
     <div className="flex flex-col h-screen app-shell-backdrop">
       {/* Main content */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left sidebar */}
+        {/* Left sidebar — width lives in layoutStore (drag the right edge, or
+            arrow keys on the focused handle) and persists across sessions */}
         {!isSidebarCollapsed ? (
-        <div className="w-80 border-r border-border/70 panel-shell flex flex-col shrink-0">
+        <div className="relative shrink-0" style={{ width: sidebarWidth }}>
+        <div className="h-full border-r border-border/70 panel-shell flex flex-col">
           {/* Sidebar tabs */}
           <div className="flex items-center border-b border-border/70 bg-white/55">
             {PRIMARY_TABS.map((tab) => (
@@ -271,6 +298,27 @@ export function AppShell() {
               <DocumentHubSidebar />
             )}
           </div>
+        </div>
+
+        {/* Resize handle */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          aria-valuemin={SIDEBAR_MIN_WIDTH}
+          aria-valuemax={SIDEBAR_MAX_WIDTH}
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
+          title="Drag to resize the sidebar"
+          onPointerDown={startSidebarResize}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+              e.preventDefault()
+              setSidebarWidth(sidebarWidth + (e.key === 'ArrowRight' ? 16 : -16))
+            }
+          }}
+          className="absolute -right-1 top-0 z-20 h-full w-2 cursor-col-resize rounded-full transition-colors hover:bg-accent/30 focus-visible:bg-accent/30 focus-visible:outline-none"
+        />
         </div>
         ) : (
           <div className="w-12 border-r border-border/70 panel-shell flex items-start justify-center py-4 shrink-0">
