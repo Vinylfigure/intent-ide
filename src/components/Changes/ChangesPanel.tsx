@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useChangesStore } from '@/stores/changesStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { ChangeEntry } from './ChangeEntry'
@@ -21,6 +21,27 @@ export function ChangesPanel() {
   const updateChangeSetStatus = useChangesStore((s) => s.updateChangeSetStatus)
   const activeDocumentId = useDocumentStore((s) => s.activeDocumentId)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  const [statusMenuId, setStatusMenuId] = useState<string | null>(null)
+
+  // Status menu dismisses on outside click or Escape, like every other
+  // transient surface in the app.
+  useEffect(() => {
+    if (!statusMenuId) return
+    function handlePointerDown(e: MouseEvent) {
+      if (!(e.target as HTMLElement).closest('[data-status-menu]')) {
+        setStatusMenuId(null)
+      }
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setStatusMenuId(null)
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [statusMenuId])
 
   const { documentChangeSets, directEdits } = useMemo(() => {
     const documentEntries = entries.filter((entry) => entry.documentId === activeDocumentId)
@@ -89,33 +110,53 @@ export function ChangesPanel() {
                     }}
                     className="min-w-0 flex-1 basis-40 text-left"
                   >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className={`shrink-0 px-2 py-0.5 rounded text-[10px] font-mono ${STATUS_STYLES[changeSet.status]}`}>
-                        {changeSet.status}
-                      </span>
-                      <span className="min-w-0 truncate text-sm font-medium text-ink" title={changeSet.title}>
-                        {changeSet.title}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {changeSet.annotationIds.length} annotations, {changeSet.entries.length} applied changes, {changeSet.auditRecordIds.length} audit events
+                    <span className="block min-w-0 truncate text-sm font-medium text-ink" title={changeSet.title}>
+                      {changeSet.title}
+                    </span>
+                    <p
+                      className="mt-1 min-w-0 truncate text-xs text-muted-foreground"
+                      title={`${changeSet.annotationIds.length} annotations · ${changeSet.entries.length} applied changes · ${changeSet.auditRecordIds.length} audit events`}
+                    >
+                      {changeSet.annotationIds.length} annotations · {changeSet.entries.length} changes · {changeSet.auditRecordIds.length} audit
                     </p>
                   </button>
 
-                  <div className="flex shrink-0 flex-wrap justify-end gap-1">
-                    {STATUS_OPTIONS.map((status) => (
-                      <button
-                        key={status}
-                        onClick={() => updateChangeSetStatus(changeSet.id, status)}
-                        className={`px-2.5 py-1 text-[10px] font-mono rounded-full border transition-colors ${
-                          changeSet.status === status
-                            ? 'border-accent bg-accent/10 text-accent shadow-sm'
-                            : 'border-border/70 text-muted-foreground hover:text-ink hover:bg-warm/70'
-                        }`}
+                  {/* One status control per row: the current status is the
+                      trigger, the other states live behind it in a menu. */}
+                  <div className="relative shrink-0" data-status-menu>
+                    <button
+                      onClick={() => setStatusMenuId(statusMenuId === changeSet.id ? null : changeSet.id)}
+                      aria-haspopup="menu"
+                      aria-expanded={statusMenuId === changeSet.id}
+                      title="Change status"
+                      className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-mono transition-opacity hover:opacity-80 ${STATUS_STYLES[changeSet.status]}`}
+                    >
+                      {changeSet.status}
+                      <span aria-hidden="true" className="text-[8px]">&#9662;</span>
+                    </button>
+                    {statusMenuId === changeSet.id && (
+                      <div
+                        role="menu"
+                        className="absolute right-0 top-full z-30 mt-1 min-w-[7rem] rounded-xl border border-border/70 bg-white py-1 shadow-lg"
                       >
-                        {status}
-                      </button>
-                    ))}
+                        {STATUS_OPTIONS.map((status) => (
+                          <button
+                            key={status}
+                            role="menuitem"
+                            onClick={() => {
+                              updateChangeSetStatus(changeSet.id, status)
+                              setStatusMenuId(null)
+                            }}
+                            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-warm ${
+                              changeSet.status === status ? 'font-semibold text-accent' : 'text-ink'
+                            }`}
+                          >
+                            <span className={`h-2 w-2 rounded-full ${STATUS_STYLES[status]}`} />
+                            {status}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
 
