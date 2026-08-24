@@ -170,4 +170,20 @@ describe('ensureRenderableMermaid', () => {
     expect(result).toBe(degradeMermaidToProse(original))
     expect(retry).toHaveBeenCalledTimes(1)
   })
+
+  // A 200 response with blank/missing content is not something a caller can
+  // throw on (the request itself succeeded) — the guard must not trust it as
+  // a deliberate plain-prose answer, or it silently discards the original.
+  it.each([
+    ['empty string', ''],
+    ['whitespace only', '   \n  '],
+    ['null', null],
+    ['undefined', undefined],
+  ])('a retry resolving to %s degrades the original instead of returning it', async (_label, value) => {
+    const retry = vi.fn(async () => value as unknown as string)
+    const original = fenced(INVALID)
+    const result = await ensureRenderableMermaid(original, retry)
+    expect(result).toBe(degradeMermaidToProse(original))
+    expect(retry).toHaveBeenCalledTimes(1)
+  })
 })

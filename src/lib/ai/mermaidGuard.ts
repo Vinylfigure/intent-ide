@@ -63,8 +63,16 @@ export function degradeMermaidToProse(content: string): string {
  * - fence validates → content as-is;
  * - otherwise retry ONCE (the callback receives the parse error text and
  *   returns replacement content): a retry whose fence validates — or that
- *   has no fence at all (plain-prose fallback) — wins; anything else
- *   degrades the ORIGINAL content's fence to a plain code block.
+ *   has non-blank fence-less text (plain-prose fallback) — wins; anything
+ *   else degrades the ORIGINAL content's fence to a plain code block.
+ *
+ * Callback contract: `retry` MUST throw when its underlying request failed.
+ * A returned fence-less string is trusted as a deliberate plain-prose answer,
+ * so returning an error-shaped string instead of throwing silently replaces
+ * the original answer with it. As a second line of defense (a 200 response
+ * with blank/missing content is not a "request failed" a caller can throw
+ * on), a retry that is not a non-blank string is treated the same as a
+ * thrown retry rather than trusted.
  */
 export async function ensureRenderableMermaid(
   content: string,
@@ -80,6 +88,9 @@ export async function ensureRenderableMermaid(
   try {
     retried = await retry(result.error)
   } catch {
+    return degradeMermaidToProse(content)
+  }
+  if (typeof retried !== 'string' || retried.trim() === '') {
     return degradeMermaidToProse(content)
   }
 
