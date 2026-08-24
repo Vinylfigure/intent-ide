@@ -30,6 +30,7 @@ import { showAffectedMode } from '@/lib/annotations/showAffected'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { refreshAnchorAfterApply, refreshedAnchorForMultiRegionApply } from '@/lib/annotations/anchoring'
 import { createCommit } from '@/lib/history/commits'
+import { resolveApplyAuditIds } from '@/lib/annotations/applyAuditLinkage'
 import { recordInvariant, shouldCaptureInvariant } from '@/lib/invariants/captureInvariant'
 import { resolveInvariantFlagOnDismiss, runAndSurfaceInvariantChecks } from '@/lib/invariants/invariantCascade'
 import { classifyCheckKind } from '@/lib/invariants/invariantCheckRunner'
@@ -131,12 +132,12 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   const recordApplyCommit = (blockIdsTouched: string[]) => {
     const currentView = useEditorStore.getState().view
     if (!currentView) return
-    const auditIds =
-      changeSet && changeSet.auditRecordIds.length > 0
-        ? changeSet.auditRecordIds
-        : annotation.resolution?.auditId
-          ? [annotation.resolution.auditId]
-          : []
+    // If the audit write hasn't settled yet (still in flight, neither
+    // auditId nor auditFailed set), this version is committed with zero
+    // audit ids and is never backfilled if the write later succeeds — a
+    // narrower, documented sibling of the auditFailed gap (see
+    // docs/compliance.md and #83).
+    const auditIds = resolveApplyAuditIds(changeSet?.auditRecordIds, annotation.resolution?.auditId)
     // Warn rather than silently apply with a zero-audit-links version — see
     // #77. Only fires when the write is KNOWN to have failed (auditFailed),
     // not merely still in flight (which would false-positive on a fast click).

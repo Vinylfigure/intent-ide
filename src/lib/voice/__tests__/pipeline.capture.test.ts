@@ -174,7 +174,9 @@ function makeFetchStub(options: FetchStubOptions = {}) {
       return jsonResponse({ toolCalls: [] })
     }
     if (url.includes('/api/audit')) {
-      return jsonResponse({ auditId: 'audit-test-1' })
+      // The real route returns { id }, not { auditId } — logAuditEvent reads
+      // data.id, so the wrong key here silently resolved every write to null.
+      return jsonResponse({ id: 'audit-test-1' })
     }
     return jsonResponse({})
   })
@@ -660,6 +662,41 @@ describe('(g) mermaid guard on resolution content', () => {
       ),
     )
     expect(retries).toHaveLength(0)
+  })
+
+  it('surfaces a toast when the correction retry\'s own audit write fails', async () => {
+    const INVALID_DIAGRAM = 'Here is the flow:\n\n```mermaid\ngrph BROKEN\n```\n\nOne caption.'
+    const { stub } = makeFetchStub({ streamText: INVALID_DIAGRAM })
+    // Force only /api/audit to fail (resolve with no id) — everything else
+    // uses the normal stub responses, including the retry's /api/resolve call.
+    const stubWithFailingAudit = vi.fn(async (input: any, init?: any) => {
+      const url = typeof input === 'string' ? input : String(input?.url ?? input)
+      if (url.includes('/api/audit')) {
+        return jsonResponse({})
+      }
+      return stub(input, init)
+    })
+    vi.stubGlobal('fetch', stubWithFailingAudit)
+
+    const id = captureAndResolveInBackground('dig', 'diagram this', FROM, TO, {
+      suggestedType: 'dig',
+      skipClassify: true,
+    })!
+    await waitFor(() => getAnnotation(id).status === 'resolved')
+
+    // The guard's own job (degrading the fence) still completes correctly —
+    // this fix only adds a failure signal, it never changes the content.
+    expect(getAnnotation(id).resolution?.content).not.toContain('```mermaid')
+
+    // The correction message is discarded by the pipeline (only `.content`
+    // survives) and is never added to the annotation's conversation, so the
+    // toast is the ONLY way this failure could ever reach the user.
+    await waitFor(() => useToastStore.getState().toasts.some((t) => t.type === 'error'))
+    const errorToast = useToastStore.getState().toasts.find((t) => t.type === 'error')
+    expect(errorToast?.message).toMatch(/mermaid/i)
+    expect(
+      getAnnotation(id).conversation.some((m) => 'auditFailed' in m),
+    ).toBe(false)
   })
 })
 

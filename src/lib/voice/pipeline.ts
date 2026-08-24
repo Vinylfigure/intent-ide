@@ -320,7 +320,18 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
             const fresh = annotationStore.getById(id) ?? current
             const brokenSource = extractMermaidFence(resolution.content)?.code ?? ''
             const correction = `The mermaid diagram failed to parse: ${parseError}.\n\nHere is the diagram source:\n\`\`\`\n${brokenSource}\n\`\`\`\n\nReply with either a corrected single \`\`\`mermaid block or plain prose.`
-            const message = await continueThread(fresh, correction, view.state)
+            // This retry's message is discarded below (only .content is kept)
+            // and never stored in the annotation's conversation, so nothing
+            // else will ever see its audit outcome — surface a failure here,
+            // the only place that still has a handle on it.
+            const message = await continueThread(fresh, correction, view.state, (correctionMessage) => {
+              if (correctionMessage.auditFailed) {
+                useToastStore.getState().addToast(
+                  'Audit record for the mermaid-diagram correction failed to save — the diagram was still corrected, but this retry has no linked compliance record.',
+                  'error',
+                )
+              }
+            })
             // continueThread reports a failed /api/resolve call as an
             // error-shaped message rather than throwing. Returning it would
             // read as a fence-less "plain prose" retry and replace the real
