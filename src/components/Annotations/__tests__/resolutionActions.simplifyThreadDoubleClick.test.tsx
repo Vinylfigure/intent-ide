@@ -8,6 +8,13 @@ import type { Annotation } from '@/lib/annotations/types'
 // simplifyThread is the only call this test needs to control the timing of —
 // everything else ResolutionActions imports is left real (module import
 // alone doesn't touch network/env, and no other handler is exercised here).
+// Safety of that depends on the fixture below: `resolution.actions: []`
+// keeps every other action button (apply-edit, add-to-doc, etc. — several
+// of which reach `fetch`-touching code like `createCommit`) from rendering
+// at all, and a 3-message `conversation` keeps `showDiffModal` at its
+// initial `false` for the whole test, so `SemanticCommitModal` never
+// mounts. Widening this fixture (e.g. adding a real `resolution.actions`
+// entry) can pull one of those real, unmocked paths into the render tree.
 vi.mock('@/lib/ai/resolver', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/ai/resolver')>()
   return { ...actual, simplifyThread: vi.fn() }
@@ -54,7 +61,19 @@ afterEach(() => {
 // #88's and #92's coverage both re-implement the surrounding branch logic in
 // isolation (resolutionActions.simplifyThreadGate.pure.test.ts) rather than
 // clicking the actual button twice. This test mounts the real component and
-// asserts the guard itself, not a re-implementation of it.
+// asserts the observable outcome (no duplicate `simplifyThread` call across
+// two rapid clicks), not one specific mechanism in isolation: two clicks
+// fired back-to-back via `fireEvent` are each individually `act()`-flushed,
+// so by the second click the `disabled={isSimplifying}` attribute has
+// already committed and jsdom (like a real browser) never dispatches a
+// click to a disabled button — meaning this test is only guaranteed to
+// catch a regression that drops *both* the `if (isSimplifying) return`
+// early-return and the `disabled` attribute together, not one alone.
+// Verified directly: reverting the early-return only, or the `disabled`
+// attribute only, each still leaves this test green; reverting both at once
+// makes it fail (`called 1 times, but got 2 times`) — which is still
+// strictly more coverage of the real component than the pure
+// re-implementations above provide today (they cover neither).
 describe('Simplify thread double-click in-flight guard (#93)', () => {
   it('fires simplifyThread only once for two rapid clicks while the first request is in flight', async () => {
     const annotation = makeAnnotation()
