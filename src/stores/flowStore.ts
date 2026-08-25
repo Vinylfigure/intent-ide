@@ -24,6 +24,8 @@ interface FlowState {
   heldAnswers: Record<string, HeldAnswer>
   holdAnswer: (id: string, dwellMs: number) => void
   revealAnswer: (id: string) => void
+  /** Drops every held answer at once — for a bulk annotation wipe (e.g. `useAnnotationStore.clear()`), where no single id is being "revealed". */
+  clearHeldAnswers: () => void
   setBufferAnswersEnabled: (enabled: boolean) => void
 }
 
@@ -43,6 +45,7 @@ export const useFlowStore = create<FlowState>()(
           delete next[id]
           return { heldAnswers: next }
         }),
+      clearHeldAnswers: () => set({ heldAnswers: {} }),
       setBufferAnswersEnabled: (enabled) => set({ bufferAnswersEnabled: enabled }),
     }),
     {

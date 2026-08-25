@@ -90,3 +90,31 @@ describe('annotationStore.remove() purges the matching heldAnswers entry (#103)'
     expect(useFlowStore.getState().heldAnswers['ann-2']).toBeDefined()
   })
 })
+
+// Regression for #103 (extended after adversarial review): `remove()` has no
+// production call site today — the real reachable leak is `clear()`, called
+// on every new/paste/generate/import document action in DocInputModal.tsx,
+// which previously wiped every annotation without touching a single held
+// answer.
+describe('annotationStore.clear() purges every heldAnswers entry (#103)', () => {
+  it('drops all held answers when every annotation is wiped', async () => {
+    const { useAnnotationStore, useFlowStore } = await loadStores()
+    useAnnotationStore.getState().add(makeAnnotation('ann-1'))
+    useAnnotationStore.getState().add(makeAnnotation('ann-2'))
+    useFlowStore.getState().holdAnswer('ann-1', 2000)
+    useFlowStore.getState().holdAnswer('ann-2', 3000)
+
+    useAnnotationStore.getState().clear()
+
+    expect(useFlowStore.getState().heldAnswers).toEqual({})
+  })
+
+  it('is a no-op on heldAnswers when there are none held', async () => {
+    const { useAnnotationStore, useFlowStore } = await loadStores()
+    useAnnotationStore.getState().add(makeAnnotation('ann-1'))
+
+    useAnnotationStore.getState().clear()
+
+    expect(useFlowStore.getState().heldAnswers).toEqual({})
+  })
+})
