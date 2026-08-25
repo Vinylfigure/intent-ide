@@ -87,6 +87,28 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
 
     const annotationStore = useAnnotationStore.getState()
 
+    // A terminal status (applied/dismissed) has no legal outgoing transition
+    // at all (lifecycle.ts's TRANSITIONS) — deepen-kind actions (Go deeper,
+    // Tweak it, Show affected, Research more) stay clickable after Apply, and
+    // without this check a follow-up fired from one of them would
+    // unconditionally overwrite that terminal status, no race required
+    // (round 3 of #100's adversarial review). Bail before touching the
+    // conversation at all.
+    // Deliberately narrower than `!canTransition(status, 'resolving')`:
+    // TRANSITIONS['resolving'] only lists 'resolved', not 'resolving' itself
+    // (it isn't modeled as a self-transition), so that check would also
+    // reject a SECOND legitimate concurrent follow-up landing while the
+    // first is still in flight — a case rounds 1-2 deliberately preserved,
+    // not one this guard is meant to block.
+    const currentStatus = annotationStore.getById(ann.id)?.status
+    if (currentStatus === 'applied' || currentStatus === 'dismissed') {
+      useToastStore.getState().addToast(
+        'This annotation has already been applied or dismissed — start a new annotation to continue.',
+        'info'
+      )
+      return
+    }
+
     // Seed conversation with initial resolution if empty (backward compat)
     const freshAnn = annotationStore.getById(ann.id)
     if (freshAnn && (!freshAnn.conversation || freshAnn.conversation.length === 0) && freshAnn.resolution) {
@@ -113,16 +135,58 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     // Set status to resolving
     updateAnnotation(ann.id, { status: 'resolving' })
 
+    // A terminal action (apply/dismiss) can complete on this annotation while
+    // this follow-up is still in flight — its status is authoritative once
+    // reached (see lifecycle.ts's TRANSITIONS: 'applied'/'dismissed' have no
+    // legal outgoing edges), and a late-settling follow-up must never
+    // resurrect it back to 'resolved' out from under that decision. Only
+    // write 'resolved' while this follow-up's own 'resolving' status still
+    // stands.
+    const finishFollowUp = () => {
+      if (useAnnotationStore.getState().getById(ann.id)?.status === 'resolving') {
+        updateAnnotation(ann.id, { status: 'resolved' })
+      }
+    }
+
     try {
       // Get fresh annotation with updated conversation
       const freshAnnotation = useAnnotationStore.getState().getById(ann.id)
       if (!freshAnnotation) return
+      // Snapshot the message ids the request is generated from. A benign
+      // concurrent write (a second legitimate follow-up appending its own
+      // message, or the fire-and-forget audit-outcome sync in resolver.ts's
+      // `syncMessageAuditOutcome` patching an existing message's metadata)
+      // always allocates a NEW conversation array too, so plain reference
+      // equality can't tell those apart from a real collapse (e.g. "Simplify
+      // thread", #100) — it would false-positive-discard a perfectly good
+      // reply. A genuine collapse instead REPLACES the whole conversation
+      // with unrelated ids, so checking for id overlap survives the benign
+      // cases while still catching a real one.
+      const snapshotIds = new Set(freshAnnotation.conversation.map((m) => m.id))
 
       const agentMsg = await continueThread(freshAnnotation, message, currentView.state)
+
+      const live = useAnnotationStore.getState().getById(ann.id)
+      if (!live) return // Annotation was deleted while the request was in flight.
+      const collapsed = snapshotIds.size > 0 && !live.conversation.some((m) => snapshotIds.has(m.id))
+      if (collapsed) {
+        // The reply was generated from context that no longer exists (e.g. a
+        // collapse via "Simplify thread") — appending it now would silently
+        // attach a stale-context reply to the fresh conversation with no
+        // indication to the user. Discard it instead.
+        useToastStore.getState().addToast(
+          'This conversation changed while replying — the new reply was generated from context that no longer exists, so it was discarded.',
+          'error'
+        )
+        finishFollowUp()
+        return
+      }
       useAnnotationStore.getState().addMessage(ann.id, agentMsg)
-      updateAnnotation(ann.id, { status: 'resolved' })
+      finishFollowUp()
     } catch (err) {
-      updateAnnotation(ann.id, { status: 'resolved' })
+      console.error('Follow-up failed:', err)
+      useToastStore.getState().addToast('Sending that follow-up failed — try again.', 'error')
+      finishFollowUp()
     }
   }
 
