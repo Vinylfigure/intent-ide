@@ -5,6 +5,7 @@ import { persist } from 'zustand/middleware'
 import type { Annotation, ConversationMessage, Resolution } from '@/lib/annotations/types'
 import { mapLegacyType, normalizeProposedEdit } from '@/lib/annotations/types'
 import { useDocumentStore } from '@/stores/documentStore'
+import { useFlowStore } from '@/stores/flowStore'
 
 /** Migrate annotations from the old 6-type system to the new 4-type system on hydration */
 function migrateAnnotations(annotations: Annotation[]): Annotation[] {
@@ -109,12 +110,21 @@ export const useAnnotationStore = create<AnnotationState>()(
               : a
           ),
         })),
-      remove: (id) =>
+      remove: (id) => {
         set((s) => ({
           annotations: s.annotations.filter((a) => a.id !== id),
           activeAnnotationId:
             s.activeAnnotationId === id ? null : s.activeAnnotationId,
-        })),
+        }))
+        // A held answer for this id can never be revealed once the annotation
+        // is gone — no live poll will ever fire shouldRevealAnswer for it —
+        // so it would otherwise leak in useFlowStore for the rest of the
+        // session. `remove()` has no production call site today (the
+        // persisted-storage quota prune below rewrites only the serialized
+        // blob and never touches live state or this action), but the same
+        // leak is real and reachable via `clear()` below (#103).
+        useFlowStore.getState().revealAnswer(id)
+      },
       addMessage: (id, message) =>
         set((s) => ({
           annotations: s.annotations.map((a) =>
@@ -136,7 +146,14 @@ export const useAnnotationStore = create<AnnotationState>()(
         })),
       setActive: (id) => set({ activeAnnotationId: id }),
       getById: (id) => get().annotations.find((a) => a.id === id),
-      clear: () => set({ annotations: [], activeAnnotationId: null }),
+      clear: () => {
+        set({ annotations: [], activeAnnotationId: null })
+        // Every annotation is gone at once here (new/paste/generate/import
+        // document flows all call this — see DocInputModal.tsx), so every
+        // held answer leaks the same way a single removed annotation's does
+        // in `remove()` above, just for the whole set in one shot (#103).
+        useFlowStore.getState().clearHeldAnswers()
+      },
     }),
     {
       name: 'intent-ide-annotations',
