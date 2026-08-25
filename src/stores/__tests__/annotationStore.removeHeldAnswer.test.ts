@@ -50,11 +50,10 @@ beforeEach(() => {
 })
 
 // Regression for #103: a held answer for an annotation that gets removed
-// (localStorage-quota emergency prune today; any future delete path
-// tomorrow) previously stayed in useFlowStore.heldAnswers forever, since no
-// poll for a gone annotation can ever fire shouldRevealAnswer to clear it.
-// remove() must purge the hold itself rather than rely on callers to
-// remember to do so.
+// previously stayed in useFlowStore.heldAnswers forever, since no poll for a
+// gone annotation can ever fire shouldRevealAnswer to clear it. remove() has
+// no production call site today, but must purge the hold itself defensively
+// rather than rely on callers to remember to do so.
 describe('annotationStore.remove() purges the matching heldAnswers entry (#103)', () => {
   it('removes a held answer for the same id', async () => {
     const { useAnnotationStore, useFlowStore } = await loadStores()
