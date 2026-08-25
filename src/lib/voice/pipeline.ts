@@ -377,7 +377,11 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
         // Never hold against a vanished anchor (doc shrank below it during
         // resolution): the breakpoint poll would insta-reveal anyway, so
         // reveal directly instead of a meaningless hold.
-        current.anchor.from <= view.state.doc.content.size
+        current.anchor.from <= view.state.doc.content.size &&
+        // Never hold for an annotation deleted mid-resolution (e.g. its card
+        // dismissed while streaming): nothing will ever mount to reveal it,
+        // so the hold would just leak in useFlowStore for the rest of the session.
+        annotationStore.getById(id)
       ) {
         const blockText = getBlockText(view.state, current.anchor.from)
         useFlowStore.getState().holdAnswer(id, answerDwellMs(blockText))

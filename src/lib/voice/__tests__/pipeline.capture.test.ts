@@ -480,6 +480,35 @@ describe('(f) flow-state answer buffering', () => {
     expect(useAnnotationStore.getState().activeAnnotationId).toBe(id)
     expect(useFlowStore.getState().heldAnswers[id]).toBeUndefined()
   })
+
+  it('an annotation deleted mid-resolution (card dismissed while streaming) never gets a heldAnswers entry (#95)', async () => {
+    useFlowStore.getState().setBufferAnswersEnabled(true)
+    let release!: () => void
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const { stub } = makeFetchStub({ resolveGate: gate })
+    vi.stubGlobal('fetch', stub)
+
+    const id = captureAndResolveInBackground('ask', 'about to vanish', FROM, TO, {
+      suggestedType: 'ask',
+      skipClassify: true,
+      notify: 'quiet',
+    })!
+    // Not watching the card — buffering would normally hold this answer.
+    useAnnotationStore.getState().setActive(null)
+    // The card is dismissed (e.g. the user deletes the annotation) while the
+    // resolve is still in flight, before the flow-buffering block runs.
+    useAnnotationStore.getState().remove(id)
+
+    release()
+    // No `status === 'resolved'` to poll for once the annotation is gone —
+    // wait for the gated /api/resolve call to actually settle instead.
+    await new Promise((r) => setTimeout(r, 50))
+
+    expect(useAnnotationStore.getState().getById(id)).toBeUndefined()
+    expect(useFlowStore.getState().heldAnswers[id]).toBeUndefined()
+  })
 })
 
 describe('(h) finalize survives a shrunken doc (stale anchor)', () => {
