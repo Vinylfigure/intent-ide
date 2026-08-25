@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { useDocumentStore, type CollectionMeta, type DocumentMeta } from '@/stores/documentStore'
+import { useAnnotationStore } from '@/stores/annotationStore'
 
 function sortDocsByRecent(docs: DocumentMeta[]): DocumentMeta[] {
   return [...docs].sort((a, b) => b.updatedAt - a.updatedAt)
@@ -20,6 +21,15 @@ export function DocumentHubSidebar() {
   const deleteCollection = useDocumentStore((s) => s.deleteCollection)
   const assignDocumentToCollection = useDocumentStore((s) => s.assignDocumentToCollection)
   const removeDocumentFromCollection = useDocumentStore((s) => s.removeDocumentFromCollection)
+
+  // Deleting a document must also purge its annotations (and, via remove()'s
+  // own purge, any held answers) — otherwise they're orphaned forever, still
+  // occupying the persisted annotations array but permanently unrenderable
+  // since every list/map view filters by documentId (#107).
+  const handleDeleteDocument = (documentId: string) => {
+    useAnnotationStore.getState().removeByDocumentId(documentId)
+    deleteDocument(documentId)
+  }
 
   const [expandedCollections, setExpandedCollections] = useState<Set<string>>(new Set())
   const [renamingDocId, setRenamingDocId] = useState<string | null>(null)
@@ -153,7 +163,7 @@ export function DocumentHubSidebar() {
               onActivate={() => setActiveDocument(doc.id)}
               onStartRename={() => startRenameDocument(doc)}
               onDuplicate={() => duplicateDocument(doc.id)}
-              onDelete={() => deleteDocument(doc.id)}
+              onDelete={() => handleDeleteDocument(doc.id)}
               onAssignToCollection={(collectionId) => assignDocumentToCollection(doc.id, collectionId)}
               onRemoveFromCollection={(collectionId) => removeDocumentFromCollection(doc.id, collectionId)}
             />
@@ -249,7 +259,7 @@ export function DocumentHubSidebar() {
                       onActivate={() => setActiveDocument(doc.id)}
                       onStartRename={() => startRenameDocument(doc)}
                       onDuplicate={() => duplicateDocument(doc.id)}
-                      onDelete={() => deleteDocument(doc.id)}
+                      onDelete={() => handleDeleteDocument(doc.id)}
                       onAssignToCollection={(collectionId) => assignDocumentToCollection(doc.id, collectionId)}
                       onRemoveFromCollection={(collectionId) => removeDocumentFromCollection(doc.id, collectionId)}
                       compact

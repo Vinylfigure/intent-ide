@@ -82,6 +82,14 @@ interface AnnotationState {
     patch: Pick<Resolution, 'auditId'> | Pick<Resolution, 'auditFailed'>
   ) => void
   remove: (id: string) => void
+  /**
+   * Removes every annotation belonging to a deleted document, routed through
+   * `remove()` per-id so each also gets its `heldAnswers` purge for free
+   * (#107). Lives here rather than in `documentStore.ts`'s `deleteDocument`
+   * because `annotationStore.ts` already imports `useDocumentStore` — the
+   * reverse import would be circular.
+   */
+  removeByDocumentId: (documentId: string) => void
   setActive: (id: string | null) => void
   addMessage: (id: string, message: ConversationMessage) => void
   updateMessage: (annotationId: string, messageId: string, patch: Partial<ConversationMessage>) => void
@@ -124,6 +132,12 @@ export const useAnnotationStore = create<AnnotationState>()(
         // blob and never touches live state or this action), but the same
         // leak is real and reachable via `clear()` below (#103).
         useFlowStore.getState().revealAnswer(id)
+      },
+      removeByDocumentId: (documentId) => {
+        const ids = get()
+          .annotations.filter((a) => a.documentId === documentId)
+          .map((a) => a.id)
+        ids.forEach((id) => get().remove(id))
       },
       addMessage: (id, message) =>
         set((s) => ({
