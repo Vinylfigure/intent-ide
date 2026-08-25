@@ -248,25 +248,40 @@ export function AnnotationCard({
       }
     }
 
-    try {
-      const freshAnnotation = useAnnotationStore.getState().getById(annotation.id)
-      if (!freshAnnotation) return
-      // Snapshot the message ids this request is generated from — id
-      // overlap (not array reference equality) is what distinguishes a real
-      // collapse (e.g. "Simplify thread") from a benign concurrent write.
-      // See the matching comment at ResolutionActions.tsx's sendFollowUp.
-      const snapshotIds = new Set(freshAnnotation.conversation.map((m) => m.id))
+    const freshAnnotation = useAnnotationStore.getState().getById(annotation.id)
+    if (!freshAnnotation) return
+    // Snapshot the message ids this request is generated from — id overlap
+    // (not array reference equality) is what distinguishes a real collapse
+    // (e.g. "Simplify thread") from a benign concurrent write. See the
+    // matching comment at ResolutionActions.tsx's sendFollowUp. Declared
+    // outside the try so BOTH the success and catch paths below can check
+    // against the same snapshot — an unguarded catch path was the exact gap
+    // an adversarial review of this fix found: a request that fails (rather
+    // than resolves) after a collapse would otherwise still silently attach
+    // its error message to the fresh, post-collapse conversation.
+    const snapshotIds = new Set(freshAnnotation.conversation.map((m) => m.id))
 
-      const agentMessage = await continueThread(freshAnnotation, text, currentView.state)
-
+    // Returns the live annotation if the conversation this request was
+    // generated from has survived, else toasts and returns null. Shared by
+    // the success and catch paths so they can't drift out of sync on this
+    // check again.
+    const liveIfNotCollapsed = () => {
       const live = useAnnotationStore.getState().getById(annotation.id)
-      if (!live) return // Annotation was deleted while the request was in flight.
+      if (!live) return null // Annotation was deleted while the request was in flight.
       const collapsed = snapshotIds.size > 0 && !live.conversation.some((m) => snapshotIds.has(m.id))
       if (collapsed) {
         useToastStore.getState().addToast(
-          'This conversation changed while replying — the new reply was generated from context that no longer exists, so it was discarded.',
+          'This conversation changed while replying — the response was generated from context that no longer exists, so it was discarded.',
           'error'
         )
+        return null
+      }
+      return live
+    }
+
+    try {
+      const agentMessage = await continueThread(freshAnnotation, text, currentView.state)
+      if (!liveIfNotCollapsed()) {
         finishFollowUp()
         return
       }
@@ -274,6 +289,10 @@ export function AnnotationCard({
       finishFollowUp()
     } catch (err) {
       console.error('Follow-up failed:', err)
+      if (!liveIfNotCollapsed()) {
+        finishFollowUp()
+        return
+      }
       const errorMessage: ConversationMessage = {
         id: generateId(),
         role: 'agent',

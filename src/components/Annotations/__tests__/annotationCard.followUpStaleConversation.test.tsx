@@ -136,6 +136,53 @@ describe('AnnotationCard.handleFollowUp vs. a concurrent conversation collapse /
     expect(toasts[0].message).toMatch(/changed while replying/i)
   })
 
+  // Regression for a gap an adversarial review of this fix found: the
+  // success path above discards a stale-context REPLY, but the catch path
+  // (continueThread REJECTS instead of resolving) had no equivalent check —
+  // a request that fails after a collapse would silently attach its error
+  // message to the fresh, post-collapse conversation. Same bug class as
+  // #100/#104, just on the failure branch instead of the success branch.
+  it('discards a stale-context error message and toasts instead of appending it, when continueThread rejects after a collapse', async () => {
+    const annotation = makeAnnotation()
+    useAnnotationStore.setState({ annotations: [annotation] })
+    const view = mountView()
+    useEditorStore.setState({ view })
+
+    let rejectRequest: (err: Error) => void
+    const pending = new Promise<ConversationMessage>((_resolve, reject) => {
+      rejectRequest = reject
+    })
+    vi.mocked(continueThread).mockReturnValue(pending)
+
+    const { getByPlaceholderText } = render(<AnnotationCard annotation={annotation} isActive={true} />)
+    sendViaFollowUpInput(getByPlaceholderText, 'Tell me more about that')
+
+    await waitFor(() => expect(continueThread).toHaveBeenCalledTimes(1))
+    // Simulate "Simplify thread" collapsing the conversation before the
+    // in-flight follow-up settles.
+    useAnnotationStore.getState().update('ann-1', {
+      conversation: [
+        { id: 'summary-1', role: 'agent', content: 'A concise summary.', suggestedEdit: null, timestamp: 99 },
+      ],
+    })
+
+    rejectRequest!(new Error('network fail'))
+    await pending.catch(() => {})
+    await waitFor(() =>
+      expect(useAnnotationStore.getState().getById('ann-1')?.status).toBe('resolved'),
+    )
+
+    const live = useAnnotationStore.getState().getById('ann-1')
+    expect(live?.conversation).toHaveLength(1)
+    expect(live?.conversation.map((m) => m.id)).toEqual(['summary-1'])
+    expect(live?.conversation.some((m) => m.content.includes('network fail'))).toBe(false)
+
+    const toasts = useToastStore.getState().toasts
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].type).toBe('error')
+    expect(toasts[0].message).toMatch(/changed while replying/i)
+  })
+
   it('does not resurrect a terminal status set by a concurrent action (e.g. Apply) while a follow-up is in flight', async () => {
     const annotation = makeAnnotation()
     useAnnotationStore.setState({ annotations: [annotation] })
