@@ -127,17 +127,32 @@ export const useAnnotationStore = create<AnnotationState>()(
         // A held answer for this id can never be revealed once the annotation
         // is gone — no live poll will ever fire shouldRevealAnswer for it —
         // so it would otherwise leak in useFlowStore for the rest of the
-        // session. `remove()` has no production call site today (the
-        // persisted-storage quota prune below rewrites only the serialized
-        // blob and never touches live state or this action), but the same
-        // leak is real and reachable via `clear()` below (#103).
+        // session (#103). Reachable in production via `clear()` below and
+        // via `removeByDocumentId()` above (#107), plus the persisted-storage
+        // quota prune (which rewrites only the serialized blob and never
+        // calls this action, so it needs no purge of its own).
         useFlowStore.getState().revealAnswer(id)
       },
       removeByDocumentId: (documentId) => {
         const ids = get()
           .annotations.filter((a) => a.documentId === documentId)
           .map((a) => a.id)
-        ids.forEach((id) => get().remove(id))
+        if (ids.length === 0) return
+        // One batched set() for the array + one batched heldAnswers purge —
+        // not a loop over the single-id remove() — so deleting a document
+        // with many annotations doesn't trigger k synchronous
+        // JSON.stringify + localStorage.setItem calls (the persisted
+        // `annotations` array can hold up to MAX_PERSISTED_ANNOTATIONS).
+        // Mirrors the existing batched pattern in clear() below.
+        const idSet = new Set(ids)
+        set((s) => ({
+          annotations: s.annotations.filter((a) => !idSet.has(a.id)),
+          activeAnnotationId:
+            s.activeAnnotationId && idSet.has(s.activeAnnotationId)
+              ? null
+              : s.activeAnnotationId,
+        }))
+        useFlowStore.getState().revealAnswers(ids)
       },
       addMessage: (id, message) =>
         set((s) => ({
