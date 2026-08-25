@@ -9,6 +9,14 @@
 
 ## 2. Completed Milestones (What Works)
 
+### `heldAnswers` leak on annotation/document removal -- fix delivered, PR #106 OPEN (pending operator merge, 2026-08-25)
+Continues a leak-fix chain this memory bank has no prior entries for: issue #95 → PR #102 → issue #103 → PR #106 (this entry) → issue #107 (filed, not yet fixed). #95/#102 predate any record in this memory bank and are not detailed here.
+- [x] **`useAnnotationStore.remove(id)`** now also calls `useFlowStore.getState().revealAnswer(id)` to purge a matching `heldAnswers[id]` entry — a held answer for a removed annotation had no live poll and could otherwise never be revealed, leaking in `useFlowStore` for the rest of the session. Adversarial review found `remove()` itself has zero production call sites (confirmed by repo-wide grep).
+- [x] **`useAnnotationStore.clear()` — the actually-reachable production trigger** (fires from `DocInputModal.tsx` on every New/Paste/Generate/Import document action) — now also calls a new `useFlowStore.clearHeldAnswers()` to drop every held answer atomically. This is the fix that closes the leak in practice.
+- [x] **Two rounds of pre-push adversarial review, both NO-MERGE, both fixed before push:** round 1's fix only patched the dead-code `remove()` path, leaving the reachable `clear()` leak open; also caught a false code comment claiming the localStorage-quota emergency prune inside `annotationStore.ts`'s custom `storage.setItem` catch block triggers `remove()` — confirmed false, since that path only rewrites the persisted blob directly via `localStorage.setItem` and never touches live Zustand state. Round 2 (after wiring `clear()`) found a third, distinct, still-unpatched leak — `documentStore.ts`'s `deleteDocument` never touches `annotationStore` or `flowStore` at all, orphaning a deleted document's annotations (not just held answers) forever — filed as follow-up **issue #107** (§3) rather than folded in, since fixing it risks a circular import (`annotationStore.ts` already imports `useDocumentStore`). Also fixed a stale test comment repeating round 1's debunked quota-prune claim.
+- [x] **Verification:** 1072 passing + 10 skipped on the PR branch (was 1070 before round 2's two added `clear()` tests). New test file `src/stores/__tests__/annotationStore.removeHeldAnswer.test.ts`. `npm run typecheck` / `npm run lint` clean.
+- [ ] **PR #106 still OPEN** (branch `claude/purge-held-answer-on-remove`, https://github.com/Vinylfigure/intent-ide/pull/106, body "Closes #103") — awaiting operator review and merge. Not yet in `main`.
+
 ### Document Invariant Ledger — doc-CI, four phases -- COMPLETE (PRs #29, #34, #48, #52 MERGED, 2026-08-18 → 2026-08-20)
 Closes the "tests for prose" spike (#20): at `SemanticCommitModal` confirm, a user-declared fact is captured as a runnable assertion in an append-only, block-evidence-linked ledger; every apply regression-tests all accumulated facts, and a failing one surfaces as a cascade flag naming the invariant it broke.
 - [x] **Phase 1 — data model + capture (#26, PR #29):** `DocInvariant` Prisma model, `POST/GET /api/invariants`, `captureInvariant.ts`. Append-only — no PATCH/DELETE route exists.
@@ -252,6 +260,10 @@ A full code-level audit compared the implementation against the founder's two co
   - [x] **Phase 4 — LLM entailment lane (#51, PR #52):** closes the `checkKind: 'entailment'` gap dead since Phase 1 — no code path had ever created *or* checked an entailment-kind row. Adds capture-time lane classification, a batched judge on the utility model with graph-bounded candidates, and a new `invariantEntailmentEnabled` setting **default OFF** (the only doc-CI path that spends money and sends document text; the deterministic lane stays local and always-on). Fail-safe direction deliberately **inverted** from `relevanceJudge`: with no prior belief to preserve, a thrown call/malformed reply/missing verdict all yield **no flag** — a broken judge must never manufacture a false positive. 938 unit tests + 10 skipped.
 - [ ] **Research spikes (deferred):** speculative pre-generation of explanations for likely-confusing spans during idle; scroll-ahead dynamic re-explanation; document worktrees (parallel scoped agents on DocCommit branches, Harvey-style).
 
+### `heldAnswers` leak chain follow-up (open)
+- [ ] **Issue #107 — `documentStore.deleteDocument` orphans annotations/held-answers on document delete:** filed by PR #106's round-2 adversarial review (§2), not yet fixed. `DocumentHubSidebar.tsx`'s delete action (no `<Confirmation>` gate) calls `deleteDocument`, which never touches `annotationStore` or `flowStore` — a deleted document's annotations are orphaned forever, a strictly broader leak than the held-answers case PR #106 closed. Needs its own design pass: `documentStore.ts` reaching into `useAnnotationStore` (or vice versa) risks a circular import, since `annotationStore.ts` already imports `useDocumentStore`.
+- [ ] **PR #106 merge** — USER/operator action.
+
 ### Deployment Follow-ups (PR #8 — DONE 2026-07-09; carried items remain)
 - [x] **Turso DB created + migrations applied** (`intent-ide-audit`; schema diff-verified byte-identical after a non-transactional partial-apply incident).
 - [x] **Vercel project created** (`intent-ide`, team `vinylfigures-projects`) with `DATABASE_URL` / `DATABASE_AUTH_TOKEN` / `AUDIT_ADMIN_TOKEN` env vars; production redeployed.
@@ -350,6 +362,8 @@ All three follow-ups landed against ONE source of truth: the `proposedChangePlug
 * **`/api/history` is disabled in production** (403) unless `HISTORY_ENABLED=1`. Do NOT set the flag on the shared public demo — the route stores full unauthenticated document snapshots.
 * **`turso db shell < migration.sql` is non-transactional and stops at the first error:** a partial apply can leave the remote schema in a half-migrated state (this happened — stray `DocumentSource` table). After ANY manual Turso migration, diff `sqlite_master` against a fresh local sqlite3 build of all migrations.
 * **Pre-PR #8 branches fail Vercel preview builds:** they lack the `prisma generate && next build` script, so previews die on `Can't resolve '@/generated/prisma/client'`. Known instance: PR #9 (`claude/cascade-v2-d`) — rebase onto `main` to fix.
+* **`deleteDocument` orphans annotations on document delete (issue #107, open):** no cross-store cleanup exists between `documentStore.ts` and `annotationStore.ts`/`flowStore.ts` on document deletion — found during PR #106's review (§2/§3). Fixing needs a design pass to avoid a circular import (`annotationStore.ts` already imports `useDocumentStore`).
+* **PR #106 (`heldAnswers` leak fix, closes #103) is OPEN, not yet merged** — branch `claude/purge-held-answer-on-remove`. Test counts elsewhere in this document that cite "current" totals do not yet include this branch's tests until it merges.
 
 ---
 

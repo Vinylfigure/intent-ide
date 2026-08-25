@@ -5,6 +5,22 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-08-25] `heldAnswers` leak on annotation removal — fix delivered, PR #106 open (not yet merged)
+
+Continues a `heldAnswers` leak-fix chain this changelog has no prior entries for (issue #95 → PR #102 → issue #103 → PR #106 → issue #107); #95/#102 predate this entry and are not detailed here.
+
+### Fixed
+- **`useAnnotationStore.remove(id)`** now also calls `useFlowStore.getState().revealAnswer(id)` to purge a matching `heldAnswers[id]` entry — a held answer for a removed annotation had no live poll and could otherwise never be revealed, leaking in `useFlowStore` for the rest of the session. `remove()` itself has zero production call sites (confirmed by repo-wide grep).
+- **`useAnnotationStore.clear()`** — the actually-reachable production trigger (fires from `DocInputModal.tsx` on every New/Paste/Generate/Import document action) — now also calls a new `useFlowStore.clearHeldAnswers()` to drop every held answer atomically. This is the fix that closes the leak in practice, since `remove()` alone is dead code.
+
+### Process
+- Two rounds of pre-push adversarial review, both NO-MERGE, both fixed before push. **Round 1:** the initial fix only patched the dead-code `remove()` path, leaving the reachable `clear()` leak open; also caught and corrected a false code comment claiming the localStorage-quota emergency prune inside `annotationStore.ts`'s custom `storage.setItem` catch block triggers `remove()` — confirmed false, since that prune path only rewrites the serialized persisted blob directly via `localStorage.setItem` and never touches live Zustand state or calls any store action. **Round 2** (after wiring `clear()`): found a third, distinct, still-unpatched leak — `documentStore.ts`'s `deleteDocument` (wired from `DocumentHubSidebar.tsx`'s delete action, no `<Confirmation>` gate) never touches `annotationStore` or `flowStore` at all, so a deleted document's annotations — not just their held answers — are orphaned forever. Deliberately filed as follow-up **issue #107** rather than folded into this PR, since fixing it properly needs its own design pass: `documentStore.ts` reaching into `useAnnotationStore` (or vice versa) risks a circular import (`annotationStore.ts` already imports `useDocumentStore`). Also fixed a stale test comment still repeating round 1's debunked quota-prune claim.
+- `npm run test` — 1072 passing + 10 skipped on the PR branch (1070 before round 2's two added `clear()` tests). New test file `src/stores/__tests__/annotationStore.removeHeldAnswer.test.ts`. `npm run typecheck` / `npm run lint` clean.
+
+**PR #106 (branch `claude/purge-held-answer-on-remove`, https://github.com/Vinylfigure/intent-ide/pull/106) is OPEN, not yet merged to `main` — awaiting operator review.**
+
+Closes #103 (on merge). Files #107.
+
 ## [2026-08-20] Stranded branch recovery — answer placement + accessibility (PR #50)
 
 Recovers the salvageable half of `claude/pr-audit-sidebar-options-nvwfu8`, a branch that drifted 32 commits behind `main` and 4 ahead with no PR ever opened.
