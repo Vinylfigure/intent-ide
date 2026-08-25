@@ -14,6 +14,7 @@ import { readLinePluginKey } from '@/lib/prosemirror/plugins/readLinePlugin'
 import { partitionCascadeReveal, cascadeBreakpointPos, pollCascadeReveal } from '@/lib/annotations/cascadeReveal'
 import { answerBreakpointPos, shouldRevealAnswer } from '@/lib/annotations/answerReveal'
 import { useFlowStore } from '@/stores/flowStore'
+import { useToastStore } from '@/stores/toastStore'
 import { ResolutionActions } from './ResolutionActions'
 import { CascadeList } from './CascadeList'
 import { ConversationThread } from './ConversationThread'
@@ -210,26 +211,88 @@ export function AnnotationCard({
   }
 
   const handleFollowUp = async (text: string) => {
-    if (!view) return
+    const currentView = useEditorStore.getState().view
+    if (!currentView) return
+
+    // Mirrors ResolutionActions.tsx's sendFollowUp guard (#100 round 3,
+    // carried to this call site by #104): a terminal status has no legal
+    // outgoing transition, and this free-text box / "Tell me more" stay
+    // clickable after Apply/Dismiss — bail before touching the conversation
+    // or calling continueThread at all.
+    const currentStatus = useAnnotationStore.getState().getById(annotation.id)?.status
+    if (currentStatus === 'applied' || currentStatus === 'dismissed') {
+      useToastStore.getState().addToast(
+        'This annotation has already been applied or dismissed — start a new annotation to continue.',
+        'info'
+      )
+      return
+    }
+
+    const userMessage: ConversationMessage = {
+      id: generateId(),
+      role: 'user',
+      content: text,
+      suggestedEdit: null,
+      timestamp: Date.now(),
+    }
+    addMessage(annotation.id, userMessage)
+    updateAnnotation(annotation.id, { status: 'resolving' })
+
+    // A terminal action (apply/dismiss) can complete on this annotation
+    // while this follow-up is still in flight — only write 'resolved' while
+    // this follow-up's own 'resolving' status still stands, so it can never
+    // resurrect a status that has since become terminal.
+    const finishFollowUp = () => {
+      if (useAnnotationStore.getState().getById(annotation.id)?.status === 'resolving') {
+        updateAnnotation(annotation.id, { status: 'resolved' })
+      }
+    }
+
+    const freshAnnotation = useAnnotationStore.getState().getById(annotation.id)
+    if (!freshAnnotation) return
+    // Snapshot the message ids this request is generated from — id overlap
+    // (not array reference equality) is what distinguishes a real collapse
+    // (e.g. "Simplify thread") from a benign concurrent write. See the
+    // matching comment at ResolutionActions.tsx's sendFollowUp. Declared
+    // outside the try so BOTH the success and catch paths below can check
+    // against the same snapshot — an unguarded catch path was the exact gap
+    // an adversarial review of this fix found: a request that fails (rather
+    // than resolves) after a collapse would otherwise still silently attach
+    // its error message to the fresh, post-collapse conversation.
+    const snapshotIds = new Set(freshAnnotation.conversation.map((m) => m.id))
+
+    // Returns the live annotation if the conversation this request was
+    // generated from has survived, else toasts and returns null. Shared by
+    // the success and catch paths so they can't drift out of sync on this
+    // check again.
+    const liveIfNotCollapsed = () => {
+      const live = useAnnotationStore.getState().getById(annotation.id)
+      if (!live) return null // Annotation was deleted while the request was in flight.
+      const collapsed = snapshotIds.size > 0 && !live.conversation.some((m) => snapshotIds.has(m.id))
+      if (collapsed) {
+        useToastStore.getState().addToast(
+          'This conversation changed while replying — the response was generated from context that no longer exists, so it was discarded.',
+          'error'
+        )
+        return null
+      }
+      return live
+    }
 
     try {
-      updateAnnotation(annotation.id, { status: 'resolving' })
-
-      const userMessage: ConversationMessage = {
-        id: generateId(),
-        role: 'user',
-        content: text,
-        suggestedEdit: null,
-        timestamp: Date.now(),
+      const agentMessage = await continueThread(freshAnnotation, text, currentView.state)
+      if (!liveIfNotCollapsed()) {
+        finishFollowUp()
+        return
       }
-      addMessage(annotation.id, userMessage)
-
-      const agentMessage = await continueThread(annotation, text, view.state)
       addMessage(annotation.id, agentMessage)
-
-      updateAnnotation(annotation.id, { status: 'resolved' })
+      finishFollowUp()
     } catch (err) {
       console.error('Follow-up failed:', err)
+      if (!liveIfNotCollapsed()) {
+        finishFollowUp()
+        return
+      }
       const errorMessage: ConversationMessage = {
         id: generateId(),
         role: 'agent',
@@ -238,7 +301,7 @@ export function AnnotationCard({
         timestamp: Date.now(),
       }
       addMessage(annotation.id, errorMessage)
-      updateAnnotation(annotation.id, { status: 'resolved' })
+      finishFollowUp()
     }
   }
 
