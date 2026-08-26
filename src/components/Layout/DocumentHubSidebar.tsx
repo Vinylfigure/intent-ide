@@ -52,6 +52,23 @@ export function DocumentHubSidebar() {
     setDeleteTarget(null)
   }
 
+  // Second delete entry point gated the same way as document delete (#115) —
+  // deleteCollection never cascade-deletes member documents (only strips
+  // their collectionIds), but losing the collection's name/identity and
+  // every document's membership in it is still a one-click, irreversible
+  // loss the HITL principle requires a confirmation step for.
+  const [deleteCollectionTarget, setDeleteCollectionTarget] = useState<CollectionMeta | null>(null)
+  const deleteCollectionTargetDocCount = useDocumentStore((s) =>
+    deleteCollectionTarget
+      ? s.documents.filter((doc) => (doc.collectionIds ?? []).includes(deleteCollectionTarget.id)).length
+      : 0
+  )
+  const confirmDeleteCollection = () => {
+    if (!deleteCollectionTarget) return
+    deleteCollection(deleteCollectionTarget.id)
+    setDeleteCollectionTarget(null)
+  }
+
   const [expandedCollections, setExpandedCollections] = useState<Set<string>>(new Set())
   const [renamingDocId, setRenamingDocId] = useState<string | null>(null)
   const [renamingCollectionId, setRenamingCollectionId] = useState<string | null>(null)
@@ -253,7 +270,7 @@ export function DocumentHubSidebar() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
-                      deleteCollection(collection.id)
+                      setDeleteCollectionTarget(collection)
                     }}
                     aria-label="Delete collection"
                     className="p-0.5 text-xs text-red-400 hover:text-red-600"
@@ -334,6 +351,28 @@ export function DocumentHubSidebar() {
               variant="destructive"
               onConfirm={confirmDelete}
               onCancel={() => setDeleteTarget(null)}
+            />
+          </div>
+        </div>
+      )}
+
+      {deleteCollectionTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-6">
+            <Confirmation
+              title="Delete this collection?"
+              description={
+                deleteCollectionTargetDocCount > 0
+                  ? `"${deleteCollectionTarget.name}" will be permanently deleted. Its ${deleteCollectionTargetDocCount} document${
+                      deleteCollectionTargetDocCount === 1 ? '' : 's'
+                    } will be un-assigned from it but not deleted. This cannot be undone.`
+                  : `"${deleteCollectionTarget.name}" will be permanently deleted. This cannot be undone.`
+              }
+              confirmLabel="Delete"
+              cancelLabel="Cancel"
+              variant="destructive"
+              onConfirm={confirmDeleteCollection}
+              onCancel={() => setDeleteCollectionTarget(null)}
             />
           </div>
         </div>
