@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import { useDocumentStore, type CollectionMeta, type DocumentMeta } from '@/stores/documentStore'
 import { useAnnotationStore } from '@/stores/annotationStore'
+import { Confirmation } from '@/components/ui/Confirmation'
 
 function sortDocsByRecent(docs: DocumentMeta[]): DocumentMeta[] {
   return [...docs].sort((a, b) => b.updatedAt - a.updatedAt)
@@ -29,6 +30,26 @@ export function DocumentHubSidebar() {
   const handleDeleteDocument = (documentId: string) => {
     useAnnotationStore.getState().removeByDocumentId(documentId)
     deleteDocument(documentId)
+  }
+
+  // Both delete entry points route through this confirmation gate rather
+  // than deleting on click (#110) — deletion is irreversible and, since
+  // #107/#109, now also silently destroys every annotation for the document
+  // in the same click.
+  const [deleteTarget, setDeleteTarget] = useState<DocumentMeta | null>(null)
+  // Selected as a derived primitive (not a subscription to the whole
+  // `annotations` array) so this component doesn't re-render on every
+  // annotation mutation elsewhere in the app (e.g. every streamed token of
+  // an unrelated AI resolution) — only when the count for the *targeted*
+  // document actually changes, which is only possible while the modal is
+  // open.
+  const deleteTargetAnnotationCount = useAnnotationStore((s) =>
+    deleteTarget ? s.annotations.filter((a) => a.documentId === deleteTarget.id).length : 0
+  )
+  const confirmDelete = () => {
+    if (!deleteTarget) return
+    handleDeleteDocument(deleteTarget.id)
+    setDeleteTarget(null)
   }
 
   const [expandedCollections, setExpandedCollections] = useState<Set<string>>(new Set())
@@ -163,7 +184,7 @@ export function DocumentHubSidebar() {
               onActivate={() => setActiveDocument(doc.id)}
               onStartRename={() => startRenameDocument(doc)}
               onDuplicate={() => duplicateDocument(doc.id)}
-              onDelete={() => handleDeleteDocument(doc.id)}
+              onDelete={() => setDeleteTarget(doc)}
               onAssignToCollection={(collectionId) => assignDocumentToCollection(doc.id, collectionId)}
               onRemoveFromCollection={(collectionId) => removeDocumentFromCollection(doc.id, collectionId)}
             />
@@ -259,7 +280,7 @@ export function DocumentHubSidebar() {
                       onActivate={() => setActiveDocument(doc.id)}
                       onStartRename={() => startRenameDocument(doc)}
                       onDuplicate={() => duplicateDocument(doc.id)}
-                      onDelete={() => handleDeleteDocument(doc.id)}
+                      onDelete={() => setDeleteTarget(doc)}
                       onAssignToCollection={(collectionId) => assignDocumentToCollection(doc.id, collectionId)}
                       onRemoveFromCollection={(collectionId) => removeDocumentFromCollection(doc.id, collectionId)}
                       compact
@@ -295,6 +316,28 @@ export function DocumentHubSidebar() {
           </div>
         )}
       </section>
+
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-6">
+            <Confirmation
+              title="Delete this document?"
+              description={
+                deleteTargetAnnotationCount > 0
+                  ? `"${deleteTarget.title}" and its ${deleteTargetAnnotationCount} annotation${
+                      deleteTargetAnnotationCount === 1 ? '' : 's'
+                    } will be permanently deleted. This cannot be undone.`
+                  : `"${deleteTarget.title}" will be permanently deleted. This cannot be undone.`
+              }
+              confirmLabel="Delete"
+              cancelLabel="Cancel"
+              variant="destructive"
+              onConfirm={confirmDelete}
+              onCancel={() => setDeleteTarget(null)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
