@@ -22,7 +22,6 @@ export function DocumentHubSidebar() {
   const deleteCollection = useDocumentStore((s) => s.deleteCollection)
   const assignDocumentToCollection = useDocumentStore((s) => s.assignDocumentToCollection)
   const removeDocumentFromCollection = useDocumentStore((s) => s.removeDocumentFromCollection)
-  const annotations = useAnnotationStore((s) => s.annotations)
 
   // Deleting a document must also purge its annotations (and, via remove()'s
   // own purge, any held answers) — otherwise they're orphaned forever, still
@@ -38,9 +37,14 @@ export function DocumentHubSidebar() {
   // #107/#109, now also silently destroys every annotation for the document
   // in the same click.
   const [deleteTarget, setDeleteTarget] = useState<DocumentMeta | null>(null)
-  const deleteTargetAnnotationCount = useMemo(
-    () => (deleteTarget ? annotations.filter((a) => a.documentId === deleteTarget.id).length : 0),
-    [annotations, deleteTarget]
+  // Selected as a derived primitive (not a subscription to the whole
+  // `annotations` array) so this component doesn't re-render on every
+  // annotation mutation elsewhere in the app (e.g. every streamed token of
+  // an unrelated AI resolution) — only when the count for the *targeted*
+  // document actually changes, which is only possible while the modal is
+  // open.
+  const deleteTargetAnnotationCount = useAnnotationStore((s) =>
+    deleteTarget ? s.annotations.filter((a) => a.documentId === deleteTarget.id).length : 0
   )
   const confirmDelete = () => {
     if (!deleteTarget) return
