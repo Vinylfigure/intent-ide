@@ -1,4 +1,5 @@
 import { useSettingsStore } from '@/stores/settingsStore'
+import { addTranscriptionEstimate } from '@/lib/ai/spendEstimate'
 
 export async function transcribeAudio(audioBlob: Blob): Promise<string> {
   const whisperKey = useSettingsStore.getState().whisperApiKey
@@ -14,6 +15,10 @@ export async function transcribeAudio(audioBlob: Blob): Promise<string> {
   const formData = new FormData()
   formData.append('file', audioBlob, 'recording.webm')
   formData.append('model', 'whisper-1')
+
+  // Soft spend indicator (display only) — tracked separately from the
+  // char-based token estimate; see spendEstimate.ts.
+  addTranscriptionEstimate(audioBlob.size)
 
   const response = await fetch('/api/transcribe', {
     method: 'POST',
