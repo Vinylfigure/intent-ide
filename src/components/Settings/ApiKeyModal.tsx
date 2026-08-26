@@ -9,7 +9,7 @@ import {
   PROVIDER_BASE_URLS,
 } from '@/stores/settingsStore'
 import { modelRejectsSampling, providerCapabilities } from '@/lib/ai/modelCapabilities'
-import { getSessionEstimate } from '@/lib/ai/spendEstimate'
+import { getSessionEstimate, getTranscriptionEstimate } from '@/lib/ai/spendEstimate'
 import { useCascadeCalibrationStore } from '@/stores/cascadeCalibrationStore'
 
 export function ApiKeyModal() {
@@ -52,8 +52,12 @@ export function ApiKeyModal() {
   // Spend estimate is module state, not reactive — poll it while the modal is
   // open so long-lived sessions see the line move without reopening.
   const [sessionTokens, setSessionTokens] = useState(() => getSessionEstimate())
+  const [transcriptionBytes, setTranscriptionBytes] = useState(() => getTranscriptionEstimate())
   useEffect(() => {
-    const timer = setInterval(() => setSessionTokens(getSessionEstimate()), 2000)
+    const timer = setInterval(() => {
+      setSessionTokens(getSessionEstimate())
+      setTranscriptionBytes(getTranscriptionEstimate())
+    }, 2000)
     return () => clearInterval(timer)
   }, [])
 
@@ -339,11 +343,16 @@ export function ApiKeyModal() {
             <p className="text-xs text-muted leading-relaxed">
               Document text leaves this machine only when you act: on annotation resolution,
               cascade analysis, citation verification, and semantic-similarity indexing — never
-              while typing. All calls go only to your configured provider.
+              while typing. Voice transcription sends recorded audio (not document text) to
+              Whisper when you record. All calls go only to your configured provider.
             </p>
 
             <p className="text-xs font-mono text-muted">
-              This session: ~{sessionTokens.toLocaleString()} tokens sent (rough estimate; excludes transcription)
+              This session: ~{sessionTokens.toLocaleString()} tokens sent (rough estimate)
+            </p>
+            <p className="text-xs font-mono text-muted">
+              Transcription: ~{(transcriptionBytes / 1024).toFixed(1)} KB of audio sent (rough
+              estimate, not billing-accurate)
             </p>
           </div>
 
