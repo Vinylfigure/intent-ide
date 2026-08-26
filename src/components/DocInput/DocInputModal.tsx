@@ -4,8 +4,6 @@ import { useState } from 'react'
 import { schema } from '@/lib/prosemirror/schema'
 import { useEditorStore } from '@/stores/editorStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { useAnnotationStore } from '@/stores/annotationStore'
-import { useChangesStore } from '@/stores/changesStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { useToastStore } from '@/stores/toastStore'
@@ -42,9 +40,12 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
       collectionIds: collectionId ? [collectionId] : [],
     })
 
-    // Reset session state for new document
-    useAnnotationStore.getState().clear()
-    useChangesStore.getState().clear()
+    // Reset session-level (non-document-scoped) state for the new document.
+    // annotationStore/changesStore are NOT cleared here: their entries are
+    // already scoped by documentId and filtered per-document by every review
+    // surface (AnnotationPanel, ChangesPanel), so the new (empty) document
+    // shows nothing on its own. A global clear() would instead silently wipe
+    // every OTHER existing document's annotations and change history (#114).
     useSessionStore.getState().reset()
 
     onClose()
