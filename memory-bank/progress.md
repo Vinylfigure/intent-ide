@@ -9,6 +9,17 @@
 
 ## 2. Completed Milestones (What Works)
 
+### `StatusBar.tsx` chip counts scoped to active document -- fix delivered, PR #120 OPEN (pending operator merge, 2026-08-27)
+Closes issue #116 (task: label, filed by the repo owner; done-means: scope StatusBar's three named counts to the active document; out of scope: any change to the stores themselves).
+- [x] **`StatusBar.tsx`'s annotation/change-set/change count chips now scoped to `documentId === activeDocumentId`**, matching every other consumer of the same stores (`AnnotationPanel.tsx`, `ChangesPanel.tsx`) — previously read raw, unfiltered totals across all documents from `annotationStore`/`changesStore`. Fixed by adding `activeDocumentId` from `useDocumentStore` and filtering all three chip counts by it.
+- [x] **New test file `src/components/Layout/__tests__/statusBar.activeDocumentScope.test.tsx`** (3 tests).
+- [x] **Adversarial review (troublemaker agent) verdict: MERGE.** Mutation-tested — reverting only `StatusBar.tsx` makes all 3 new tests fail, confirming they aren't vacuous.
+- [x] **Two findings surfaced, both non-blocking, neither gates this PR (full detail in `raw_reflection_log.md`):**
+  - Medium — `inFlightCount` (the "N thinking…" chip) is still unscoped across all documents: `documentStore.setActiveDocument` has no side effects to pause background classification/resolution on document switch, so it can show "N thinking…" for unrelated background work on a different document. Deliberately left out of #116's stated scope. Filed as follow-up **issue #121** (`discovered-from: work-loop adversarial review of PR #120 for #116, 2026-08-27`).
+  - Low, pre-existing, NOT introduced by this PR — `changesStore.ts` has no legacy-data migration for `entries`/`changeSets` analogous to `annotationStore.ts`'s `migrateAnnotations`. A pre-multi-document persisted change record with a missing/undefined `documentId` would never match `activeDocumentId` and silently vanish from `ChangesPanel.tsx`'s and now `StatusBar.tsx`'s filtered views. Predates this PR (the same filter already existed in `ChangesPanel.tsx`) — this fix just surfaces the gap in one more place. Not filed as a GitHub issue; recorded as a known gap for a future session.
+- [x] **Verification:** `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1103 passing + 10 skipped (up from 1100 before this branch).
+- [ ] **PR #120 still OPEN** (branch `claude/statusbar-active-doc-scope`, https://github.com/Vinylfigure/intent-ide/pull/120, body "Closes #116") — awaiting operator review and merge. Not yet in `main`.
+
 ### `heldAnswers` leak on annotation/document removal -- fix delivered, PR #106 OPEN (pending operator merge, 2026-08-25)
 Continues a leak-fix chain this memory bank has no prior entries for: issue #95 → PR #102 → issue #103 → PR #106 (this entry) → issue #107 (filed, not yet fixed). #95/#102 predate any record in this memory bank and are not detailed here.
 - [x] **`useAnnotationStore.remove(id)`** now also calls `useFlowStore.getState().revealAnswer(id)` to purge a matching `heldAnswers[id]` entry — a held answer for a removed annotation had no live poll and could otherwise never be revealed, leaking in `useFlowStore` for the rest of the session. Adversarial review found `remove()` itself has zero production call sites (confirmed by repo-wide grep).
