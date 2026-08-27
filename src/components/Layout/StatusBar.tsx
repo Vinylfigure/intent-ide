@@ -54,7 +54,9 @@ export function StatusBar() {
   const inFlightCount = useAnnotationStore(
     (s) =>
       s.annotations.filter(
-        (a) => a.status === 'pending' || a.status === 'classified' || a.status === 'resolving',
+        (a) =>
+          a.documentId === activeDocumentId &&
+          (a.status === 'pending' || a.status === 'classified' || a.status === 'resolving'),
       ).length,
   )
   const changeSetCount = useChangesStore(
