@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, fireEvent, cleanup } from '@testing-library/react'
 import { EditorState } from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
@@ -26,6 +26,7 @@ function mountView(): EditorView {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   const view = useEditorStore.getState().view as EditorView | null
   view?.destroy()
   useEditorStore.setState({ view: null })
@@ -79,7 +80,7 @@ describe('DocInputModal loadDoc() flushes the outgoing document before switching
     expect(JSON.stringify(persistedDocA)).toContain('Edited by the user.')
   })
 
-  it('does not attempt a flush when the outgoing document is not dirty', () => {
+  it('does not flush the outgoing document when it is not dirty', () => {
     useDocumentStore.setState({
       documents: [{ id: 'doc-a', title: 'Doc A', createdAt: 0, updatedAt: 0, collectionIds: [] }],
       activeDocumentId: 'doc-a',
@@ -89,12 +90,18 @@ describe('DocInputModal loadDoc() flushes the outgoing document before switching
     const view = mountView()
     useEditorStore.setState({ view })
 
+    // Spy on the actual gated call so this proves the isDirty guard skips
+    // the flush — not just that loadDoc() doesn't throw either way (which a
+    // broken guard, e.g. `||` instead of `&&`, would also satisfy). Note
+    // createDocument() writes the NEW document straight to localStorage
+    // itself (not via saveDocument), so saveDocument should be called zero
+    // times in this non-dirty case.
+    const saveSpy = vi.spyOn(useDocumentStore.getState(), 'saveDocument')
+
     const { getByText } = render(<DocInputModal onClose={() => {}} />)
     fireEvent.click(getByText('Create Blank Document'))
 
-    // Nothing to flush: Doc A was never persisted, and this test only
-    // asserts the flush path doesn't throw or otherwise misbehave when
-    // isDirty is false (the common, non-buggy case).
+    expect(saveSpy).not.toHaveBeenCalled()
     expect(useDocumentStore.getState().documents).toHaveLength(2)
   })
 })
