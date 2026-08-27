@@ -9,6 +9,7 @@ import { useDocumentStore } from '@/stores/documentStore'
 import { useToastStore } from '@/stores/toastStore'
 import { parseTextToDoc, parseFileToDoc } from '@/lib/docInput/parser'
 import { generateDocument } from '@/lib/docInput/generator'
+import { recordCommit } from '@/lib/history/commits'
 
 interface DocInputModalProps {
   onClose: () => void
@@ -30,6 +31,27 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
 
   const loadDoc = (docJson: any, fallbackTitle: string) => {
     if (!view) return
+
+    // Flush the outgoing document's pending edit BEFORE replacing editor
+    // content and switching activeDocumentId — mirrors EditorShell.tsx's own
+    // doc-switch flush. Without this, the replace transaction below fires the
+    // autosave debounce again (clearing the timer already armed to flush the
+    // OUTGOING document) and createDocument() resets isDirty to false before
+    // EditorShell's own switch-effect guard ever sees it — silently dropping
+    // an edit made within the 5s autosave window (#122).
+    const outgoingStore = useDocumentStore.getState()
+    if (outgoingStore.activeDocumentId && outgoingStore.isDirty) {
+      const outgoingJson = view.state.doc.toJSON()
+      outgoingStore.saveDocument(outgoingStore.activeDocumentId, outgoingJson)
+      recordCommit({
+        docJson: outgoingJson,
+        documentId: outgoingStore.activeDocumentId,
+        kind: 'direct',
+        message: 'Edited document',
+        actor: 'human',
+      })
+    }
+
     const doc = schema.nodeFromJSON(docJson)
     const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content)
     view.dispatch(tr)
