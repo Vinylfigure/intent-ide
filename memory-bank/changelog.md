@@ -5,6 +5,20 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-08-27] StatusBar chip counts scoped to active document — fix delivered, PR #120 open (not yet merged)
+
+### Fixed
+- **`StatusBar.tsx`'s annotation/change-set/change count chips** now filter by `documentId === activeDocumentId`, matching every other consumer of `annotationStore`/`changesStore` (`AnnotationPanel.tsx`, `ChangesPanel.tsx`). Previously read raw, unfiltered totals across all documents. Fixed by adding `activeDocumentId` from `useDocumentStore` and filtering all three chip counts by it.
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**. Mutation-tested — reverting only `StatusBar.tsx` makes all 3 new tests fail, confirming they aren't vacuous.
+- Two findings surfaced, both non-blocking: **(1) medium** — `inFlightCount` (the "N thinking…" chip) remains unscoped across all documents, since `documentStore.setActiveDocument` has no side effects to pause background classification/resolution on document switch; deliberately out of #116's stated scope, filed as follow-up **issue #121**. **(2) low, pre-existing, not introduced by this PR** — `changesStore.ts` has no legacy-data migration for `entries`/`changeSets` analogous to `annotationStore.ts`'s `migrateAnnotations`, so a pre-multi-document persisted change record with a missing `documentId` silently vanishes from `ChangesPanel.tsx`'s and now `StatusBar.tsx`'s filtered views; predates this PR (same filter already existed in `ChangesPanel.tsx`), not filed as a separate GitHub issue.
+- `npm run test` — 1103 passing + 10 skipped on the PR branch (1100 before this branch). `npm run typecheck` / `npm run lint` clean. New test file `src/components/Layout/__tests__/statusBar.activeDocumentScope.test.tsx`.
+
+**PR #120 (branch `claude/statusbar-active-doc-scope`, https://github.com/Vinylfigure/intent-ide/pull/120, body "Closes #116") is OPEN, not yet merged to `main` — awaiting operator review.**
+
+Closes #116 (on merge). Files #121.
+
 ## [2026-08-27] `loadDoc()` undo-history guard — fix delivered, PR #123 open (not yet merged)
 
 Consumes issue #117: `DocInputModal.tsx`'s `loadDoc()` (shared by Blank/Paste/Generate/Import) replaced the editor's full content via `replaceWith` without `tr.setMeta('addToHistory', false)`, unlike `EditorShell.tsx`'s already-guarded document-switch path — Cmd-Z after creating/loading a document could resurrect the prior document's content and, via the existing autosave debounce, get it written to localStorage under the new document's id (the same class of bug the v8.4 doc-switch fix closed for `EditorShell.tsx` on 2026-07-09, just at a second unguarded call site).

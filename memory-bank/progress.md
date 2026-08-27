@@ -9,6 +9,17 @@
 
 ## 2. Completed Milestones (What Works)
 
+### `StatusBar.tsx` chip counts scoped to active document -- fix delivered, PR #120 OPEN (pending operator merge, 2026-08-27)
+Closes issue #116 (task: label, filed by the repo owner; done-means: scope StatusBar's three named counts to the active document; out of scope: any change to the stores themselves).
+- [x] **`StatusBar.tsx`'s annotation/change-set/change count chips now scoped to `documentId === activeDocumentId`**, matching every other consumer of the same stores (`AnnotationPanel.tsx`, `ChangesPanel.tsx`) — previously read raw, unfiltered totals across all documents from `annotationStore`/`changesStore`. Fixed by adding `activeDocumentId` from `useDocumentStore` and filtering all three chip counts by it.
+- [x] **New test file `src/components/Layout/__tests__/statusBar.activeDocumentScope.test.tsx`** (3 tests).
+- [x] **Adversarial review (troublemaker agent) verdict: MERGE.** Mutation-tested — reverting only `StatusBar.tsx` makes all 3 new tests fail, confirming they aren't vacuous.
+- [x] **Two findings surfaced, both non-blocking, neither gates this PR (full detail in `raw_reflection_log.md`):**
+  - Medium — `inFlightCount` (the "N thinking…" chip) is still unscoped across all documents: `documentStore.setActiveDocument` has no side effects to pause background classification/resolution on document switch, so it can show "N thinking…" for unrelated background work on a different document. Deliberately left out of #116's stated scope. Filed as follow-up **issue #121** (`discovered-from: work-loop adversarial review of PR #120 for #116, 2026-08-27`).
+  - Low, pre-existing, NOT introduced by this PR — `changesStore.ts` has no legacy-data migration for `entries`/`changeSets` analogous to `annotationStore.ts`'s `migrateAnnotations`. A pre-multi-document persisted change record with a missing/undefined `documentId` would never match `activeDocumentId` and silently vanish from `ChangesPanel.tsx`'s and now `StatusBar.tsx`'s filtered views. Predates this PR (the same filter already existed in `ChangesPanel.tsx`) — this fix just surfaces the gap in one more place. Not filed as a GitHub issue; recorded as a known gap for a future session.
+- [x] **Verification:** `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1103 passing + 10 skipped (up from 1100 before this branch).
+- [ ] **PR #120 still OPEN** (branch `claude/statusbar-active-doc-scope`, https://github.com/Vinylfigure/intent-ide/pull/120, body "Closes #116") — awaiting operator review and merge. Not yet in `main`.
+
 ### `loadDoc()` undo-history guard -- fix delivered, PR #123 OPEN (pending operator merge, 2026-08-27)
 Consumes issue #117: `DocInputModal.tsx`'s `loadDoc()` (shared by Blank/Paste/Generate/Import) replaced the editor's full content via `replaceWith` without `tr.setMeta('addToHistory', false)`, unlike `EditorShell.tsx`'s already-guarded document-switch path from the v8.4 fix (2026-07-09) — a second, previously-unnoticed unguarded full-document-replace site with the same Cmd-Z resurrection/cross-document-bleed risk.
 - [x] **Fix:** `loadDoc()` now dispatches its content-replace transaction with `tr.setMeta('addToHistory', false)`, matching `EditorShell.tsx`'s guard. All four load paths (Blank/Paste/Generate/Import) funnel through this one function.
@@ -17,10 +28,6 @@ Consumes issue #117: `DocInputModal.tsx`'s `loadDoc()` (shared by Blank/Paste/Ge
 - [x] **Separate pre-existing bug found and reproduced, deliberately NOT fixed here:** `loadDoc()` never flushes the *outgoing* document's dirty autosave before replacing content and switching `activeDocumentId`, unlike `EditorShell.tsx`'s own switch effect. Failure chain: edit Doc A inside the 5s autosave debounce window → open `DocInputModal`, load Doc B → the load's `docChanged` transaction re-triggers `debouncedSave`, clearing Doc A's pending flush and rescheduling around the now-replaced Doc B content → `createDocument()` sets `activeDocumentId` to Doc B and resets `isDirty: false` → `EditorShell`'s flush-before-switch guard re-reads `isDirty` fresh, finds it already false, no-ops → Doc A's edit is silently lost, never persisted, never recorded via `recordCommit`. Silent DATA-LOSS (not corruption), independent of the addToHistory fix. Filed as **issue #122** with a stated done-means and repro chain rather than folded into this PR.
 - [x] **Verification:** `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1101 passing + 10 skipped (up from 1100 on `main`).
 - [ ] **PR #123 still OPEN** (branch `claude/loadDoc-undo-history-guard`, https://github.com/Vinylfigure/intent-ide/pull/123, body "Closes #117", honestly discloses #122 as a known separate bug) — awaiting operator review and merge. Not yet in `main`.
-
-### Two other recent work-loop PRs also still open as of this sweep (predate this firing, noted here for continuity)
-- [ ] **PR #119** (closes #115, collection-delete confirmation gate) — green on CI (verify + gate-integrity + Vercel all passing), not yet merged by the operator.
-- [ ] **PR #120** (closes #116, StatusBar active-document scoping) — green on CI, not yet merged. Its own review filed follow-up **issue #121** (StatusBar's "N thinking…" chip still counts in-flight annotations across all documents, not just the active one — same bug class as #116, deliberately descoped there too).
 
 ### `heldAnswers` leak on annotation/document removal -- fix delivered, PR #106 OPEN (pending operator merge, 2026-08-25)
 Continues a leak-fix chain this memory bank has no prior entries for: issue #95 → PR #102 → issue #103 → PR #106 (this entry) → issue #107 (filed, not yet fixed). #95/#102 predate any record in this memory bank and are not detailed here.
