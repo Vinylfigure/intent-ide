@@ -32,6 +32,11 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
     if (!view) return
     const doc = schema.nodeFromJSON(docJson)
     const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content)
+    // Loading a document is not an edit: keeping it out of history stops
+    // Cmd-Z from resurrecting the previous document's content and then
+    // autosaving it under the new document's id (mirrors EditorShell's
+    // document-switch guard).
+    tr.setMeta('addToHistory', false)
     view.dispatch(tr)
 
     // Save to document store
