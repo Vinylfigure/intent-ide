@@ -26,6 +26,26 @@ Closes #121 (on merge).
 
 ## [2026-08-27] StatusBar chip counts scoped to active document — fix delivered, PR #120 MERGED
 
+## [2026-08-27] loadDoc() flushes outgoing dirty edit before document switch — fix delivered, PR #125 open (not yet merged)
+
+Discovered as a by-product of adversarial review on PR #123 (fix for #117); filed as its own issue (#122) with its own done-means rather than folded in or left as a TODO.
+
+### Fixed
+- **`DocInputModal.tsx`'s `loadDoc()`** (shared by Blank/Paste/Generate/Import) now flushes the outgoing document's pending unsaved edit before replacing editor content and switching `activeDocumentId` — previously it did neither, unlike `EditorShell.tsx`'s own document-switch effect, which already guards against exactly this. Concretely: typing into Document A within the 5s autosave window, then creating/pasting/generating/importing a new document before the timer fires, silently dropped Doc A's edit (never written to localStorage, never recorded via `recordCommit`) — `loadDoc()`'s content-replace transaction re-armed the autosave debounce around the new document's content, destroying the timer that would have flushed Doc A, and `createDocument()` reset `isDirty: false` before `EditorShell`'s switch-effect guard could see it.
+- **Fix:** `loadDoc()` reads `useDocumentStore.getState()` before dispatching the replace transaction; if the active document is dirty, it captures the current (pre-replace) editor content via `view.state.doc.toJSON()` and flushes it with `saveDocument()` + `recordCommit()` (kind: 'direct', actor: 'human') — mirroring `EditorShell.tsx`'s existing guard exactly. All four call sites funnel through this one fix.
+
+### Process
+- Adversarial (troublemaker agent) review verdict: **MERGE**. Confirmed the flush ordering has no stale-closure risk (`view.state.doc` is read before the replace transaction; `useDocumentStore.getState()` is read fresh at call time), and that the flush cannot recursively retrigger `EditorShell`'s autosave since it dispatches no transaction of its own. Confirmed `EditorShell`'s own switch effect does not double-flush (its guard correctly no-ops once `createDocument()` has already reset `isDirty`) and that its pre-existing redundant reload of the new document's content is not a regression introduced here.
+- One real finding on the original test 2 (mutation-tested by the reviewer): it only asserted `loadDoc()` didn't throw when `isDirty` was false, which would pass identically even with a broken (`||` instead of `&&`) guard. Fixed before push by spying on `saveDocument` directly; self-mutation-tested afterward — weakened the guard to `||`, confirmed the tightened test now fails, restored the fix, confirmed it passes again.
+- **Adjacent bug surfaced, not a new discovery:** the review independently found `loadDoc()`'s content-replace transaction is missing `tr.setMeta('addToHistory', false)`, risking an immediate Cmd-Z after a document switch resurrecting the outgoing document's content into a view still bound to the new document's id. This is exactly the bug already fixed on open PR #123 (`claude/loadDoc-undo-history-guard`, closes #117), which predates this branch — verified by diffing PR #123's branch directly rather than assumed. No new issue filed; the PR body notes this explicitly so nothing is silently dropped between the two open PRs.
+- `npm run test` — 1109 passing + 10 skipped on the PR branch (1107 baseline on `main` at `dcfbee4`). `npm run typecheck` / `npm run lint` clean. New test file `src/components/DocInput/__tests__/docInputModal.flushOutgoingDirty.test.tsx`.
+
+**PR #125 (branch `claude/loadDoc-flush-outgoing-dirty`, https://github.com/Vinylfigure/intent-ide/pull/125, base `main` at `dcfbee4`) is OPEN, not yet merged to `main` — awaiting operator review.**
+
+Closes #122 (on merge).
+
+## [2026-08-27] StatusBar chip counts scoped to active document — fix delivered, PR #120 open (not yet merged)
+
 ### Fixed
 - **`StatusBar.tsx`'s annotation/change-set/change count chips** now filter by `documentId === activeDocumentId`, matching every other consumer of `annotationStore`/`changesStore` (`AnnotationPanel.tsx`, `ChangesPanel.tsx`). Previously read raw, unfiltered totals across all documents. Fixed by adding `activeDocumentId` from `useDocumentStore` and filtering all three chip counts by it.
 
