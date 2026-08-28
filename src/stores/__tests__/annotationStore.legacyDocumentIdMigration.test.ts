@@ -104,6 +104,28 @@ describe('annotationStore — legacy documentId migration (#128: fixed placehold
     expect(annotations.filter((a) => a.documentId === 'doc-currently-open')).toHaveLength(0)
   })
 
+  it('disclosed trade-off: a migrated legacy annotation is unreachable by any documentId === activeDocumentId filter, no matter which document is open (see legacyDocumentId.ts)', async () => {
+    // No document a user can actually have open carries LEGACY_DOCUMENT_ID as
+    // its id (real ids come from generateId()/nanoid), so AnnotationPanel.tsx's,
+    // AnnotationMap.tsx's, and StatusBar.tsx's `documentId === activeDocumentId`
+    // filters can never surface this annotation for ANY active document — the
+    // accepted cost of never contaminating a real one, not an oversight.
+    const legacy = makeAnnotation({ id: 'ann-1', documentId: undefined })
+    localStorage.setItem(
+      'intent-ide-annotations',
+      JSON.stringify({ state: { annotations: [legacy], activeAnnotationId: null }, version: 0 })
+    )
+
+    for (const active of ['doc-active', 'doc-currently-open', 'doc-real', null]) {
+      const { useAnnotationStore } = await loadStores(active)
+      const { annotations } = useAnnotationStore.getState()
+      expect(annotations[0].documentId).toBe(LEGACY_DOCUMENT_ID)
+      if (active !== null) {
+        expect(annotations.filter((a) => a.documentId === active)).toHaveLength(0)
+      }
+    }
+  })
+
   it('leaves an already-populated documentId untouched', async () => {
     const modern = makeAnnotation({ id: 'ann-modern', documentId: 'doc-real' })
     localStorage.setItem(

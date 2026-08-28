@@ -130,6 +130,28 @@ describe('changesStore — legacy documentId migration (#128: fixed placeholder,
     expect(entries.filter((e) => e.documentId === 'doc-currently-open')).toHaveLength(0)
   })
 
+  it('disclosed trade-off: a migrated legacy record is unreachable by any documentId === activeDocumentId filter, no matter which document is open (see legacyDocumentId.ts)', async () => {
+    // No document a user can actually have open carries LEGACY_DOCUMENT_ID as
+    // its id (real ids come from generateId()/nanoid), so ChangesPanel.tsx's
+    // and StatusBar.tsx's `documentId === activeDocumentId` filters can never
+    // surface this record for ANY active document — this is the accepted
+    // cost of never contaminating a real one, not an oversight.
+    const legacyEntry = makeEntry({ documentId: undefined as unknown as string })
+    localStorage.setItem(
+      'intent-ide-changes',
+      JSON.stringify({ state: { entries: [legacyEntry], changeSets: [] }, version: 0 })
+    )
+
+    for (const active of ['doc-active', 'doc-currently-open', 'doc-real', null]) {
+      const { useChangesStore } = await loadStores(active)
+      const { entries } = useChangesStore.getState()
+      expect(entries[0].documentId).toBe(LEGACY_DOCUMENT_ID)
+      if (active !== null) {
+        expect(entries.filter((e) => e.documentId === active)).toHaveLength(0)
+      }
+    }
+  })
+
   it('leaves an already-populated documentId untouched', async () => {
     const entry = makeEntry({ documentId: 'doc-real' })
     const changeSet = makeChangeSet({ documentId: 'doc-real' })
