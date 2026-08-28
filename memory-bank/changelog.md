@@ -37,6 +37,23 @@ Closes #122 (on merge).
 
 Closes #116 (on merge). Files #121.
 
+## [2026-08-27] `loadDoc()` undo-history guard — fix delivered, PR #123 open (not yet merged)
+
+Consumes issue #117: `DocInputModal.tsx`'s `loadDoc()` (shared by Blank/Paste/Generate/Import) replaced the editor's full content via `replaceWith` without `tr.setMeta('addToHistory', false)`, unlike `EditorShell.tsx`'s already-guarded document-switch path — Cmd-Z after creating/loading a document could resurrect the prior document's content and, via the existing autosave debounce, get it written to localStorage under the new document's id (the same class of bug the v8.4 doc-switch fix closed for `EditorShell.tsx` on 2026-07-09, just at a second unguarded call site).
+
+### Fixed
+- **`loadDoc()`** now dispatches its content-replace transaction with `tr.setMeta('addToHistory', false)`, matching `EditorShell.tsx`'s guard. All four load paths (Blank/Paste/Generate/Import) funnel through this one function, so one fix closes all four.
+
+### Process
+- New regression test `src/components/DocInput/__tests__/docInputModal.loadDocHistoryGuard.test.tsx` mounts a real `EditorView` with the `history` plugin, drives the Paste flow, then calls `undo()` and asserts content is unchanged and `undo()` returns `false`. Mutation-tested: reverting only the fix reproduces the exact resurrection bug and fails the test.
+- Adversarial (troublemaker) review confirmed the fix correct and complete for #117's stated scope, and grepped the codebase to confirm no other unguarded full-document-replace site exists anywhere — the only three full-document-replace sites are `EditorShell.tsx` (pre-existing, guarded), `src/lib/history/commits.ts` (pre-existing, guarded), and this one (now guarded). Also confirmed the new test is not vacuous — it distinguishes a truthy-but-not-`false` `addToHistory` value from a real fix, per prosemirror-history's own `!== false` check.
+- **Separate pre-existing bug found and reproduced (not fixed here, deliberately descoped):** the same review independently reproduced, via a scripted repro with fake timers (not shipped), that `loadDoc()` never flushes the *outgoing* document's dirty autosave before replacing content and switching `activeDocumentId` — unlike `EditorShell.tsx`'s own switch effect, which flushes first. Failure chain: edit Doc A inside the 5s autosave debounce window → open `DocInputModal` and load Doc B → the load's `docChanged` transaction re-triggers `debouncedSave`, clearing Doc A's pending flush and rescheduling around the now-replaced Doc B content → `createDocument()` sets `activeDocumentId` to Doc B and resets `isDirty: false` → `EditorShell`'s flush-before-switch guard re-reads `isDirty` fresh, finds it already false, and no-ops → Doc A's edit is silently lost, never written to localStorage, never recorded via `recordCommit`. This is a silent DATA-LOSS bug (not corruption), independent of the addToHistory fix. Filed as its own issue, **#122**, with a stated done-means and repro chain (`discovered-from: work-loop adversarial review of the PR for #117, 2026-08-27`).
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1101 passing + 10 skipped (up from 1100 on `main`).
+
+**PR #123 (branch `claude/loadDoc-undo-history-guard`, https://github.com/Vinylfigure/intent-ide/pull/123) is OPEN, not yet merged to `main` — awaiting operator review. PR body says "Closes #117" and honestly discloses issue #122 as a known, separate, unfixed bug rather than folding it in or omitting it.**
+
+Closes #117 (on merge). Files #122.
+
 ## [2026-08-25] `heldAnswers` leak on annotation removal — fix delivered, PR #106 open (not yet merged)
 
 Continues a `heldAnswers` leak-fix chain this changelog has no prior entries for (issue #95 → PR #102 → issue #103 → PR #106 → issue #107); #95/#102 predate this entry and are not detailed here.
