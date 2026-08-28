@@ -722,6 +722,16 @@ const graphCache = new Map<string, DocGraph>()
  */
 interface InflightEntry {
   promise: Promise<DocGraph>
+  /**
+   * Whether this promise's build will run the LLM branch of
+   * applyRequestedPasses (carry-forward + a live call attempt) — i.e. the
+   * caller's raw intent (`llmRequested`), NOT availability-gated. Carry-
+   * forward runs independent of whether a live model call can succeed, so a
+   * concurrent caller whose own intent is true must never be satisfied by an
+   * in-flight build whose intent was false, regardless of either caller's
+   * availability at the moment they ask (availability can change between
+   * builds sharing a warm cache entry).
+   */
   llm: boolean
   embeddings: boolean
   graphiti: boolean
@@ -949,8 +959,16 @@ export async function getDocGraph(
 
   const existing = inflight.get(hash)
   if (existing) {
+    // The llm clause compares against `llmRequested`, not `llmWanted`: an
+    // in-flight build that skipped carry-forward (llmRequested was false
+    // when IT started) must never satisfy a caller who wants carry-forward
+    // now, even if that caller happens to be unavailable too — availability
+    // gates only the live call inside applyRequestedPasses, never whether
+    // carry-forward itself runs. Using the availability-folded flag here
+    // reintroduces #127's exact bug one layer down, just triggered by an
+    // availability flip instead of a skipLlm mismatch between callers.
     const covers =
-      (existing.llm || !llmWanted) && (existing.embeddings || !embeddingsWanted) && (existing.graphiti || !graphitiWanted)
+      (existing.llm || !llmRequested) && (existing.embeddings || !embeddingsWanted) && (existing.graphiti || !graphitiWanted)
     if (covers) return existing.promise
 
     // The in-flight build (e.g. scheduleDocGraphRebuild's deterministic-only
@@ -975,7 +993,7 @@ export async function getDocGraph(
     })
     entry = {
       promise: built,
-      llm: existing.llm || llmWanted,
+      llm: existing.llm || llmRequested,
       embeddings: existing.embeddings || embeddingsWanted,
       graphiti: existing.graphiti || graphitiWanted,
     }
@@ -995,7 +1013,7 @@ export async function getDocGraph(
   })().finally(() => {
     if (inflight.get(hash) === entry) inflight.delete(hash)
   })
-  entry = { promise: built, llm: llmWanted, embeddings: embeddingsWanted, graphiti: graphitiWanted }
+  entry = { promise: built, llm: llmRequested, embeddings: embeddingsWanted, graphiti: graphitiWanted }
   inflight.set(hash, entry)
   return built
 }

@@ -593,6 +593,47 @@ describe('getDocGraph — incremental per-block updates', () => {
     expect(called).toBe(false) // never actually calls an unreachable provider
     expect(g2.edges.some((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11')).toBe(true)
   })
+
+  it('a concurrent caller wanting llm carry-forward is never satisfied by an in-flight build that skipped it, even when both callers are currently unavailable', async () => {
+    // Regression, round 2: the single-call fix above (llmRequested vs
+    // llmWanted) isn't enough on its own — the inflight `covers` check and
+    // `InflightEntry` bookkeeping must ALSO compare raw intent, not
+    // availability. Otherwise two concurrent callers who are BOTH currently
+    // unavailable (so their own llmWanted is false either way) can still
+    // differ in llmRequested (one skipped llm, one didn't), and the
+    // requesting one would silently inherit the skipping one's in-flight
+    // result — reintroducing #127's exact bug shape one layer down.
+    const propose = {
+      name: 'link_blocks',
+      input: { from_block_id: 'b10', to_block_id: 'b11', edge_type: 'depends-on' },
+    }
+    const doc1 = bigDoc('b', 30)
+    await getDocGraph(doc1, CONFIG, { callStructured: scripted([propose]) })
+
+    const doc2 = bigDoc('b', 30, { 20: 'Rewritten twentieth paragraph content.' })
+    const unavailableConfig: LLMConfig = { ...CONFIG, apiKey: '' }
+
+    // Background-shaped caller (skips llm entirely) reaches the inflight map
+    // first — both calls are constructed synchronously, back to back, so the
+    // second sees the first as in-flight (see the earlier
+    // "REAL production call shapes" test's comment for why this ordering is
+    // deterministic without fake timers).
+    const background = getDocGraph(doc2, unavailableConfig, {
+      skipLlm: true,
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+    // Wants llm carry-forward — does NOT set skipLlm — but is ALSO
+    // unavailable, so its own llmWanted is false too. Only llmRequested
+    // distinguishes it from `background`.
+    const wantsCarryForward = getDocGraph(doc2, unavailableConfig, {
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+
+    const [, result] = await Promise.all([background, wantsCarryForward])
+    expect(result.edges.some((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11')).toBe(true)
+  })
 })
 
 describe('getDocGraph cache', () => {
@@ -780,6 +821,34 @@ describe('getDocGraph cache', () => {
     expect(calls).toBe(1)
     expect(fullResult).toBe(backgroundResult)
     expect(backgroundResult.llmApplied).toBe(true)
+  })
+
+  it('two callers wanting genuinely DISJOINT capabilities (neither a subset of the other) both end up with what they asked for — chained, not lost', async () => {
+    // Neither "dedupe" (same/subset capabilities) nor the earlier "one caller
+    // wants strictly more" tests exercise this: caller X wants llm only,
+    // caller Y wants embeddings only. Y's continuation chains onto X's
+    // in-flight promise (serialized, not parallelized — a known, accepted
+    // trade-off of the "await then run only what's missing" design chosen
+    // for #127, not itself a bug), but the correctness property that matters
+    // is that NEITHER caller's requested capability is silently dropped.
+    const doc = docOf(p('b1', 'one'), p('b2', 'two'))
+
+    const llmOnly = getDocGraph(doc, CONFIG, {
+      skipEmbeddings: true,
+      skipGraphiti: true,
+      callStructured: scripted([]),
+    })
+    const embeddingsOnly = getDocGraph(doc, CONFIG, {
+      skipLlm: true,
+      skipGraphiti: true,
+      embeddingsEnabled: true,
+      embed: async () => null, // permanent no-op contract — still flips embeddingsApplied
+    })
+
+    const [llmResult, embeddingsResult] = await Promise.all([llmOnly, embeddingsOnly])
+    expect(llmResult).toBe(embeddingsResult) // chained onto the same graph object
+    expect(llmResult.llmApplied).toBe(true)
+    expect(llmResult.embeddingsApplied).toBe(true)
   })
 })
 
