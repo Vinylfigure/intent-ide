@@ -5,6 +5,26 @@ import { persist } from 'zustand/middleware'
 import type { Annotation } from '@/lib/annotations/types'
 import type { ChangeEntry, ChangeSet, ChangeSetStatus, VersionSnapshot } from '@/lib/changes/changeLog'
 import { generateId } from '@/lib/utils/id'
+import { useDocumentStore } from '@/stores/documentStore'
+
+/**
+ * Backfill a missing/undefined `documentId` on persisted entries/changeSets
+ * written before multi-document support existed (Phase 8, 2026-03-16) —
+ * mirrors annotationStore.ts's migrateAnnotations. Without this, such a
+ * record can never match any real activeDocumentId in a `documentId ===
+ * activeDocumentId` filter (ChangesPanel.tsx, StatusBar.tsx) and silently
+ * disappears from every view.
+ */
+export function migrateChanges(
+  entries: ChangeEntry[],
+  changeSets: ChangeSet[]
+): { entries: ChangeEntry[]; changeSets: ChangeSet[] } {
+  const activeDocumentId = useDocumentStore.getState().activeDocumentId ?? 'legacy'
+  return {
+    entries: entries.map((e) => ({ ...e, documentId: e.documentId ?? activeDocumentId })),
+    changeSets: changeSets.map((cs) => ({ ...cs, documentId: cs.documentId ?? activeDocumentId })),
+  }
+}
 
 const MAX_PERSISTED_ENTRIES = 500
 const MAX_PERSISTED_CHANGE_SETS = 100
@@ -234,7 +254,12 @@ export const useChangesStore = create<ChangesState>()(
         },
         removeItem: (name: string) => localStorage.removeItem(name),
       },
-      onRehydrateStorage: () => () => {
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          const migrated = migrateChanges(state.entries, state.changeSets)
+          state.entries = migrated.entries
+          state.changeSets = migrated.changeSets
+        }
         // Snapshots are not persisted — ensure empty array on rehydration
         const current = useChangesStore.getState()
         if (!current.snapshots || current.snapshots.length === 0) {
