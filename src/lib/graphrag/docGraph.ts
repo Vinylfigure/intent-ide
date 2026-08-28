@@ -914,13 +914,29 @@ export async function getDocGraph(
   } = {},
 ): Promise<DocGraph> {
   const hash = contentHash(doc)
-  const llmWanted = !deps.skipLlm && llmAvailable(config)
+  // `llmRequested` is the caller's raw intent (not skipped) — it's what gates
+  // entering the LLM branch in applyRequestedPasses, matching the ORIGINAL
+  // (pre-#127-fix) gate of `!deps.skipLlm && !graph.llmApplied`. That branch
+  // does more than call the model: it carries forward previously-cached LLM
+  // edges for unchanged blocks via findBestPriorGraph/carryForwardLlmEdges,
+  // which must still run even when the model is currently unreachable (a
+  // dropped API key must not silently erase edges the LLM already found on
+  // an earlier build). `llmWanted` folds in availability and is used ONLY
+  // for the cache-hit / inflight-capability bookkeeping below, where "will
+  // this build ever actually set llmApplied" is the right question — never
+  // as the gate for whether carry-forward runs.
+  const llmRequested = !deps.skipLlm
+  const llmWanted = llmRequested && llmAvailable(config)
   const embeddingsWanted =
     !deps.skipEmbeddings &&
     llmAvailable(config) &&
     (deps.embeddingsEnabled ?? (await embeddingsEnabledFromStore()))
   const graphitiWanted = !deps.skipGraphiti
-  const wanted: RequestedPasses = { llm: llmWanted, embeddings: embeddingsWanted, graphiti: graphitiWanted }
+  // What applyRequestedPasses actually attempts — llm uses raw intent
+  // (see above); embeddings/graphiti have no analogous caller-side
+  // side-effect independent of the call itself, so availability-aware is
+  // correct for them (matches original behavior).
+  const wanted: RequestedPasses = { llm: llmRequested, embeddings: embeddingsWanted, graphiti: graphitiWanted }
 
   const cached = graphCache.get(hash)
   if (cached && (cached.llmApplied || !llmWanted) && (cached.embeddingsApplied || !embeddingsWanted)) {

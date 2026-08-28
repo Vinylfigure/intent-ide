@@ -561,6 +561,38 @@ describe('getDocGraph — incremental per-block updates', () => {
     // Nothing carried forward from a graph that isn't the same document.
     expect(g.edges.some((e) => e.source === 'llm')).toBe(false)
   })
+
+  it('carries forward previously-found LLM edges even when the provider becomes unavailable on a later build', async () => {
+    // Regression: the #127 fix must not fold llmAvailable(config) into the
+    // gate that decides whether to run carryForwardLlmEdges — that gate is
+    // caller-side bookkeeping independent of whether a live model call can
+    // happen this time, and it ran unconditionally (as long as the caller
+    // didn't pass skipLlm) before #127. A dropped API key must not silently
+    // erase edges the LLM already found on an earlier, untouched block pair.
+    const propose = {
+      name: 'link_blocks',
+      input: { from_block_id: 'b10', to_block_id: 'b11', edge_type: 'depends-on' },
+    }
+    const doc1 = bigDoc('b', 30)
+    const g1 = await getDocGraph(doc1, CONFIG, { callStructured: scripted([propose]) })
+    expect(g1.edges.some((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11')).toBe(true)
+
+    // The provider becomes unavailable (key removed). Edit an UNRELATED
+    // block (b20) — b10/b11 are untouched — via the normal production call
+    // shape (no skipLlm, no skipEmbeddings).
+    const doc2 = bigDoc('b', 30, { 20: 'Rewritten twentieth paragraph content.' })
+    const unavailableConfig: LLMConfig = { ...CONFIG, apiKey: '' }
+    let called = false
+    const g2 = await getDocGraph(doc2, unavailableConfig, {
+      callStructured: async () => {
+        called = true
+        return { toolCalls: [] }
+      },
+    })
+
+    expect(called).toBe(false) // never actually calls an unreachable provider
+    expect(g2.edges.some((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11')).toBe(true)
+  })
 })
 
 describe('getDocGraph cache', () => {
@@ -680,6 +712,45 @@ describe('getDocGraph cache', () => {
     })
     expect(calledAgain).toBe(false)
     expect(g3.llmApplied).toBe(true)
+  })
+
+  it('the capability fix still holds under the REAL production call shapes (no skip/embeddingsEnabled overrides on the cascade side)', async () => {
+    // scheduleDocGraphRebuild and proposeCascadeEdits (orchestrator.ts) are
+    // called with different shapes than the earlier tests in this block used
+    // — neither passes embeddingsEnabled, so embeddingsWanted's computation
+    // hits the real `await embeddingsEnabledFromStore()` dynamic import
+    // before EITHER call reaches the inflight-dedupe check, unlike the
+    // synchronous-up-to-inflight-check tests above. This reproduces the exact
+    // interleaving the shipped fix has to survive in production, not just a
+    // deliberately simplified one.
+    const doc = docOf(p('b1', 'The budget is $50,000.'), p('b2', 'We spend half the budget on hosting.'))
+
+    // scheduleDocGraphRebuild's exact call shape.
+    const background = getDocGraph(doc, CONFIG, { skipLlm: true, skipEmbeddings: true, skipGraphiti: true })
+
+    // proposeCascadeEdits' exact call shape (orchestrator.ts:416) — only
+    // callStructured, nothing else.
+    const cascade = getDocGraph(doc, CONFIG, {
+      callStructured: scripted([
+        {
+          name: 'link_blocks',
+          input: {
+            from_block_id: 'b2',
+            to_block_id: 'b1',
+            edge_type: 'depends-on',
+            quoted_text: 'half the budget',
+          },
+        },
+      ]),
+    })
+
+    const [, cascadeResult] = await Promise.all([background, cascade])
+    expect(cascadeResult.llmApplied).toBe(true)
+    expect(cascadeResult.edges.find((e) => e.source === 'llm')).toMatchObject({
+      from: 'b2',
+      to: 'b1',
+      type: 'depends-on',
+    })
   })
 
   it('a caller wanting a subset of an in-flight fuller build just awaits it — no redundant model call', async () => {
