@@ -626,3 +626,30 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
     *   **PR body discloses #122 honestly:** states "Closes #117" and separately and plainly discloses issue #122 as a known, related-but-separate, unfixed bug — not folded in, not omitted.
     *   Verification: `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1101 passing + 10 skipped (up from 1100 on `main` at commit `acba817`).
 *   **Approval:** Pending — PR #123 open, awaiting operator review and merge.
+
+**[2026-08-28 00:00:00 UTC] - FEATURE_ADD**
+*   **Action:** Built a view/manage/purge UI for the `LEGACY_DOCUMENT_ID` migration bucket, consuming issue #133 — filed as a follow-up from PR #132's own adversarial review. Delivered as PR #135 (branch `claude/legacy-data-ui`, body "Closes #133") — **OPEN, stacked on unmerged PR #132, awaiting operator review and merge of both, not yet in `main`.**
+*   **Agent:** work-loop scheduled firing / Claude Code, one round of pre-push adversarial troublemaker review.
+*   **Context:** Issue #133 asked for a UI path to view/manage/purge the `LEGACY_DOCUMENT_ID` migration bucket that PR #132 (closes #128, still open, not yet merged to `main`) introduces. **This PR is stacked: its base branch is `claude/legacy-documentid-migration-fallback` (PR #132's branch), not `main`,** because the fix depends on `src/lib/documents/legacyDocumentId.ts`, which PR #132 introduces and which does not exist on `main` yet. PR #132 and a separate open PR #131 (closes #127) are unrelated prior-iteration work this firing did not touch, other than building on top of #132's branch content.
+*   **Decisions Logged:**
+    *   **New `changesStore.ts` action `removeByDocumentId(documentId)`** (filters `entries` + `changeSets`), mirroring `annotationStore.ts`'s existing action of the same name — `changesStore` had no equivalent action before this PR.
+    *   **New "Legacy data" section in `ApiKeyModal.tsx`'s API Configuration modal**, shown only when non-empty: counts of `LEGACY_DOCUMENT_ID`-scoped annotations/change-sets/changes, and a "Clear legacy data" button wired to both stores' `removeByDocumentId(LEGACY_DOCUMENT_ID)`.
+    *   **Deliberately rejected the issue's other suggested approach — making `LEGACY_DOCUMENT_ID` selectable as `activeDocumentId`:** verified via `EditorShell.tsx` that new annotations/changes are stamped `documentId: activeDocumentId` at creation time, so making the placeholder "active" would let new records leak into the bucket — a new contamination vector into the exact thing PR #132 was built to close off. A dedicated settings-panel view/clear affordance was used instead.
+    *   **Adversarial review verdict MERGE, no blocking findings.** MEDIUM, disclosed not fixed: "Clear legacy data" has no confirmation gate and is irreversible, foreclosing a hypothetical future content-matching un-merge recovery path `legacyDocumentId.ts`'s own doc comment describes as "left undone" (not abandoned) — judged acceptable because CLAUDE.md's HITL mandate is scoped to "global document changes," and this is orphaned metadata attached to no real, visible document, unlike `DocumentHubSidebar`'s Confirmation-gated document/collection delete; this same modal already has an unguarded irreversible "Reset" button for calibration stats as precedent. LOW, moot: `removeByDocumentId` doesn't touch `snapshots` (no `documentId` field on that model) — confirmed `createSnapshot()` has zero production call sites anywhere in `src/`, dead code today. LOW, cosmetic, not blocking: since the section renders on the sum of three counts, an individual count can read "0" in the rendered sentence.
+    *   **Pre-existing bug found, confirmed, NOT fixed here, filed as follow-up issue #134:** `DocumentHubSidebar.tsx`'s real document-delete handler only calls `useAnnotationStore.getState().removeByDocumentId`, never a `useChangesStore` equivalent (which did not exist until this PR added it) — so deleting a real document has always silently orphaned that document's changesStore entries/changeSets, independent of this PR (`discovered-from: work-loop adversarial review of the PR for #133, 2026-08-28`).
+    *   New test files: `src/stores/__tests__/changesStore.removeByDocumentId.test.ts` (2 tests), `src/components/Settings/__tests__/apiKeyModal.legacyData.test.tsx` (3 tests) — both mutation-tested (fail against reverted production code). Verification: `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1137 passing + 10 skipped on the PR branch (up from 1132 on PR #132's branch, the merge base).
+    *   **Carry-forward flagged:** once PR #132 merges to `main`, PR #135 needs a retarget/rebase — same pattern PR #130 followed for #125 after #123 merged.
+*   **Approval:** Pending — PR #135 open, stacked on unmerged PR #132, awaiting operator review and merge of both.
+
+**[2026-08-28 00:00:00 UTC] - PROCESS**
+*   **Action:** Recorded repo-wide open-PR/issue state for continuity at the close of this firing, not actioned this session.
+*   **Agent:** Code Librarian / Claude Code.
+*   **Context:** As of this sweep, four PRs are open, all green CI / clean `mergeable_state`, all awaiting operator review/merge.
+*   **Decisions Logged:**
+    *   **PR #130** (closes #122, supersedes and should replace #125, which went dirty) — not touched this firing.
+    *   **PR #131** (closes #127, docGraph inflight capability keying) — not touched this firing.
+    *   **PR #132** (closes #128, legacy documentId migration fallback) — not touched this firing directly; PR #135 above stacks on its branch content.
+    *   **PR #135** (closes #133, stacked on #132) — delivered this firing, see the entry above.
+    *   **PR #125 is superseded by #130** and should be closed, not merged, once #130 lands — operator's call, not actioned by this firing.
+    *   **Issue #134** (filed by this firing's adversarial review, see the entry above) is not yet consumed by any session.
+*   **Approval:** Human verified (record-keeping only; no code changed by this entry).
