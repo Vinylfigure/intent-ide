@@ -710,7 +710,61 @@ export async function augmentWithGraphitiEdges(
 
 const CACHE_MAX = 8
 const graphCache = new Map<string, DocGraph>()
-const inflight = new Map<string, Promise<DocGraph>>()
+
+/**
+ * One in-flight build per content hash, tagged with the capability set it was
+ * started with. Concurrent callers wanting the SAME (or a subset of the)
+ * capabilities dedupe onto it, as before. A caller wanting MORE than the
+ * in-flight build covers (e.g. a user-initiated cascade arriving while
+ * scheduleDocGraphRebuild's deterministic-only background build is still
+ * running) does NOT silently inherit the lower-capability result — see
+ * getDocGraph below.
+ */
+interface InflightEntry {
+  promise: Promise<DocGraph>
+  llm: boolean
+  embeddings: boolean
+  graphiti: boolean
+}
+const inflight = new Map<string, InflightEntry>()
+
+interface RequestedPasses {
+  llm: boolean
+  embeddings: boolean
+  graphiti: boolean
+}
+
+/** Runs whichever of the three augmentation passes `wanted` marks true and the graph doesn't already carry — mutates `graph` in place. */
+async function applyRequestedPasses(
+  graph: DocGraph,
+  hash: string,
+  config: LLMConfig,
+  deps: { callStructured?: CallStructuredFn; embed?: EmbedFn; graphiti?: GraphitiEdgeDeps },
+  wanted: RequestedPasses,
+): Promise<void> {
+  if (wanted.llm && !graph.llmApplied) {
+    let targetIds: Set<string> | undefined
+    const prior = findBestPriorGraph(graph, hash)
+    if (prior) {
+      // Union with the prior adjacency so far endpoints of DROPPED LLM edges
+      // re-enter the listing and can be re-proposed.
+      const changed = carryForwardLlmEdges(graph, prior)
+      targetIds = expandOneHop(graph, changed, prior.adjacency)
+    }
+    await augmentWithLlmEdges(graph, config, deps.callStructured ?? fetchStructured, targetIds)
+  }
+  if (wanted.embeddings && !graph.embeddingsApplied) {
+    await augmentWithEmbeddingEdges(graph, config, deps.embed)
+  }
+  // Graphiti entity edges: user-initiated builds only (same privacy stance as
+  // the LLM/embedding passes — background typing must never trigger MCP
+  // traffic). Deliberately NOT part of the cache-hit condition in getDocGraph:
+  // when FalkorDB is down (the usual dev state) a warm cache must not re-pay
+  // the connection attempt on every cascade.
+  if (wanted.graphiti && !graph.graphitiApplied) {
+    await augmentWithGraphitiEdges(graph, deps.graphiti)
+  }
+}
 
 function cacheGraph(hash: string, graph: DocGraph): void {
   graphCache.delete(hash)
@@ -860,58 +914,74 @@ export async function getDocGraph(
   } = {},
 ): Promise<DocGraph> {
   const hash = contentHash(doc)
-  const embeddingsOn =
+  const llmWanted = !deps.skipLlm && llmAvailable(config)
+  const embeddingsWanted =
     !deps.skipEmbeddings &&
     llmAvailable(config) &&
     (deps.embeddingsEnabled ?? (await embeddingsEnabledFromStore()))
+  const graphitiWanted = !deps.skipGraphiti
+  const wanted: RequestedPasses = { llm: llmWanted, embeddings: embeddingsWanted, graphiti: graphitiWanted }
+
   const cached = graphCache.get(hash)
-  if (
-    cached &&
-    (cached.llmApplied || deps.skipLlm || !llmAvailable(config)) &&
-    (cached.embeddingsApplied || !embeddingsOn)
-  ) {
+  if (cached && (cached.llmApplied || !llmWanted) && (cached.embeddingsApplied || !embeddingsWanted)) {
     // Cache hits publish too — a fresh page with a warm cache still needs the
     // UI store filled before the chip / edge paths can render. Synchronous
     // resolution: publish 'ready' directly, never a 'building' flicker.
     publishDocGraph(++publishSeq, 'ready', cached)
     return cached
   }
-  const pending = inflight.get(hash)
-  if (pending) return pending
+
+  const existing = inflight.get(hash)
+  if (existing) {
+    const covers =
+      (existing.llm || !llmWanted) && (existing.embeddings || !embeddingsWanted) && (existing.graphiti || !graphitiWanted)
+    if (covers) return existing.promise
+
+    // The in-flight build (e.g. scheduleDocGraphRebuild's deterministic-only
+    // background pass) was started without a capability this caller needs.
+    // Chain onto it rather than silently inheriting its result: await the
+    // SAME graph object, then run only the still-missing passes against it
+    // before caching/publishing. The chain is serialized on one object (this
+    // continuation only starts mutating once the prior build has fully
+    // finished), so there is no concurrent-mutation race, and a THIRD caller
+    // needing even more replaces this entry in `inflight` the same way.
+    const seq = ++publishSeq
+    publishDocGraph(seq, 'building')
+    let entry: InflightEntry
+    const built = (async () => {
+      const graph = await existing.promise
+      await applyRequestedPasses(graph, hash, config, deps, wanted)
+      cacheGraph(hash, graph)
+      publishDocGraph(seq, 'ready', graph)
+      return graph
+    })().finally(() => {
+      if (inflight.get(hash) === entry) inflight.delete(hash)
+    })
+    entry = {
+      promise: built,
+      llm: existing.llm || llmWanted,
+      embeddings: existing.embeddings || embeddingsWanted,
+      graphiti: existing.graphiti || graphitiWanted,
+    }
+    inflight.set(hash, entry)
+    return built
+  }
 
   const seq = ++publishSeq
   publishDocGraph(seq, 'building')
-  const promise = (async () => {
+  let entry: InflightEntry
+  const built = (async () => {
     const graph = cached ?? buildDeterministicGraph(doc)
-    if (!deps.skipLlm && !graph.llmApplied) {
-      let targetIds: Set<string> | undefined
-      const prior = findBestPriorGraph(graph, hash)
-      if (prior) {
-        const changed = carryForwardLlmEdges(graph, prior)
-        // Union with the prior adjacency so far endpoints of DROPPED LLM
-        // edges re-enter the listing and can be re-proposed.
-        targetIds = expandOneHop(graph, changed, prior.adjacency)
-      }
-      await augmentWithLlmEdges(graph, config, deps.callStructured ?? fetchStructured, targetIds)
-    }
-    if (embeddingsOn && !graph.embeddingsApplied) {
-      await augmentWithEmbeddingEdges(graph, config, deps.embed)
-    }
-    // Graphiti entity edges: user-initiated builds only (same privacy stance
-    // as the LLM/embedding passes — background typing must never trigger MCP
-    // traffic). Deliberately NOT part of the cache-hit condition above: when
-    // FalkorDB is down (the usual dev state) a warm cache must not re-pay the
-    // connection attempt on every cascade.
-    if (!deps.skipGraphiti && !graph.graphitiApplied) {
-      await augmentWithGraphitiEdges(graph, deps.graphiti)
-    }
+    await applyRequestedPasses(graph, hash, config, deps, wanted)
     cacheGraph(hash, graph)
     publishDocGraph(seq, 'ready', graph)
     return graph
-  })().finally(() => inflight.delete(hash))
-
-  inflight.set(hash, promise)
-  return promise
+  })().finally(() => {
+    if (inflight.get(hash) === entry) inflight.delete(hash)
+  })
+  entry = { promise: built, llm: llmWanted, embeddings: embeddingsWanted, graphiti: graphitiWanted }
+  inflight.set(hash, entry)
+  return built
 }
 
 export interface NeighborhoodEntry {

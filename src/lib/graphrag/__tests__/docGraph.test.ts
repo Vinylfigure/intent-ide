@@ -613,6 +613,103 @@ describe('getDocGraph cache', () => {
     expect(g.llmApplied).toBe(false)
     expect(g.nodes.has('b1')).toBe(true)
   })
+
+  it("a higher-capability caller arriving while a lower-capability build is in-flight gets the capability it asked for, not the in-flight build's result (issue #127)", async () => {
+    const doc = docOf(p('b1', 'The budget is $50,000.'), p('b2', 'We spend half the budget on hosting.'))
+
+    // scheduleDocGraphRebuild's background call: deterministic-only, exactly
+    // as it's invoked in production (skipLlm/skipEmbeddings/skipGraphiti all
+    // true). With no explicit embeddingsEnabled override this still resolves
+    // synchronously up to the inflight check (skipEmbeddings short-circuits
+    // the embeddingsWanted `&&` chain before it ever awaits the store read).
+    const background = getDocGraph(doc, CONFIG, {
+      skipLlm: true,
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+
+    // A user-initiated cascade for the SAME content hash arrives before the
+    // background build has finished — it wants the LLM pass. Passing
+    // embeddingsEnabled explicitly keeps this call's own embeddingsWanted
+    // computation synchronous too, so both calls reach the inflight-dedupe
+    // logic in the same tick and the race is deterministic (no fake timers
+    // needed).
+    const cascade = getDocGraph(doc, CONFIG, {
+      skipEmbeddings: true,
+      embeddingsEnabled: false,
+      skipGraphiti: true,
+      callStructured: scripted([
+        {
+          name: 'link_blocks',
+          input: {
+            from_block_id: 'b2',
+            to_block_id: 'b1',
+            edge_type: 'depends-on',
+            quoted_text: 'half the budget',
+          },
+        },
+      ]),
+    })
+
+    const [backgroundResult, cascadeResult] = await Promise.all([background, cascade])
+
+    // The bug: the cascade caller silently inherited the background build's
+    // deterministic-only promise and never ran the LLM pass it asked for.
+    expect(cascadeResult.llmApplied).toBe(true)
+    expect(cascadeResult.edges.find((e) => e.source === 'llm')).toMatchObject({
+      from: 'b2',
+      to: 'b1',
+      type: 'depends-on',
+    })
+
+    // Both callers end up looking at the same, now-upgraded graph object —
+    // the background caller isn't harmed by the chain, it just also sees the
+    // richer result once the continuation finishes.
+    expect(backgroundResult).toBe(cascadeResult)
+
+    // A later same-hash call with no skip flags at all is satisfied straight
+    // from cache — the upgrade was actually published, not just returned to
+    // the one caller that triggered it.
+    let calledAgain = false
+    const g3 = await getDocGraph(doc, CONFIG, {
+      skipGraphiti: true,
+      callStructured: async () => {
+        calledAgain = true
+        return { toolCalls: [] }
+      },
+    })
+    expect(calledAgain).toBe(false)
+    expect(g3.llmApplied).toBe(true)
+  })
+
+  it('a caller wanting a subset of an in-flight fuller build just awaits it — no redundant model call', async () => {
+    const doc = docOf(p('b1', 'one'), p('b2', 'two'))
+    let calls = 0
+    const slowLlm: CallStructuredFn = async () => {
+      calls++
+      await new Promise((r) => setTimeout(r, 5))
+      return { toolCalls: [] }
+    }
+
+    // The fuller build starts first this time.
+    const full = getDocGraph(doc, CONFIG, {
+      skipEmbeddings: true,
+      embeddingsEnabled: false,
+      skipGraphiti: true,
+      callStructured: slowLlm,
+    })
+    // A deterministic-only caller arrives while it's in flight.
+    const background = getDocGraph(doc, CONFIG, {
+      skipLlm: true,
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+
+    const [fullResult, backgroundResult] = await Promise.all([full, background])
+    expect(calls).toBe(1)
+    expect(fullResult).toBe(backgroundResult)
+    expect(backgroundResult.llmApplied).toBe(true)
+  })
 })
 
 describe('findEdgePath', () => {
