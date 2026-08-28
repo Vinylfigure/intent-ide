@@ -5,7 +5,26 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2026-08-27] StatusBar chip counts scoped to active document — fix delivered, PR #120 open (not yet merged)
+## [2026-08-27] StatusBar "N thinking…" chip scoped to active document — fix delivered, PR #124 open (not yet merged)
+
+Closes issue #121, filed as a follow-up from PR #120's own adversarial review (`discovered-from: work-loop adversarial review of PR #120 for #116, 2026-08-27`).
+
+### Fixed
+- **`StatusBar.tsx`'s `inFlightCount` selector (the "N thinking…" chip)** now filters on `a.documentId === activeDocumentId`, matching the other three chips in the same component (`annotationCount`, `changeSetCount`, `changeCount`) that PR #120/#116 already scoped. Previously counted in-flight (`pending`/`classified`/`resolving`) annotations across every document, so it could show "N thinking…" for unrelated background work on a document other than the one the user was viewing.
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**. Confirmed by repo-wide grep that no other place duplicates the `pending|classified|resolving` in-flight filter: `annotationStore.ts`'s `finalizeInterruptedAnnotations` uses the same status trio but for rehydration repair, not a display count (correctly out of scope); `DocumentHubSidebar.tsx`'s delete-confirmation count is an unrelated, intentionally different per-target-document filter. Every new test assertion was traced against the pre-fix filter and confirmed to fail on revert (not vacuous).
+- One minor, non-blocking coverage-parity nit raised and closed before push: the sibling #116 test file (`statusBar.activeDocumentScope.test.tsx`) has an explicit `activeDocumentId === null` case this file initially lacked; `documentId` is typed non-nullable `string` and `annotationStore.ts`'s `migrateAnnotations` unconditionally backfills a nullish `documentId` on hydration, so this was a coverage gap rather than an exploitable bug — the null-active-document test case was added before push.
+- `npm run test` — 1111 passing + 10 skipped on the PR branch (1110 on `main` at merge base `dcfbee4`, the commit that merged PR #120). `npm run typecheck` / `npm run lint` clean. New test file `src/components/Layout/__tests__/statusBar.inFlightScope.test.tsx` (4 tests).
+- No new follow-up issues filed — the fix was fully scoped to #121's done-means with no descoped remainder.
+
+**PR #124 (branch `claude/statusbar-inflight-scope`, https://github.com/Vinylfigure/intent-ide/pull/124, body "Closes #121") is OPEN, not yet merged to `main` — awaiting operator review.**
+
+Closes #121 (on merge).
+
+**Also for continuity, not actioned this session:** between the last memory-bank update (below) and this session, PR #119 (closes #115, "Gate collection delete behind a confirmation step") and PR #120 (closes #116) both **merged**; issue #117 gained an open PR #123 (not yet merged — `mergeable_state` shows a merge conflict against `main` but CI checks are green, left for its own review/resolution); issue #122 was filed (discovered-from PR #123/#117's adversarial review), not yet consumed.
+
+## [2026-08-27] StatusBar chip counts scoped to active document — fix delivered, PR #120 MERGED
 
 ### Fixed
 - **`StatusBar.tsx`'s annotation/change-set/change count chips** now filter by `documentId === activeDocumentId`, matching every other consumer of `annotationStore`/`changesStore` (`AnnotationPanel.tsx`, `ChangesPanel.tsx`). Previously read raw, unfiltered totals across all documents. Fixed by adding `activeDocumentId` from `useDocumentStore` and filtering all three chip counts by it.
@@ -15,9 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Two findings surfaced, both non-blocking: **(1) medium** — `inFlightCount` (the "N thinking…" chip) remains unscoped across all documents, since `documentStore.setActiveDocument` has no side effects to pause background classification/resolution on document switch; deliberately out of #116's stated scope, filed as follow-up **issue #121**. **(2) low, pre-existing, not introduced by this PR** — `changesStore.ts` has no legacy-data migration for `entries`/`changeSets` analogous to `annotationStore.ts`'s `migrateAnnotations`, so a pre-multi-document persisted change record with a missing `documentId` silently vanishes from `ChangesPanel.tsx`'s and now `StatusBar.tsx`'s filtered views; predates this PR (same filter already existed in `ChangesPanel.tsx`), not filed as a separate GitHub issue.
 - `npm run test` — 1103 passing + 10 skipped on the PR branch (1100 before this branch). `npm run typecheck` / `npm run lint` clean. New test file `src/components/Layout/__tests__/statusBar.activeDocumentScope.test.tsx`.
 
-**PR #120 (branch `claude/statusbar-active-doc-scope`, https://github.com/Vinylfigure/intent-ide/pull/120, body "Closes #116") is OPEN, not yet merged to `main` — awaiting operator review.**
+**PR #120 (branch `claude/statusbar-active-doc-scope`, https://github.com/Vinylfigure/intent-ide/pull/120, body "Closes #116") MERGED to `main` — confirmed merged as of the PR #124 session above (2026-08-27); PR #124 cites the merge commit `dcfbee4` as its merge base.**
 
-Closes #116 (on merge). Files #121.
+Closes #116. Files #121 — fixed by PR #124 above.
 
 ## [2026-08-27] `loadDoc()` undo-history guard — fix delivered, PR #123 open (not yet merged)
 

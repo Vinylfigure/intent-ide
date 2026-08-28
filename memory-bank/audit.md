@@ -591,6 +591,30 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
 *   **Approval:** Pending — PR #106 open, awaiting operator review and merge.
 
 **[2026-08-27 00:00:00 UTC] - BUG_FIX**
+*   **Action:** Fixed the `inFlightCount` ("N thinking…" chip) scoping gap left open by PR #120/#116 — closes issue #121, filed as a follow-up by PR #120's own adversarial review. Delivered as PR #124 (branch `claude/statusbar-inflight-scope`, https://github.com/Vinylfigure/intent-ide/pull/124, body "Closes #121") — **OPEN, pending operator review and merge, not yet in `main`.**
+*   **Agent:** work-loop scheduled firing / Claude Code, one round of pre-push adversarial troublemaker review.
+*   **Context:** PR #120 (2026-08-27, above) scoped `StatusBar.tsx`'s `annotationCount`/`changeSetCount`/`changeCount` chips to the active document but deliberately left `inFlightCount` (the "N thinking…" chip) out of #116's stated scope, since `documentStore.setActiveDocument` has no side effects pausing background classification/resolution on document switch — so the chip could count in-flight work on a document other than the one on screen. That gap was filed as issue #121 during PR #120's own review.
+*   **Decisions Logged:**
+    *   `StatusBar.tsx`'s `inFlightCount` selector now filters `a.documentId === activeDocumentId`, matching the pattern PR #120 already applied to the other three chips.
+    *   **Adversarial review verdict MERGE, first round:** repo-wide grep confirmed no other code path duplicates the `pending|classified|resolving` in-flight filter for a display count — `annotationStore.ts`'s `finalizeInterruptedAnnotations` uses the same status trio but for rehydration repair (correctly out of scope), and `DocumentHubSidebar.tsx`'s delete-confirmation count is an unrelated, intentionally different per-target-document filter. Every new test assertion was traced against the pre-fix filter and confirmed to fail on revert.
+    *   **One non-blocking coverage-parity nit, closed before push:** the sibling #116 test file had an explicit `activeDocumentId === null` case this file initially lacked. Traced and confirmed a coverage gap rather than an exploitable bug — `documentId` is typed non-nullable `string` and `annotationStore.ts`'s `migrateAnnotations` unconditionally backfills a nullish `documentId` on hydration — but the null-active-document test was added anyway before push to close the parity gap.
+    *   New test file `src/components/Layout/__tests__/statusBar.inFlightScope.test.tsx` (4 tests). Verification: 1111 passing + 10 skipped on the PR branch (1110 on `main` at merge base `dcfbee4`, the commit that merged PR #120); `npm run typecheck` / `npm run lint` clean.
+    *   No new follow-up issues filed — the fix was fully scoped to #121's stated done-means with no descoped remainder.
+*   **Approval:** Pending — PR #124 open, awaiting operator review and merge.
+
+**[2026-08-27 00:00:00 UTC] - PROCESS**
+*   **Action:** Reconciled merge-status drift in the memory bank for entries recorded as "OPEN" that have since merged, and recorded other repo activity not actioned this session, for continuity.
+*   **Agent:** Code Librarian / Claude Code.
+*   **Context:** The PR #124 session confirmed (merge base `dcfbee4`) that **PR #120** (closes #116, "StatusBar chip counts scoped to active document") had merged to `main` since its 2026-08-27 entry above was written as OPEN; `progress.md` and `changelog.md` are updated in place to reflect this (the corresponding audit entries above are left as originally written, per this ledger's append-only rule — this entry records the correction rather than editing history).
+*   **Decisions Logged:**
+    *   **PR #120 MERGED** (closes #116).
+    *   Also confirmed merged in the same window: **PR #119** (closes #115, "Gate collection delete behind a confirmation step") — no prior entry existed in this ledger for #115/PR #119; recorded here for the first time as a merged fact, not narrated in detail.
+    *   **Issue #117 has an open PR #123** (not yet merged — `mergeable_state` shows a merge conflict against `main`, but CI checks report green) — not touched this session, left for its own review/resolution pass.
+    *   **Issue #122 was filed** (discovered-from PR #123/#117's adversarial review) — not yet consumed by any session.
+    *   PR #106 (closes #103, `heldAnswers` leak fix) status is unchanged — still OPEN as of this entry; no new information on it this session.
+*   **Approval:** Human verified (record-keeping only; no code changed by this entry).
+
+**[2026-08-27 00:00:00 UTC] - BUG_FIX**
 *   **Action:** Fixed a document-load undo-history guard gap — consuming issue #117 — and separately found, reproduced, and deliberately did not fix a distinct silent-data-loss bug in the same function. Delivered as PR #123 (branch `claude/loadDoc-undo-history-guard`, https://github.com/Vinylfigure/intent-ide/pull/123, body "Closes #117") — **OPEN, pending operator review and merge, not yet in `main`.**
 *   **Agent:** work-loop scheduled firing / Claude Code, with an adversarial troublemaker subagent review.
 *   **Context:** Issue #117 reported that creating a new document leaves its editor-replace transaction in undo history, risking cross-document content bleed via Cmd-Z. `DocInputModal.tsx`'s `loadDoc()` (the single function shared by Blank/Paste/Generate/Import) dispatched its full-content `replaceWith` transaction without `tr.setMeta('addToHistory', false)`, unlike `EditorShell.tsx`'s own document-switch path, which was given exactly this guard on 2026-07-09 (v8.4 candidate, PR #4) precisely to stop undo from resurrecting a previous document's content under a new document's id. `loadDoc()` was a second, previously-unnoticed site with the identical unguarded pattern.
