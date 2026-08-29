@@ -653,3 +653,29 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
     *   **PR #125 is superseded by #130** and should be closed, not merged, once #130 lands — operator's call, not actioned by this firing.
     *   **Issue #134** (filed by this firing's adversarial review, see the entry above) is not yet consumed by any session.
 *   **Approval:** Human verified (record-keeping only; no code changed by this entry).
+
+**[2026-08-29 00:00:00 UTC] - BUG_FIX**
+*   **Action:** Wired `changesStore`'s new `removeByDocumentId` action into the real document-delete handler, consuming issue #134. Delivered as PR #136 (branch `claude/changesstore-delete-wiring`, base `claude/legacy-data-ui`, https://github.com/Vinylfigure/intent-ide/pull/136) — **OPEN, stacked on unmerged PR #135 (itself stacked on unmerged PR #132), awaiting operator merge of all three, not yet in `main`.**
+*   **Agent:** work-loop scheduled firing / Claude Code, one round of pre-push adversarial troublemaker review.
+*   **Context:** Issue #134 (task: label, filed 2026-08-28, `discovered-from: work-loop adversarial review of the PR for #133, 2026-08-28`) recorded that `DocumentHubSidebar.tsx`'s `handleDeleteDocument` called `useAnnotationStore.getState().removeByDocumentId(documentId)` (the fix for annotations landed via #107/PR #106) but never called an equivalent for `changesStore` — because until PR #135 `changesStore.ts` had no `removeByDocumentId` action at all. PR #135 added that action to close #133; #134's scope was purely wiring the already-added action into the document-delete handler. **PR #136 is stacked: its base branch is `claude/legacy-data-ui` (PR #135's branch), not `main`,** because the action it depends on doesn't exist on `main` yet.
+*   **Decisions Logged:**
+    *   **`src/components/Layout/DocumentHubSidebar.tsx`:** added `import { useChangesStore } from '@/stores/changesStore'`; `handleDeleteDocument` now also calls `useChangesStore.getState().removeByDocumentId(documentId)`, right after the existing `useAnnotationStore` call and before `deleteDocument(documentId)`.
+    *   **New test file `src/components/Layout/__tests__/documentHubSidebar.deleteClearsChanges.test.tsx`** (2 tests): deleting a document via the UI confirmation flow removes only that document's `changesStore` entries/changeSets, others untouched; cancelling leaves `changesStore` untouched.
+    *   **Confirmed out of scope, not touched:** `deleteCollection` (`documentStore.ts`) never cascade-deletes member documents (only strips `collectionIds`), so it has no analogous gap — verified by reading the function directly.
+    *   **Adversarial review verdict MERGE, no blocking findings.** Independently reproduced typecheck/lint/test and the mutation test (stashed the fix, confirmed the new test fails with the `e-1` entry surviving deletion; restored, confirmed green). Independently re-verified the `deleteCollection` out-of-scope claim by reading `documentStore.ts` directly. Grepped repo-wide for `deleteDocument(` — `DocumentHubSidebar.tsx` is the only call site; both its `onDelete` entry points (all-documents row, expanded-collection row) funnel through the same `handleDeleteDocument`, so one test covers both.
+    *   **One LOW, disclosed, not fixed, pre-existing from #135 (not this diff):** `changesStore.removeByDocumentId` doesn't touch `snapshots` (`VersionSnapshot` has no `documentId` field) — mitigated since snapshots are never persisted (`onRehydrateStorage` always resets to `[]`), so it's an in-memory-only, session-bounded gap, not a storage leak. Not filed as a new issue (moot/pre-existing, not blocking).
+    *   Verification: `npm run typecheck` clean, `npm run lint` clean, `npm run test` — **1139 passing + 10 skipped** on the PR branch (up from 1137 on PR #135's branch; +2 new tests).
+    *   **Stack depth flagged:** this is now a 3-deep PR stack — `main` ← #132 (closes #128) ← #135 (closes #133, stacked on #132) ← #136 (closes #134, stacked on #135). Once #135 merges, PR #136 needs a retarget/rebase — same pattern PR #130 followed for #125 after #123 merged.
+*   **Approval:** Pending — PR #136 open, stacked on unmerged PR #135 (itself stacked on unmerged PR #132), awaiting operator merge of all three.
+
+**[2026-08-29 00:00:00 UTC] - PROCESS**
+*   **Action:** Recorded repo-wide open-PR/issue state for continuity at the close of this firing, not actioned this session.
+*   **Agent:** Code Librarian / Claude Code.
+*   **Context:** As of this firing's ready-sweep, four PRs besides #136 are open, all green CI, all `mergeable_state: clean` except one.
+*   **Decisions Logged:**
+    *   **PR #135** (closes #133, stacked on #132) — not touched this firing directly; PR #136 above stacks on its branch content.
+    *   **PR #132** (closes #128, base `main`) — not touched this firing.
+    *   **PR #131** (closes #127, base `main`) — not touched this firing.
+    *   **PR #130** (closes #122, base `main`, supersedes and should replace #125 which is now `mergeable_state: dirty` — #130's own body says close #125 without merging once #130 lands) — not touched this firing.
+    *   None of these had red checks, so per the work-loop skill's priority rule they did not outrank starting new work on issue #134.
+*   **Approval:** Human verified (record-keeping only; no code changed by this entry).
