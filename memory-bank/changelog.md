@@ -5,6 +5,23 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-08-30] `getDocGraph` Graphiti fast-cache-hit staleness — fix delivered, PR #139 open (not yet merged)
+
+Closes issue #137.
+
+### Fixed
+- **`getDocGraph`'s fast cache-hit path** in `src/lib/graphrag/docGraph.ts` never checked `cached.graphitiApplied` — once a document's graph had `llmApplied`+`embeddingsApplied` satisfied, every later `getDocGraph` call for the SAME unchanged content hash skipped the Graphiti entity pass forever, even though `episodeIngestion.ts`'s `ingestAnnotationEpisode`/`ingestEditEpisode` keep feeding new episodes into Graphiti on every resolved annotation (including ask/dig/flag types that never touch document text). New entities became permanently invisible to an already-built graph.
+- New module-level generation counter in `episodeIngestion.ts` (`getEpisodeGeneration()`/`resetEpisodeGeneration()`, bumped only on a successful `addEpisode`); new `DocGraph.graphitiEpisodeGen` field (-1 = never attempted) recording the generation as of the graph's last Graphiti attempt (success or failure). `augmentWithGraphitiEdges`'s guard moved from `graphitiApplied` to `graphitiEpisodeGen === currentGen`; `getDocGraph`'s fast-path condition gained a third clause so a stale-generation warm cache falls through to a real retry (background/`skipGraphiti` calls unaffected).
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**. Findings addressed before push: (1) added an end-to-end test exercising the REAL production wiring with no DI override (`episodeGeneration.test.ts`'s "real wiring" test — the other 3 new tests in `docGraph.test.ts` all inject `episodeGeneration` directly, which the reviewer flagged as a gap); (2) documented the under-recording-during-contention edge case (currentGen snapshotted before the ~1.5s MCP round trip — self-correcting, not a bug) in `augmentWithGraphitiEdges`'s doc comment; (3) hardened `graphitiEdges.test.ts`'s `beforeEach` to reset the episode-generation counter, since some of its tests implicitly depend on the real counter never having moved.
+- Filed follow-up **issue #138** (NOT fixed here, deliberately descoped): a new invariant break the fix introduces — a cached `DocGraph` can now be mutated-and-republished under the SAME object reference by a retry-in-place, and `docGraphStore`'s Zustand `Object.is` bail-out means an already-mounted "why this proposal?" explainer (`ProposedEditControl.tsx`) could show stale evidence until some unrelated re-render. Confirmed this does NOT affect actual cascade discovery — `orchestrator.ts`'s `proposeCascadeEdits` always awaits a fresh `getDocGraph` return value directly, never the store.
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1129 passing + 10 skipped (up from 1120 on `main` at merge base `2f388a9`). New test file `src/lib/graphrag/__tests__/episodeGeneration.test.ts` (6 tests); 3 new tests in `docGraph.test.ts` ("getDocGraph — Graphiti episode-generation retry"), mutation-tested — reverting only `docGraph.ts`/`episodeIngestion.ts` reproduces the exact bug and fails all 3. `graphitiEdges.test.ts` and `entailmentCheck.test.ts` updated for the new required `graphitiEpisodeGen` field / test-isolation hardening.
+
+**PR #139 (branch `claude/docgraph-graphiti-generation-refresh`, https://github.com/Vinylfigure/intent-ide/pull/139, body "Closes #137") is OPEN, not yet merged to `main` — awaiting operator review.**
+
+Closes #137 (on merge). Files #138.
+
 ## [2026-08-27] StatusBar "N thinking…" chip scoped to active document — fix delivered, PR #124 open (not yet merged)
 
 Closes issue #121, filed as a follow-up from PR #120's own adversarial review (`discovered-from: work-loop adversarial review of PR #120 for #116, 2026-08-27`).
