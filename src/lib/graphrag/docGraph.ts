@@ -1000,7 +1000,17 @@ export async function getDocGraph(
   const cached = graphCache.get(hash)
   if (
     cached &&
-    (cached.llmApplied || !llmWanted) &&
+    // `!llmRequested`, not `!llmWanted`: the same intent-vs-availability
+    // distinction from the top of this function applies here too — a cached
+    // graph that never ran carry-forward (because the caller's raw intent
+    // was skipLlm) must not be treated as a hit for a caller who DOES want
+    // carry-forward now, even if that caller is currently unavailable. Using
+    // the availability-gated flag here let an unavailable-but-requesting
+    // caller silently accept a stale cache entry missing edges that
+    // carry-forward would have restored — the same bug shape already fixed
+    // for the `wanted` object above and the inflight `covers` check below,
+    // just one call site further along.
+    (cached.llmApplied || !llmRequested) &&
     (cached.embeddingsApplied || !embeddingsWanted) &&
     // A prior Graphiti attempt (success or failure) at the CURRENT episode
     // generation is still good; skipGraphiti call sites never need it at all.

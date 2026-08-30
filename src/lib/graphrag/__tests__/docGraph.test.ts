@@ -636,6 +636,48 @@ describe('getDocGraph — incremental per-block updates', () => {
     const [, result] = await Promise.all([background, wantsCarryForward])
     expect(result.edges.some((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11')).toBe(true)
   })
+
+  it('the fast cache-hit path does not treat provider-unavailability as license to skip carry-forward for a hash a background build already cached', async () => {
+    // Regression, one layer further than round 1/round 2 above (found while
+    // reconciling this file's merge with PR #131 for PR #139/#137): both
+    // `wanted` (single-call) and the inflight `covers` check were fixed to
+    // compare `llmRequested` rather than `llmWanted`, but the FAST cache-hit
+    // condition at the top of getDocGraph still compared `!llmWanted` — so a
+    // hash already cached by a completed background (skipLlm) build, with
+    // the provider now unavailable, was treated as a cache HIT by a later,
+    // separate caller who DOES want carry-forward — never even reaching
+    // applyRequestedPasses/carryForwardLlmEdges. Unlike the round-2 test
+    // above, the background build here is awaited to completion FIRST so
+    // the second call goes through the cache-hit branch, not the inflight
+    // map.
+    const propose = {
+      name: 'link_blocks',
+      input: { from_block_id: 'b10', to_block_id: 'b11', edge_type: 'depends-on' },
+    }
+    const doc1 = bigDoc('b', 30)
+    await getDocGraph(doc1, CONFIG, { callStructured: scripted([propose]) })
+
+    const doc2 = bigDoc('b', 30, { 20: 'Rewritten twentieth paragraph content.' })
+    const unavailableConfig: LLMConfig = { ...CONFIG, apiKey: '' }
+
+    // A background (skipLlm) build for doc2's hash completes first and warms
+    // the cache with llmApplied: false.
+    await getDocGraph(doc2, unavailableConfig, {
+      skipLlm: true,
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+
+    // A later, separate call for the SAME hash wants carry-forward but is
+    // also currently unavailable — only llmRequested distinguishes it from
+    // the background call above.
+    const g2 = await getDocGraph(doc2, unavailableConfig, {
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+
+    expect(g2.edges.some((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11')).toBe(true)
+  })
 })
 
 describe('getDocGraph cache', () => {
