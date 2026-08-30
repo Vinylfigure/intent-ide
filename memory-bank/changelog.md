@@ -5,6 +5,25 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-08-29] `changesStore` wiring for document delete — fix delivered, PR #136 open, stacked on unmerged PR #135
+
+Closes issue #134 (task: label, filed 2026-08-28, `discovered-from: work-loop adversarial review of the PR for #133, 2026-08-28`). `DocumentHubSidebar.tsx`'s `handleDeleteDocument` called `useAnnotationStore.getState().removeByDocumentId(documentId)` (fixed for annotations by #107/PR #106) but never called the `changesStore` equivalent, because until PR #135 `changesStore.ts` had no `removeByDocumentId` action at all. #135 added that action (for #133); #134's scope was purely wiring it into the document-delete handler. **PR #136's base branch is `claude/legacy-data-ui` (PR #135's branch), not `main`** — the `removeByDocumentId` action it depends on doesn't exist on `main` yet.
+
+### Fixed
+- **`src/components/Layout/DocumentHubSidebar.tsx`:** added `import { useChangesStore } from '@/stores/changesStore'`; `handleDeleteDocument` now also calls `useChangesStore.getState().removeByDocumentId(documentId)`, right after the existing `useAnnotationStore` call and before `deleteDocument(documentId)`.
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**, no blocking findings. Independently reproduced typecheck/lint/test and the mutation test (stashed the fix, confirmed the new test fails with the `e-1` entry surviving deletion; restored, confirmed green). Independently re-verified that `deleteCollection` (`documentStore.ts`) has no analogous gap — it never cascade-deletes member documents, only strips `collectionIds` — by reading the function directly. Grepped repo-wide for `deleteDocument(` — `DocumentHubSidebar.tsx` is the only call site; both its `onDelete` entry points (all-documents row, expanded-collection row) funnel through the same `handleDeleteDocument`, so one test covers both.
+- **One LOW, disclosed, not fixed, pre-existing from #135 (not this diff):** `changesStore.removeByDocumentId` doesn't touch `snapshots` (`VersionSnapshot` has no `documentId` field) — mitigated since snapshots are never persisted (`onRehydrateStorage` always resets to `[]`), so it's an in-memory-only, session-bounded gap, not a storage leak. Not filed as a new issue.
+- New test file `src/components/Layout/__tests__/documentHubSidebar.deleteClearsChanges.test.tsx` (2 tests): deleting a document via the UI confirmation flow removes only that document's `changesStore` entries/changeSets, others untouched; cancelling leaves `changesStore` untouched.
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — **1139 passing + 10 skipped** (up from 1137 on PR #135's branch; +2 new tests).
+
+**PR #136 (branch `claude/changesstore-delete-wiring`, https://github.com/Vinylfigure/intent-ide/pull/136, base `claude/legacy-data-ui`) is OPEN — stacked 3 deep: `main` ← #132 (closes #128) ← #135 (closes #133, stacked on #132) ← #136 (closes #134, stacked on #135). Awaiting #132 and #135 to merge first (this PR's base auto-retargets to `main` once #135 merges, or needs a quick rebase, same pattern PR #130 used for #125 after #123 merged), then awaiting operator review/merge itself.**
+
+Closes #134 (on merge, after #132 and #135).
+
+**Also for continuity, not actioned this firing:** as of this firing's ready-sweep, four other open PRs exist, all green CI, all `mergeable_state: clean` except one: PR #135 (closes #133, stacked on #132), PR #132 (closes #128, base `main`), PR #131 (closes #127, base `main`), PR #130 (closes #122, base `main`, supersedes and should replace #125 which is now `mergeable_state: dirty` — #130's own body says close #125 without merging once #130 lands). None had red checks, so per the work-loop skill's priority rule they didn't outrank starting new work on #134.
+
 ## [2026-08-28] Legacy-data view/manage/purge UI for the `LEGACY_DOCUMENT_ID` bucket — fix delivered, PR #135 open, stacked on unmerged PR #132
 
 Closes issue #133 ("no UI path to view/manage/purge the LEGACY_DOCUMENT_ID migration bucket"), filed as a follow-up from PR #132's own adversarial review. **PR #135's base branch is `claude/legacy-documentid-migration-fallback` (PR #132's branch), not `main`** — #133's fix depends on `src/lib/documents/legacyDocumentId.ts`, which PR #132 introduces and which does not exist on `main` yet.

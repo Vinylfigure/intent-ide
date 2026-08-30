@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import { useDocumentStore, type CollectionMeta, type DocumentMeta } from '@/stores/documentStore'
 import { useAnnotationStore } from '@/stores/annotationStore'
+import { useChangesStore } from '@/stores/changesStore'
 import { Confirmation } from '@/components/ui/Confirmation'
 
 function sortDocsByRecent(docs: DocumentMeta[]): DocumentMeta[] {
@@ -26,9 +27,12 @@ export function DocumentHubSidebar() {
   // Deleting a document must also purge its annotations (and, via remove()'s
   // own purge, any held answers) — otherwise they're orphaned forever, still
   // occupying the persisted annotations array but permanently unrenderable
-  // since every list/map view filters by documentId (#107).
+  // since every list/map view filters by documentId (#107) — and, since
+  // #134, its changesStore entries/changeSets too, which had the identical
+  // orphaning gap until changesStore gained its own removeByDocumentId (#133).
   const handleDeleteDocument = (documentId: string) => {
     useAnnotationStore.getState().removeByDocumentId(documentId)
+    useChangesStore.getState().removeByDocumentId(documentId)
     deleteDocument(documentId)
   }
 
