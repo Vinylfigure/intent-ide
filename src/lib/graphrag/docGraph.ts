@@ -24,6 +24,16 @@ import { getEpisodeGeneration } from './episodeIngestion'
  *
  * Positions stored on nodes are build-time snapshots for ordering only — every
  * consumer re-resolves blocks against the live doc via findBlockById.
+ *
+ * NOT a stable-once-built value object: a cached graph can be mutated AND
+ * re-published under the SAME object reference by a later `getDocGraph` call
+ * for the same content hash — e.g. a Graphiti retry after a new episode
+ * lands (see `graphitiEpisodeGen`). `docGraphStore`'s Zustand selector
+ * bails out on `Object.is` equality, so an already-mounted component that
+ * isn't re-rendering for some other reason at that moment can read a
+ * momentarily-stale `edges`/`adjacency` off an old render. `proposeCascadeEdits`
+ * is unaffected (it always awaits a fresh `getDocGraph` return value); this
+ * only risks a stale "why this proposal?" explainer line — see #138.
  */
 
 export interface DocGraphNode {
@@ -632,6 +642,11 @@ async function withDeadline<T>(
  * `ingestAnnotationEpisode`/`ingestEditEpisode`) bumps the generation and
  * forces exactly one more attempt on the next call, even for an unchanged
  * content hash and even after a prior success.
+ *
+ * `currentGen` is snapshotted before the (up to GRAPHITI_TIMEOUT_MS) MCP
+ * round trip, so an episode landing mid-call is recorded as one generation
+ * stale — self-correcting, since the next `getDocGraph` call recomputes the
+ * live generation and detects the mismatch again; never a permanent miss.
  */
 export async function augmentWithGraphitiEdges(
   graph: DocGraph,

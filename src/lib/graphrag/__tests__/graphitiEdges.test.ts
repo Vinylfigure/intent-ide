@@ -9,6 +9,7 @@ import {
   invalidateDocGraphCache,
   type GraphitiEdgeDeps,
 } from '../docGraph'
+import { resetEpisodeGeneration } from '../episodeIngestion'
 import type { GraphNode, SubgraphResult } from '@/lib/mcp/graphitiClient'
 
 const CONFIG: LLMConfig = { provider: 'claude', apiKey: 'test-key', model: 'test-model' }
@@ -38,6 +39,10 @@ function scriptedClient(
 
 beforeEach(() => {
   invalidateDocGraphCache()
+  // This file's real getEpisodeGeneration() calls (no episodeGeneration
+  // override in most tests here) must not depend on execution order or
+  // another suite's module-scoped counter state.
+  resetEpisodeGeneration()
 })
 
 describe('augmentWithGraphitiEdges', () => {
