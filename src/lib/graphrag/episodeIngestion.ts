@@ -10,6 +10,25 @@ import { addEpisode, type Episode } from '@/lib/mcp/graphitiClient'
 import type { Annotation } from '@/lib/annotations/types'
 
 /**
+ * Monotonic counter bumped on every successful `addEpisode` call (from either
+ * function below). `docGraph.ts`'s Graphiti pass records the generation as of
+ * its last attempt per graph object, so a bump here — new knowledge-graph
+ * content, even for an unchanged document content hash — is the signal that
+ * earns exactly one retry on the next `getDocGraph` call, instead of that
+ * content staying permanently invisible to an already-built graph.
+ */
+let episodeGeneration = 0
+
+export function getEpisodeGeneration(): number {
+  return episodeGeneration
+}
+
+/** Test hygiene only — resets the counter between test files/suites. */
+export function resetEpisodeGeneration(): void {
+  episodeGeneration = 0
+}
+
+/**
  * Ingest a resolved annotation as a Graphiti Episode.
  * Silently no-ops if the MCP server is unreachable (non-blocking).
  */
@@ -27,6 +46,7 @@ export async function ingestAnnotationEpisode(annotation: Annotation): Promise<b
 
   try {
     await addEpisode(episode)
+    episodeGeneration++
     return true
   } catch {
     // MCP server may not be running — this is non-blocking
@@ -53,6 +73,7 @@ export async function ingestEditEpisode(
 
   try {
     await addEpisode(episode)
+    episodeGeneration++
     return true
   } catch {
     return false

@@ -14,7 +14,9 @@ import {
   invalidateDocGraphCache,
   SOURCE_PRIORITY,
   type DocGraphEdge,
+  type GraphitiEdgeDeps,
 } from '../docGraph'
+import type { GraphNode, SubgraphResult } from '@/lib/mcp/graphitiClient'
 
 const CONFIG: LLMConfig = { provider: 'claude', apiKey: 'test-key', model: 'test-model' }
 
@@ -612,6 +614,107 @@ describe('getDocGraph cache', () => {
     expect(called).toBe(false)
     expect(g.llmApplied).toBe(false)
     expect(g.nodes.has('b1')).toBe(true)
+  })
+})
+
+describe('getDocGraph — Graphiti episode-generation retry', () => {
+  function entity(name: string, uuid = `uuid-${name}`): GraphNode {
+    return { uuid, name, summary: '' }
+  }
+
+  /** Scripted MCP client: fixed searchNodes hits, no subgraph expansion. */
+  function scriptedGraphiti(hits: GraphNode[]): Required<Pick<GraphitiEdgeDeps, 'searchNodes' | 'getSubgraph'>> {
+    return {
+      searchNodes: vi.fn(async () => hits),
+      getSubgraph: vi.fn(async (): Promise<SubgraphResult> => ({ nodes: [], edges: [] })),
+    }
+  }
+
+  it('does not re-attempt Graphiti on a warm cache when no new episode has landed since the last attempt', async () => {
+    const doc = docOf(p('b1', 'Alpha Term here.'), p('b2', 'Alpha Term there.'))
+    const client = scriptedGraphiti([entity('Alpha Term')])
+    const deps = { skipLlm: true, embeddingsEnabled: false, graphiti: { ...client, episodeGeneration: 5 } }
+
+    const g1 = await getDocGraph(doc, CONFIG, deps)
+    expect(client.searchNodes).toHaveBeenCalledTimes(1)
+    expect(g1.graphitiEpisodeGen).toBe(5)
+
+    const g2 = await getDocGraph(doc, CONFIG, deps) // same content hash, same generation
+    expect(client.searchNodes).toHaveBeenCalledTimes(1) // no redundant MCP call
+    expect(g2).toBe(g1) // fast cache-hit path returned the same object
+  })
+
+  it('retries Graphiti once a new episode lands for the SAME unchanged content hash, and merges the new entity edge', async () => {
+    const doc = docOf(
+      p('b1', 'Alpha Term here.'),
+      p('b2', 'Alpha Term there.'),
+      p('b3', 'Beta Term here.'),
+      p('b4', 'Beta Term there.'),
+    )
+    const client1 = scriptedGraphiti([entity('Alpha Term')])
+    const g1 = await getDocGraph(doc, CONFIG, {
+      skipLlm: true,
+      embeddingsEnabled: false,
+      graphiti: { ...client1, episodeGeneration: 1 },
+    })
+    expect(g1.edges.filter((e) => e.source === 'graphiti')).toHaveLength(1)
+
+    // Beta Term only becomes findable because a new episode was ingested —
+    // content hash is unchanged, only the generation advanced.
+    const client2 = scriptedGraphiti([entity('Alpha Term'), entity('Beta Term')])
+    const g2 = await getDocGraph(doc, CONFIG, {
+      skipLlm: true,
+      embeddingsEnabled: false,
+      graphiti: { ...client2, episodeGeneration: 2 },
+    })
+    expect(client2.searchNodes).toHaveBeenCalledTimes(1) // re-attempted, not skipped
+    const graphitiEdges = g2.edges.filter((e) => e.source === 'graphiti')
+    expect(graphitiEdges).toHaveLength(2) // Alpha carried, Beta newly merged
+    expect(graphitiEdges.some((e) => e.evidence === 'Beta Term')).toBe(true)
+    expect(g2.graphitiEpisodeGen).toBe(2)
+  })
+
+  it('retries a transient Graphiti failure once a new episode lands, even though llm/embeddings are already satisfied', async () => {
+    const doc = docOf(p('b1', 'Alpha Term here.'), p('b2', 'Alpha Term there.'))
+    const llmCalls: StructuredRequest[] = []
+    const failingClient: Required<Pick<GraphitiEdgeDeps, 'searchNodes' | 'getSubgraph'>> = {
+      searchNodes: vi.fn(async () => {
+        throw new Error('ECONNREFUSED')
+      }),
+      getSubgraph: vi.fn(async (): Promise<SubgraphResult> => ({ nodes: [], edges: [] })),
+    }
+
+    const g1 = await getDocGraph(doc, CONFIG, {
+      callStructured: scripted([], llmCalls),
+      embeddingsEnabled: false,
+      graphiti: { ...failingClient, episodeGeneration: 1 },
+    })
+    expect(llmCalls).toHaveLength(1)
+    expect(g1.llmApplied).toBe(true)
+    expect(failingClient.searchNodes).toHaveBeenCalledTimes(1)
+    expect(g1.graphitiApplied).toBe(false) // failure — retryable
+
+    // Same generation: the failed attempt is NOT retried on every cascade.
+    await getDocGraph(doc, CONFIG, {
+      callStructured: scripted([], llmCalls),
+      embeddingsEnabled: false,
+      graphiti: { ...failingClient, episodeGeneration: 1 },
+    })
+    expect(failingClient.searchNodes).toHaveBeenCalledTimes(1)
+    expect(llmCalls).toHaveLength(1) // llm stayed satisfied too
+
+    // A new episode lands (generation bumps) — retried, and now succeeds.
+    // llm/embeddings were already satisfied and must NOT be redundantly re-run.
+    const succeedingClient = scriptedGraphiti([entity('Alpha Term')])
+    const g2 = await getDocGraph(doc, CONFIG, {
+      callStructured: scripted([], llmCalls),
+      embeddingsEnabled: false,
+      graphiti: { ...succeedingClient, episodeGeneration: 2 },
+    })
+    expect(llmCalls).toHaveLength(1) // still no redundant LLM call
+    expect(succeedingClient.searchNodes).toHaveBeenCalledTimes(1)
+    expect(g2.graphitiApplied).toBe(true)
+    expect(g2.edges.filter((e) => e.source === 'graphiti')).toHaveLength(1)
   })
 })
 
