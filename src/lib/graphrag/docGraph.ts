@@ -753,7 +753,74 @@ export async function augmentWithGraphitiEdges(
 
 const CACHE_MAX = 8
 const graphCache = new Map<string, DocGraph>()
-const inflight = new Map<string, Promise<DocGraph>>()
+
+/**
+ * One in-flight build per content hash, tagged with the capability set it was
+ * started with. Concurrent callers wanting the SAME (or a subset of the)
+ * capabilities dedupe onto it, as before. A caller wanting MORE than the
+ * in-flight build covers (e.g. a user-initiated cascade arriving while
+ * scheduleDocGraphRebuild's deterministic-only background build is still
+ * running) does NOT silently inherit the lower-capability result — see
+ * getDocGraph below.
+ */
+interface InflightEntry {
+  promise: Promise<DocGraph>
+  /**
+   * Whether this promise's build will run the LLM branch of
+   * applyRequestedPasses (carry-forward + a live call attempt) — i.e. the
+   * caller's raw intent (`llmRequested`), NOT availability-gated. Carry-
+   * forward runs independent of whether a live model call can succeed, so a
+   * concurrent caller whose own intent is true must never be satisfied by an
+   * in-flight build whose intent was false, regardless of either caller's
+   * availability at the moment they ask (availability can change between
+   * builds sharing a warm cache entry).
+   */
+  llm: boolean
+  embeddings: boolean
+  graphiti: boolean
+}
+const inflight = new Map<string, InflightEntry>()
+
+interface RequestedPasses {
+  llm: boolean
+  embeddings: boolean
+  graphiti: boolean
+}
+
+/** Runs whichever of the three augmentation passes `wanted` marks true and the graph doesn't already carry — mutates `graph` in place. */
+async function applyRequestedPasses(
+  graph: DocGraph,
+  hash: string,
+  config: LLMConfig,
+  deps: { callStructured?: CallStructuredFn; embed?: EmbedFn; graphiti?: GraphitiEdgeDeps },
+  wanted: RequestedPasses,
+): Promise<void> {
+  if (wanted.llm && !graph.llmApplied) {
+    let targetIds: Set<string> | undefined
+    const prior = findBestPriorGraph(graph, hash)
+    if (prior) {
+      // Union with the prior adjacency so far endpoints of DROPPED LLM edges
+      // re-enter the listing and can be re-proposed.
+      const changed = carryForwardLlmEdges(graph, prior)
+      targetIds = expandOneHop(graph, changed, prior.adjacency)
+    }
+    await augmentWithLlmEdges(graph, config, deps.callStructured ?? fetchStructured, targetIds)
+  }
+  if (wanted.embeddings && !graph.embeddingsApplied) {
+    await augmentWithEmbeddingEdges(graph, config, deps.embed)
+  }
+  // Graphiti entity edges: user-initiated builds only (same privacy stance as
+  // the LLM/embedding passes — background typing must never trigger MCP
+  // traffic). No `!graph.graphitiApplied` gate here — that flag never resets
+  // once true, which would permanently skip this call after the first
+  // success. augmentWithGraphitiEdges own-guards on graphitiEpisodeGen, so it
+  // is safe (and necessary) to call unconditionally whenever graphiti is
+  // wanted: it no-ops when nothing has been ingested since its last attempt,
+  // and retries exactly once per new episode otherwise.
+  if (wanted.graphiti) {
+    await augmentWithGraphitiEdges(graph, deps.graphiti)
+  }
+}
 
 function cacheGraph(hash: string, graph: DocGraph): void {
   graphCache.delete(hash)
@@ -903,18 +970,38 @@ export async function getDocGraph(
   } = {},
 ): Promise<DocGraph> {
   const hash = contentHash(doc)
-  const embeddingsOn =
+  // `llmRequested` is the caller's raw intent (not skipped) — it's what gates
+  // entering the LLM branch in applyRequestedPasses, matching the ORIGINAL
+  // (pre-#127-fix) gate of `!deps.skipLlm && !graph.llmApplied`. That branch
+  // does more than call the model: it carries forward previously-cached LLM
+  // edges for unchanged blocks via findBestPriorGraph/carryForwardLlmEdges,
+  // which must still run even when the model is currently unreachable (a
+  // dropped API key must not silently erase edges the LLM already found on
+  // an earlier build). `llmWanted` folds in availability and is used ONLY
+  // for the cache-hit / inflight-capability bookkeeping below, where "will
+  // this build ever actually set llmApplied" is the right question — never
+  // as the gate for whether carry-forward runs.
+  const llmRequested = !deps.skipLlm
+  const llmWanted = llmRequested && llmAvailable(config)
+  const embeddingsWanted =
     !deps.skipEmbeddings &&
     llmAvailable(config) &&
     (deps.embeddingsEnabled ?? (await embeddingsEnabledFromStore()))
+  const graphitiWanted = !deps.skipGraphiti
+  // What applyRequestedPasses actually attempts — llm uses raw intent
+  // (see above); embeddings/graphiti have no analogous caller-side
+  // side-effect independent of the call itself, so availability-aware is
+  // correct for them (matches original behavior).
+  const wanted: RequestedPasses = { llm: llmRequested, embeddings: embeddingsWanted, graphiti: graphitiWanted }
+
   // Same generation source augmentWithGraphitiEdges itself will consult, read
   // once so the fast-path decision and the eventual attempt (if any) agree.
   const episodeGen = deps.graphiti?.episodeGeneration ?? getEpisodeGeneration()
   const cached = graphCache.get(hash)
   if (
     cached &&
-    (cached.llmApplied || deps.skipLlm || !llmAvailable(config)) &&
-    (cached.embeddingsApplied || !embeddingsOn) &&
+    (cached.llmApplied || !llmWanted) &&
+    (cached.embeddingsApplied || !embeddingsWanted) &&
     // A prior Graphiti attempt (success or failure) at the CURRENT episode
     // generation is still good; skipGraphiti call sites never need it at all.
     (deps.skipGraphiti || cached.graphitiEpisodeGen === episodeGen)
@@ -925,44 +1012,66 @@ export async function getDocGraph(
     publishDocGraph(++publishSeq, 'ready', cached)
     return cached
   }
-  const pending = inflight.get(hash)
-  if (pending) return pending
+
+  const existing = inflight.get(hash)
+  if (existing) {
+    // The llm clause compares against `llmRequested`, not `llmWanted`: an
+    // in-flight build that skipped carry-forward (llmRequested was false
+    // when IT started) must never satisfy a caller who wants carry-forward
+    // now, even if that caller happens to be unavailable too — availability
+    // gates only the live call inside applyRequestedPasses, never whether
+    // carry-forward itself runs. Using the availability-folded flag here
+    // reintroduces #127's exact bug one layer down, just triggered by an
+    // availability flip instead of a skipLlm mismatch between callers.
+    const covers =
+      (existing.llm || !llmRequested) && (existing.embeddings || !embeddingsWanted) && (existing.graphiti || !graphitiWanted)
+    if (covers) return existing.promise
+
+    // The in-flight build (e.g. scheduleDocGraphRebuild's deterministic-only
+    // background pass) was started without a capability this caller needs.
+    // Chain onto it rather than silently inheriting its result: await the
+    // SAME graph object, then run only the still-missing passes against it
+    // before caching/publishing. The chain is serialized on one object (this
+    // continuation only starts mutating once the prior build has fully
+    // finished), so there is no concurrent-mutation race, and a THIRD caller
+    // needing even more replaces this entry in `inflight` the same way.
+    const seq = ++publishSeq
+    publishDocGraph(seq, 'building')
+    let entry: InflightEntry
+    const built = (async () => {
+      const graph = await existing.promise
+      await applyRequestedPasses(graph, hash, config, deps, wanted)
+      cacheGraph(hash, graph)
+      publishDocGraph(seq, 'ready', graph)
+      return graph
+    })().finally(() => {
+      if (inflight.get(hash) === entry) inflight.delete(hash)
+    })
+    entry = {
+      promise: built,
+      llm: existing.llm || llmRequested,
+      embeddings: existing.embeddings || embeddingsWanted,
+      graphiti: existing.graphiti || graphitiWanted,
+    }
+    inflight.set(hash, entry)
+    return built
+  }
 
   const seq = ++publishSeq
   publishDocGraph(seq, 'building')
-  const promise = (async () => {
+  let entry: InflightEntry
+  const built = (async () => {
     const graph = cached ?? buildDeterministicGraph(doc)
-    if (!deps.skipLlm && !graph.llmApplied) {
-      let targetIds: Set<string> | undefined
-      const prior = findBestPriorGraph(graph, hash)
-      if (prior) {
-        const changed = carryForwardLlmEdges(graph, prior)
-        // Union with the prior adjacency so far endpoints of DROPPED LLM
-        // edges re-enter the listing and can be re-proposed.
-        targetIds = expandOneHop(graph, changed, prior.adjacency)
-      }
-      await augmentWithLlmEdges(graph, config, deps.callStructured ?? fetchStructured, targetIds)
-    }
-    if (embeddingsOn && !graph.embeddingsApplied) {
-      await augmentWithEmbeddingEdges(graph, config, deps.embed)
-    }
-    // Graphiti entity edges: user-initiated builds only (same privacy stance
-    // as the LLM/embedding passes — background typing must never trigger MCP
-    // traffic). augmentWithGraphitiEdges own-guards on graphitiEpisodeGen, so
-    // this reaches it whenever the fast path above judged a (re)attempt
-    // worthwhile — a never-attempted graph, or one whose episode generation
-    // has moved on since its last attempt; a down FalkorDB is still only
-    // re-paid once per new episode, not once per cascade.
-    if (!deps.skipGraphiti) {
-      await augmentWithGraphitiEdges(graph, deps.graphiti)
-    }
+    await applyRequestedPasses(graph, hash, config, deps, wanted)
     cacheGraph(hash, graph)
     publishDocGraph(seq, 'ready', graph)
     return graph
-  })().finally(() => inflight.delete(hash))
-
-  inflight.set(hash, promise)
-  return promise
+  })().finally(() => {
+    if (inflight.get(hash) === entry) inflight.delete(hash)
+  })
+  entry = { promise: built, llm: llmRequested, embeddings: embeddingsWanted, graphiti: graphitiWanted }
+  inflight.set(hash, entry)
+  return built
 }
 
 export interface NeighborhoodEntry {

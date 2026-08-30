@@ -5,12 +5,14 @@ import { persist } from 'zustand/middleware'
 import type { Annotation } from '@/lib/annotations/types'
 import type { ChangeEntry, ChangeSet, ChangeSetStatus, VersionSnapshot } from '@/lib/changes/changeLog'
 import { generateId } from '@/lib/utils/id'
-import { useDocumentStore } from '@/stores/documentStore'
+import { LEGACY_DOCUMENT_ID } from '@/lib/documents/legacyDocumentId'
 
 /**
  * Backfill a missing/undefined `documentId` on persisted entries/changeSets
  * written before multi-document support existed (Phase 8, 2026-03-16) —
- * mirrors annotationStore.ts's migrateAnnotations. Without this, such a
+ * mirrors annotationStore.ts's migrateAnnotations, including the fixed
+ * `LEGACY_DOCUMENT_ID` fallback (see `legacyDocumentId.ts` for why it must
+ * not be the currently-active document). Without this backfill, such a
  * record can never match any real activeDocumentId in a `documentId ===
  * activeDocumentId` filter (ChangesPanel.tsx, StatusBar.tsx) and silently
  * disappears from every view.
@@ -19,10 +21,9 @@ export function migrateChanges(
   entries: ChangeEntry[],
   changeSets: ChangeSet[]
 ): { entries: ChangeEntry[]; changeSets: ChangeSet[] } {
-  const activeDocumentId = useDocumentStore.getState().activeDocumentId ?? 'legacy'
   return {
-    entries: entries.map((e) => ({ ...e, documentId: e.documentId ?? activeDocumentId })),
-    changeSets: changeSets.map((cs) => ({ ...cs, documentId: cs.documentId ?? activeDocumentId })),
+    entries: entries.map((e) => ({ ...e, documentId: e.documentId ?? LEGACY_DOCUMENT_ID })),
+    changeSets: changeSets.map((cs) => ({ ...cs, documentId: cs.documentId ?? LEGACY_DOCUMENT_ID })),
   }
 }
 
