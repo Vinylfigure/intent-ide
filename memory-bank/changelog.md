@@ -5,7 +5,16 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2026-08-29] `changesStore` wiring for document delete — fix delivered, PR #136 open, stacked on unmerged PR #135
+## [2026-08-30] PR #135 brought current with `main` after PRs #130/#131/#132 merged; PR #136 folded in by the operator
+
+Housekeeping, not a feature entry. `main` advanced past PR #135's stacked base (PR #132's branch) once the operator merged PRs #130, #131, and #132 to `main`; GitHub retargeted #135's base to `main`, exposing a real `mergeable_state: dirty` — three `memory-bank/*.md` append-at-top conflicts only (same class PR #130 resolved for #125/#123), no source-code conflicts. Separately, the operator merged **PR #136** (closes #134) directly into PR #135's branch rather than into `main`, so #135's diff now also carries #134's fix.
+
+- Merged `origin/main` into `claude/legacy-data-ui` with a merge commit (never a rebase — the branch already carries the operator's own merge commit from landing #136, so history was not rewritten).
+- Resolved all three memory-bank conflicts by concatenating both sides' entries in true chronological order, dropping nothing from either parallel firing.
+- Re-ran `npm run typecheck` / `npm run lint` / `npm run test` on the merged tree before pushing.
+- Updated PR #135's body to also say "Closes #134", since #136's commits are now part of its diff.
+
+## [2026-08-29] `changesStore` wiring for document delete — fix delivered, PR #136 MERGED into PR #135's branch (not `main`) by the operator, 2026-08-29 → 2026-08-30
 
 Closes issue #134 (task: label, filed 2026-08-28, `discovered-from: work-loop adversarial review of the PR for #133, 2026-08-28`). `DocumentHubSidebar.tsx`'s `handleDeleteDocument` called `useAnnotationStore.getState().removeByDocumentId(documentId)` (fixed for annotations by #107/PR #106) but never called the `changesStore` equivalent, because until PR #135 `changesStore.ts` had no `removeByDocumentId` action at all. #135 added that action (for #133); #134's scope was purely wiring it into the document-delete handler. **PR #136's base branch is `claude/legacy-data-ui` (PR #135's branch), not `main`** — the `removeByDocumentId` action it depends on doesn't exist on `main` yet.
 
@@ -18,13 +27,13 @@ Closes issue #134 (task: label, filed 2026-08-28, `discovered-from: work-loop ad
 - New test file `src/components/Layout/__tests__/documentHubSidebar.deleteClearsChanges.test.tsx` (2 tests): deleting a document via the UI confirmation flow removes only that document's `changesStore` entries/changeSets, others untouched; cancelling leaves `changesStore` untouched.
 - `npm run typecheck` clean, `npm run lint` clean, `npm run test` — **1139 passing + 10 skipped** (up from 1137 on PR #135's branch; +2 new tests).
 
-**PR #136 (branch `claude/changesstore-delete-wiring`, https://github.com/Vinylfigure/intent-ide/pull/136, base `claude/legacy-data-ui`) is OPEN — stacked 3 deep: `main` ← #132 (closes #128) ← #135 (closes #133, stacked on #132) ← #136 (closes #134, stacked on #135). Awaiting #132 and #135 to merge first (this PR's base auto-retargets to `main` once #135 merges, or needs a quick rebase, same pattern PR #130 used for #125 after #123 merged), then awaiting operator review/merge itself.**
+**PR #136 (branch `claude/changesstore-delete-wiring`, https://github.com/Vinylfigure/intent-ide/pull/136, base `claude/legacy-data-ui`) MERGED** — confirmed via the GitHub API: `merged: true`, `merged_by: Vinylfigure`, merge commit `f2196d7`. Merged into PR #135's branch rather than `main` directly, so #134's fix reaches `main` only once #135 itself merges (see the entry above).
 
-Closes #134 (on merge, after #132 and #135).
+Closes #134 (reaches `main` once #135 merges).
 
 **Also for continuity, not actioned this firing:** as of this firing's ready-sweep, four other open PRs exist, all green CI, all `mergeable_state: clean` except one: PR #135 (closes #133, stacked on #132), PR #132 (closes #128, base `main`), PR #131 (closes #127, base `main`), PR #130 (closes #122, base `main`, supersedes and should replace #125 which is now `mergeable_state: dirty` — #130's own body says close #125 without merging once #130 lands). None had red checks, so per the work-loop skill's priority rule they didn't outrank starting new work on #134.
 
-## [2026-08-28] Legacy-data view/manage/purge UI for the `LEGACY_DOCUMENT_ID` bucket — fix delivered, PR #135 open, stacked on unmerged PR #132
+## [2026-08-28] Legacy-data view/manage/purge UI for the `LEGACY_DOCUMENT_ID` bucket — fix delivered, PR #135 open (base retargeted to `main` 2026-08-30 after PR #132 merged)
 
 Closes issue #133 ("no UI path to view/manage/purge the LEGACY_DOCUMENT_ID migration bucket"), filed as a follow-up from PR #132's own adversarial review. **PR #135's base branch is `claude/legacy-documentid-migration-fallback` (PR #132's branch), not `main`** — #133's fix depends on `src/lib/documents/legacyDocumentId.ts`, which PR #132 introduces and which does not exist on `main` yet.
 
@@ -44,13 +53,34 @@ Closes issue #133 ("no UI path to view/manage/purge the LEGACY_DOCUMENT_ID migra
 - New test files: `src/stores/__tests__/changesStore.removeByDocumentId.test.ts` (2 tests), `src/components/Settings/__tests__/apiKeyModal.legacyData.test.tsx` (3 tests) — both mutation-tested (fail against reverted production code).
 - `npm run typecheck` clean, `npm run lint` clean, `npm run test` — **1137 passing + 10 skipped** on the PR branch (up from 1132 on PR #132's branch, the merge base).
 
-**PR #135 (branch `claude/legacy-data-ui`, body "Closes #133") is OPEN, stacked on unmerged PR #132 — awaiting operator review and merge of both. Once #132 merges to `main`, PR #135 needs a retarget/rebase (same pattern PR #130 followed for #125 after #123 merged) — carry-forward item.**
+**PR #135 (branch `claude/legacy-data-ui`) is OPEN.** PR #132 merged to `main` 2026-08-30; GitHub retargeted #135's base to `main`, exposing a memory-bank-only merge conflict resolved in the entry at the top of this file. #135 now also carries PR #136's fix (closes #134), merged into its branch by the operator — see above.
 
-Closes #133 (on merge, after #132). Files #134.
+Closes #133, #134 (on merge).
 
 **Also for continuity, not actioned this session:** as of this sweep, three PRs besides #135 are open, all green CI / clean `mergeable_state`, all awaiting operator review/merge: PR #130 (closes #122, supersedes and should replace #125 which went dirty), PR #131 (closes #127, docGraph inflight capability keying), PR #132 (closes #128, legacy documentId migration fallback — PR #135 above stacks on it). PR #125 is superseded by #130 and should be closed (not merged) once #130 lands — operator's call, not actioned by this firing. Issue #134 (filed above) is not yet consumed.
 
-## [2026-08-27] StatusBar "N thinking…" chip scoped to active document — fix delivered, PR #124 open (not yet merged)
+## [2026-08-28] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 MERGED (2026-08-30, confirmed via the merge-conflict resolution entry at the top of this file)
+
+Closes issue #127, filed 2026-08-27 as a work-loop idle-evaluation proposal and named as a known pre-existing debt in the Cascade v2 roadmap close-out (`raw_reflection_log.md`/`progress.md` "Inflight-dedupe race" carry-forward line) but never fixed until now.
+
+### Fixed
+- **`getDocGraph`'s inflight dedupe could hand a concurrent caller a lower-capability graph than it asked for.** `src/lib/graphrag/docGraph.ts` deduped concurrent builds for the same document content-hash via an `inflight` map keyed only on the hash. `scheduleDocGraphRebuild` calls it on every debounced edit with `skipLlm`/`skipEmbeddings`/`skipGraphiti` all true (deliberate deterministic-only background build — document text must never leave the machine as a side effect of typing). If a user-initiated cascade wanting the fuller LLM/embeddings/graphiti-augmented graph called `getDocGraph` for the same hash while that background build was still in-flight, it silently got handed the SAME promise — resolving to the deterministic-only graph, with no error or signal it was missing the augmentation it explicitly asked for.
+- **Fix (option (b) from #127's own stated acceptable approaches):** `inflight` entries now carry the capability set (`{llm, embeddings, graphiti}`) they'll deliver. A caller whose wanted capabilities aren't covered by an in-flight entry chains a "continuation": it awaits the same `DocGraph` object, then runs only the still-missing passes against it (`applyRequestedPasses`, extracted from the old build body) before re-caching/re-publishing, using the SAME shared mutable graph object (no duplicate-object cache-clobber race). A third caller wanting even more chains onto that continuation. Concurrent callers requesting the same (or a subset of) capabilities still dedupe to one build, unchanged.
+
+### Process
+- Two rounds of pre-push adversarial (troublemaker) review, both NO-MERGE with a blocking, empirically-reproduced finding, both fixed with regression tests before the PR was opened. **Round 1:** the first fix folded `llmAvailable(config)` into the single flag driving both cache/inflight bookkeeping AND whether `applyRequestedPasses` entered the LLM branch — but that branch also carries forward previously-cached LLM edges for UNCHANGED blocks (`findBestPriorGraph`/`carryForwardLlmEdges`), which the ORIGINAL pre-#127 code ran whenever the caller didn't pass `skipLlm`, independent of live-call availability. Folding availability in meant a dropped/invalid API key would silently ERASE previously-found LLM edges for content the triggering edit never touched — reproduced concretely (valid-key build finds an edge; key goes invalid; unrelated-block edit; edge vanishes on the broken version, survives on origin/main). Fixed by splitting `llmRequested = !deps.skipLlm` (raw caller intent, gates the carry-forward branch) from `llmWanted = llmRequested && llmAvailable(config)` (availability-aware, used only for the cache-hit check). **Round 2:** round 1's split only applied at the single-call `wanted` object — the multi-caller `covers` check and `InflightEntry` bookkeeping still compared availability-gated `llmWanted` on both sides, so two concurrently-unavailable callers with different RAW intent (one skips llm, one doesn't) could still silently inherit each other's result — the same bug shape as #127 itself, one layer down. Confirmed dormant in production today only because every current call site happens to couple `skipLlm` with `skipGraphiti`/`skipEmbeddings` (an unenforced, undocumented cross-file invariant across `scheduleDocGraphRebuild`, `directEditTrigger.ts`, `entailmentCheck.ts`; `proposeCascadeEdits` never skips either, which happens to force the covers-check false against every background caller anyway). Fixed by using `llmRequested` consistently through `InflightEntry.llm`, the `covers` comparison, and both entry-construction sites. Both findings were mutation-tested directly (temporarily reverted the specific fix, confirmed the exact predicted regression test failure, restored the fix) — not merely argued from reading the diff.
+- A third, self-identified (not reviewer-flagged) gap was also closed before push: round 2's own summary claimed a test covered "orthogonal capability requests serializing rather than parallelizing" (a disclosed, accepted, non-blocking design trade-off — one of #127's own stated acceptable approaches, not a regression) — that claim was inaccurate; the cited test only exercised a SUBSET scenario (dedupe short-circuit), never two genuinely DISJOINT requests (e.g. llm-only vs embeddings-only). A new test closes the gap, proving chained continuations still deliver BOTH requested capabilities.
+- 6 new tests in `src/lib/graphrag/__tests__/docGraph.test.ts`: (1) the original race repro (background deterministic-only build in-flight, concurrent cascade wanting LLM gets `llmApplied: true` and its edge, not silently dropped); (2) a subset caller dedupes onto an in-flight fuller build with no redundant model call; (3) the exact production call shapes of `scheduleDocGraphRebuild` and `proposeCascadeEdits` (which hit the un-stubbed `embeddingsEnabledFromStore()` await before either call reaches the inflight check); (4) round 1's regression (LLM edges carry forward across an untouched block even when the provider becomes unavailable on a later build); (5) round 2's regression (a concurrent caller wanting LLM carry-forward is never satisfied by an in-flight build that skipped it, even when both callers are currently unavailable); (6) disjoint capabilities (llm-only vs embeddings-only) both end up delivered via chaining, not lost.
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1126 passing + 10 skipped (up from 1120 on `main` at merge base `2f388a9`; +6 new tests, nothing else regressed).
+- No new follow-up issues filed — the one disclosed known limitation (chained continuations serialize rather than parallelize disjoint capability requests) was closed with a regression test rather than deferred, and is explicitly within #127's own stated scope, not a descoped remainder.
+
+**PR #131 (branch `claude/docgraph-inflight-capability`, https://github.com/Vinylfigure/intent-ide/pull/131, body "Closes #127") MERGED to `main`** — confirmed via the merge-conflict resolution entry at the top of this file (2026-08-30).
+
+Closes #127.
+
+**Also for continuity, not actioned this session:** at the start of this session, **PR #123** (closes #117) and **PR #124** (closes #121) — both logged below as "open" — had since **merged**; issue #122 (the `loadDoc()` outgoing-autosave-flush data-loss bug PR #123 disclosed but didn't fix) gained an open **PR #125**, which went stale (`mergeable_state: dirty`) after #123/#124 merged and was superseded by **PR #130** ("Rebase #125 onto main after #123 merged", also closes #122, `mergeable_state: clean`, CI green) — both #125 and #130 are still open, untouched this session (their own CI is green). **PR #129** (closes #126, `changesStore` documentId migration mirroring `annotationStore`'s) merged before this session started. New issue **#128** was filed by the repo owner (not this session) about a migration-fallback data-integrity gap in `migrateAnnotations`/`migrateChanges`, discovered from PR #129's own adversarial review — still open, not evaluated this session since #127 was chosen first as the older ready task.
+
+## [2026-08-27 → merged 2026-08-28] StatusBar "N thinking…" chip scoped to active document — fix delivered, PR #124 MERGED
 
 Closes issue #121, filed as a follow-up from PR #120's own adversarial review (`discovered-from: work-loop adversarial review of PR #120 for #116, 2026-08-27`).
 
@@ -63,13 +93,33 @@ Closes issue #121, filed as a follow-up from PR #120's own adversarial review (`
 - `npm run test` — 1111 passing + 10 skipped on the PR branch (1110 on `main` at merge base `dcfbee4`, the commit that merged PR #120). `npm run typecheck` / `npm run lint` clean. New test file `src/components/Layout/__tests__/statusBar.inFlightScope.test.tsx` (4 tests).
 - No new follow-up issues filed — the fix was fully scoped to #121's done-means with no descoped remainder.
 
-**PR #124 (branch `claude/statusbar-inflight-scope`, https://github.com/Vinylfigure/intent-ide/pull/124, body "Closes #121") is OPEN, not yet merged to `main` — awaiting operator review.**
+**PR #124 (branch `claude/statusbar-inflight-scope`, https://github.com/Vinylfigure/intent-ide/pull/124, body "Closes #121") MERGED to `main` — confirmed merged as of the PR #131 session (2026-08-28).**
 
-Closes #121 (on merge).
+Closes #121.
 
 **Also for continuity, not actioned this session:** between the last memory-bank update (below) and this session, PR #119 (closes #115, "Gate collection delete behind a confirmation step") and PR #120 (closes #116) both **merged**; issue #117 gained an open PR #123 (not yet merged — `mergeable_state` shows a merge conflict against `main` but CI checks are green, left for its own review/resolution); issue #122 was filed (discovered-from PR #123/#117's adversarial review), not yet consumed.
 
 ## [2026-08-27] StatusBar chip counts scoped to active document — fix delivered, PR #120 MERGED
+
+## [2026-08-27] loadDoc() flushes outgoing dirty edit before document switch — fix delivered, PR #125 open (not yet merged)
+
+Discovered as a by-product of adversarial review on PR #123 (fix for #117); filed as its own issue (#122) with its own done-means rather than folded in or left as a TODO.
+
+### Fixed
+- **`DocInputModal.tsx`'s `loadDoc()`** (shared by Blank/Paste/Generate/Import) now flushes the outgoing document's pending unsaved edit before replacing editor content and switching `activeDocumentId` — previously it did neither, unlike `EditorShell.tsx`'s own document-switch effect, which already guards against exactly this. Concretely: typing into Document A within the 5s autosave window, then creating/pasting/generating/importing a new document before the timer fires, silently dropped Doc A's edit (never written to localStorage, never recorded via `recordCommit`) — `loadDoc()`'s content-replace transaction re-armed the autosave debounce around the new document's content, destroying the timer that would have flushed Doc A, and `createDocument()` reset `isDirty: false` before `EditorShell`'s switch-effect guard could see it.
+- **Fix:** `loadDoc()` reads `useDocumentStore.getState()` before dispatching the replace transaction; if the active document is dirty, it captures the current (pre-replace) editor content via `view.state.doc.toJSON()` and flushes it with `saveDocument()` + `recordCommit()` (kind: 'direct', actor: 'human') — mirroring `EditorShell.tsx`'s existing guard exactly. All four call sites funnel through this one fix.
+
+### Process
+- Adversarial (troublemaker agent) review verdict: **MERGE**. Confirmed the flush ordering has no stale-closure risk (`view.state.doc` is read before the replace transaction; `useDocumentStore.getState()` is read fresh at call time), and that the flush cannot recursively retrigger `EditorShell`'s autosave since it dispatches no transaction of its own. Confirmed `EditorShell`'s own switch effect does not double-flush (its guard correctly no-ops once `createDocument()` has already reset `isDirty`) and that its pre-existing redundant reload of the new document's content is not a regression introduced here.
+- One real finding on the original test 2 (mutation-tested by the reviewer): it only asserted `loadDoc()` didn't throw when `isDirty` was false, which would pass identically even with a broken (`||` instead of `&&`) guard. Fixed before push by spying on `saveDocument` directly; self-mutation-tested afterward — weakened the guard to `||`, confirmed the tightened test now fails, restored the fix, confirmed it passes again.
+- **Adjacent bug surfaced, not a new discovery:** the review independently found `loadDoc()`'s content-replace transaction is missing `tr.setMeta('addToHistory', false)`, risking an immediate Cmd-Z after a document switch resurrecting the outgoing document's content into a view still bound to the new document's id. This is exactly the bug already fixed on open PR #123 (`claude/loadDoc-undo-history-guard`, closes #117), which predates this branch — verified by diffing PR #123's branch directly rather than assumed. No new issue filed; the PR body notes this explicitly so nothing is silently dropped between the two open PRs.
+- `npm run test` — 1109 passing + 10 skipped on the PR branch (1107 baseline on `main` at `dcfbee4`). `npm run typecheck` / `npm run lint` clean. New test file `src/components/DocInput/__tests__/docInputModal.flushOutgoingDirty.test.tsx`.
+
+**PR #125 (branch `claude/loadDoc-flush-outgoing-dirty`, https://github.com/Vinylfigure/intent-ide/pull/125, base `main` at `dcfbee4`) is OPEN, not yet merged to `main` — awaiting operator review.**
+
+Closes #122 (on merge).
+
+## [2026-08-27] StatusBar chip counts scoped to active document — fix delivered, PR #120 open (not yet merged)
 
 ### Fixed
 - **`StatusBar.tsx`'s annotation/change-set/change count chips** now filter by `documentId === activeDocumentId`, matching every other consumer of `annotationStore`/`changesStore` (`AnnotationPanel.tsx`, `ChangesPanel.tsx`). Previously read raw, unfiltered totals across all documents. Fixed by adding `activeDocumentId` from `useDocumentStore` and filtering all three chip counts by it.
@@ -83,7 +133,7 @@ Closes #121 (on merge).
 
 Closes #116. Files #121 — fixed by PR #124 above.
 
-## [2026-08-27] `loadDoc()` undo-history guard — fix delivered, PR #123 open (not yet merged)
+## [2026-08-27 → merged 2026-08-28] `loadDoc()` undo-history guard — fix delivered, PR #123 MERGED
 
 Consumes issue #117: `DocInputModal.tsx`'s `loadDoc()` (shared by Blank/Paste/Generate/Import) replaced the editor's full content via `replaceWith` without `tr.setMeta('addToHistory', false)`, unlike `EditorShell.tsx`'s already-guarded document-switch path — Cmd-Z after creating/loading a document could resurrect the prior document's content and, via the existing autosave debounce, get it written to localStorage under the new document's id (the same class of bug the v8.4 doc-switch fix closed for `EditorShell.tsx` on 2026-07-09, just at a second unguarded call site).
 
@@ -96,9 +146,9 @@ Consumes issue #117: `DocInputModal.tsx`'s `loadDoc()` (shared by Blank/Paste/Ge
 - **Separate pre-existing bug found and reproduced (not fixed here, deliberately descoped):** the same review independently reproduced, via a scripted repro with fake timers (not shipped), that `loadDoc()` never flushes the *outgoing* document's dirty autosave before replacing content and switching `activeDocumentId` — unlike `EditorShell.tsx`'s own switch effect, which flushes first. Failure chain: edit Doc A inside the 5s autosave debounce window → open `DocInputModal` and load Doc B → the load's `docChanged` transaction re-triggers `debouncedSave`, clearing Doc A's pending flush and rescheduling around the now-replaced Doc B content → `createDocument()` sets `activeDocumentId` to Doc B and resets `isDirty: false` → `EditorShell`'s flush-before-switch guard re-reads `isDirty` fresh, finds it already false, and no-ops → Doc A's edit is silently lost, never written to localStorage, never recorded via `recordCommit`. This is a silent DATA-LOSS bug (not corruption), independent of the addToHistory fix. Filed as its own issue, **#122**, with a stated done-means and repro chain (`discovered-from: work-loop adversarial review of the PR for #117, 2026-08-27`).
 - `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1101 passing + 10 skipped (up from 1100 on `main`).
 
-**PR #123 (branch `claude/loadDoc-undo-history-guard`, https://github.com/Vinylfigure/intent-ide/pull/123) is OPEN, not yet merged to `main` — awaiting operator review. PR body says "Closes #117" and honestly discloses issue #122 as a known, separate, unfixed bug rather than folding it in or omitting it.**
+**PR #123 (branch `claude/loadDoc-undo-history-guard`, https://github.com/Vinylfigure/intent-ide/pull/123) MERGED to `main` — confirmed merged as of the PR #131 session (2026-08-28). PR body said "Closes #117" and honestly disclosed issue #122 as a known, separate, unfixed bug rather than folding it in or omitting it.**
 
-Closes #117 (on merge). Files #122.
+Closes #117. Files #122 (still open — superseded by PR #130, see the PR #131 entry above).
 
 ## [2026-08-25] `heldAnswers` leak on annotation removal — fix delivered, PR #106 open (not yet merged)
 
