@@ -1,25 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { mapLegacyType, normalizeProposedEdit } from '@/lib/annotations/types'
-import { finalizeInterruptedAnnotations } from '@/stores/annotationStore'
+import { normalizeProposedEdit } from '@/lib/annotations/types'
+import { finalizeInterruptedAnnotations, migrateAnnotations } from '@/stores/annotationStore'
 import type { Annotation, AnnotationType, ProposedEdit, Resolution } from '@/lib/annotations/types'
 
-// migrateAnnotations is not exported from annotationStore — it is a private
-// function called during Zustand rehydration.  We test its behaviour by
-// re-implementing the same transform here, driven by mapLegacyType which IS
-// exported.  This keeps tests independent of module internals while fully
-// covering the migration contract.
-
-function migrateAnnotations(annotations: Annotation[]): Annotation[] {
-  return annotations.map((a) => ({
-    ...a,
-    documentId: a.documentId ?? 'legacy',
-    locationGroupKey: a.locationGroupKey ?? `${a.documentId ?? 'legacy'}:${a.anchor.from}:${a.anchor.to}`,
-    type: mapLegacyType(a.type),
-    resolution: a.resolution
-      ? { ...a.resolution, type: mapLegacyType(a.resolution.type) }
-      : null,
-  }))
-}
+// migrateAnnotations is exported directly from annotationStore (#128) so
+// tests exercise the real production function rather than a hand-rolled
+// duplicate that can silently drift from it. `annotationStore.legacyDocumentIdMigration.test.ts`
+// covers the documentId-backfill half of the contract in more depth; this
+// file covers the 6→4 type-migration half.
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
