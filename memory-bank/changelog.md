@@ -61,6 +61,27 @@ Closes #133, #134 (on merge).
 
 ## [2026-08-28] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 MERGED (2026-08-30, confirmed via the merge-conflict resolution entry at the top of this file)
 
+## [2026-08-30] `getDocGraph` Graphiti fast-cache-hit staleness — fix delivered, PR #139 open (not yet merged)
+
+Closes issue #137.
+
+### Fixed
+- **`getDocGraph`'s fast cache-hit path** in `src/lib/graphrag/docGraph.ts` never checked `cached.graphitiApplied` — once a document's graph had `llmApplied`+`embeddingsApplied` satisfied, every later `getDocGraph` call for the SAME unchanged content hash skipped the Graphiti entity pass forever, even though `episodeIngestion.ts`'s `ingestAnnotationEpisode`/`ingestEditEpisode` keep feeding new episodes into Graphiti on every resolved annotation (including ask/dig/flag types that never touch document text). New entities became permanently invisible to an already-built graph.
+- New module-level generation counter in `episodeIngestion.ts` (`getEpisodeGeneration()`/`resetEpisodeGeneration()`, bumped only on a successful `addEpisode`); new `DocGraph.graphitiEpisodeGen` field (-1 = never attempted) recording the generation as of the graph's last Graphiti attempt (success or failure). `augmentWithGraphitiEdges`'s guard moved from `graphitiApplied` to `graphitiEpisodeGen === currentGen`; `getDocGraph`'s fast-path condition gained a third clause so a stale-generation warm cache falls through to a real retry (background/`skipGraphiti` calls unaffected).
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**. Findings addressed before push: (1) added an end-to-end test exercising the REAL production wiring with no DI override (`episodeGeneration.test.ts`'s "real wiring" test — the other 3 new tests in `docGraph.test.ts` all inject `episodeGeneration` directly, which the reviewer flagged as a gap); (2) documented the under-recording-during-contention edge case (currentGen snapshotted before the ~1.5s MCP round trip — self-correcting, not a bug) in `augmentWithGraphitiEdges`'s doc comment; (3) hardened `graphitiEdges.test.ts`'s `beforeEach` to reset the episode-generation counter, since some of its tests implicitly depend on the real counter never having moved.
+- Filed follow-up **issue #138** (NOT fixed here, deliberately descoped): a new invariant break the fix introduces — a cached `DocGraph` can now be mutated-and-republished under the SAME object reference by a retry-in-place, and `docGraphStore`'s Zustand `Object.is` bail-out means an already-mounted "why this proposal?" explainer (`ProposedEditControl.tsx`) could show stale evidence until some unrelated re-render. Confirmed this does NOT affect actual cascade discovery — `orchestrator.ts`'s `proposeCascadeEdits` always awaits a fresh `getDocGraph` return value directly, never the store.
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1150 passing + 10 skipped on the merged tree (after both fixes above). New test file `src/lib/graphrag/__tests__/episodeGeneration.test.ts` (6 tests); 4 new tests in `docGraph.test.ts` (3 "getDocGraph — Graphiti episode-generation retry" + 1 for the fast-cache-hit `llmRequested` fix), all mutation-tested — reverting only the relevant one-line fix in each case reproduces the exact bug and fails the corresponding test. `graphitiEdges.test.ts` and `entailmentCheck.test.ts` updated for the new required `graphitiEpisodeGen` field / test-isolation hardening.
+- **Merge-conflict note (this branch's own merge with `main`, not a new PR):** `main` had meanwhile merged PR #131 (#127's inflight-capability-set fix), which refactored `getDocGraph`'s pass-application into a shared `applyRequestedPasses` helper touching the same lines this fix touches. Reconciling: `applyRequestedPasses`'s Graphiti branch gated on `wanted.graphiti && !graph.graphitiApplied` — combined with this fix's `augmentWithGraphitiEdges` never resetting `graphitiApplied` back to `false`, that gate would have silently reintroduced #137's exact bug one layer down (a graph that ever succeeded once would never be reconsidered). Fixed by dropping the `!graph.graphitiApplied` clause — `augmentWithGraphitiEdges` already self-guards via `graphitiEpisodeGen`.
+- **Pre-push adversarial review found a third, pre-existing occurrence of #127's `llmWanted`-vs-`llmRequested` bug shape** (on `main` since PR #131, untouched by the merge above) in `getDocGraph`'s fast cache-hit condition — `(cached.llmApplied || !llmWanted)` let an unavailable-but-requesting caller silently accept a stale, background-cached graph missing LLM carry-forward, permanently (not self-healing when availability returns). Fixed to `!llmRequested`, mirroring the two call sites PR #131 already fixed. New mutation-tested regression test in `docGraph.test.ts`.
+
+**PR #139 (branch `claude/docgraph-graphiti-generation-refresh`, https://github.com/Vinylfigure/intent-ide/pull/139, body "Closes #137") is OPEN, not yet merged to `main` — awaiting operator review.**
+
+Closes #137 (on merge). Files #138.
+
+## [2026-08-28] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 open (not yet merged)
+
 Closes issue #127, filed 2026-08-27 as a work-loop idle-evaluation proposal and named as a known pre-existing debt in the Cascade v2 roadmap close-out (`raw_reflection_log.md`/`progress.md` "Inflight-dedupe race" carry-forward line) but never fixed until now.
 
 ### Fixed

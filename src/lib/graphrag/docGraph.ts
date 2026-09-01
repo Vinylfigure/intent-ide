@@ -11,6 +11,7 @@ import {
   type GraphNode as GraphitiNode,
   type SubgraphResult as GraphitiSubgraph,
 } from '@/lib/mcp/graphitiClient'
+import { getEpisodeGeneration } from './episodeIngestion'
 
 /**
  * Document dependency graph — the retrieval index the cascade queries instead
@@ -23,6 +24,16 @@ import {
  *
  * Positions stored on nodes are build-time snapshots for ordering only — every
  * consumer re-resolves blocks against the live doc via findBlockById.
+ *
+ * NOT a stable-once-built value object: a cached graph can be mutated AND
+ * re-published under the SAME object reference by a later `getDocGraph` call
+ * for the same content hash — e.g. a Graphiti retry after a new episode
+ * lands (see `graphitiEpisodeGen`). `docGraphStore`'s Zustand selector
+ * bails out on `Object.is` equality, so an already-mounted component that
+ * isn't re-rendering for some other reason at that moment can read a
+ * momentarily-stale `edges`/`adjacency` off an old render. `proposeCascadeEdits`
+ * is unaffected (it always awaits a fresh `getDocGraph` return value); this
+ * only risks a stale "why this proposal?" explainer line — see #138.
  */
 
 export interface DocGraphNode {
@@ -90,6 +101,15 @@ export interface DocGraph {
    * build) — never on warm-cache hits.
    */
   graphitiApplied: boolean
+  /**
+   * The episodeIngestion generation (see `getEpisodeGeneration`) as of the
+   * last time the Graphiti pass was ATTEMPTED for this graph object — set on
+   * success and on failure alike, -1 before any attempt. A warm-cache graph
+   * only skips re-attempting Graphiti when this still matches the current
+   * generation; a new episode ingested since (even for the same, unchanged
+   * content hash) advances the generation and forces one retry.
+   */
+  graphitiEpisodeGen: number
   /** Per-textblock FNV-1a over blockId + text — the incremental-diff unit. */
   blockHashes: Map<string, string>
   nodes: Map<string, DocGraphNode>
@@ -346,6 +366,7 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
     embeddingsApplied: false,
     embeddingsPartial: false,
     graphitiApplied: false,
+    graphitiEpisodeGen: -1,
     blockHashes,
     nodes,
     edges,
@@ -559,6 +580,8 @@ export interface GraphitiEdgeDeps {
   searchNodes?: (query: string, limit?: number, signal?: AbortSignal) => Promise<GraphitiNode[]>
   getSubgraph?: (nodeId: string, radius?: number, signal?: AbortSignal) => Promise<GraphitiSubgraph>
   timeoutMs?: number
+  /** Test override for `getEpisodeGeneration()` — the real episodeIngestion counter otherwise. */
+  episodeGeneration?: number
 }
 
 /**
@@ -611,14 +634,29 @@ async function withDeadline<T>(
  * AbortSignal is threaded through searchNodes/getSubgraph, and the sequential
  * subgraph loop stops between calls once aborted), and ANY failure (FalkorDB
  * down — the usual dev state) returns silently having changed nothing.
+ *
+ * Retried, not just cached, per episode generation: a call is skipped only
+ * when `graph.graphitiEpisodeGen` already matches the current
+ * `getEpisodeGeneration()` — i.e. nothing has been ingested since this graph's
+ * last attempt, success or failure. A new episode (ingested via
+ * `ingestAnnotationEpisode`/`ingestEditEpisode`) bumps the generation and
+ * forces exactly one more attempt on the next call, even for an unchanged
+ * content hash and even after a prior success.
+ *
+ * `currentGen` is snapshotted before the (up to GRAPHITI_TIMEOUT_MS) MCP
+ * round trip, so an episode landing mid-call is recorded as one generation
+ * stale — self-correcting, since the next `getDocGraph` call recomputes the
+ * live generation and detects the mismatch again; never a permanent miss.
  */
 export async function augmentWithGraphitiEdges(
   graph: DocGraph,
   deps: GraphitiEdgeDeps = {},
 ): Promise<void> {
-  if (graph.graphitiApplied) return
+  const currentGen = deps.episodeGeneration ?? getEpisodeGeneration()
+  if (graph.graphitiEpisodeGen === currentGen) return
   if (graph.nodes.size < 2) {
     graph.graphitiApplied = true
+    graph.graphitiEpisodeGen = currentGen
     return
   }
   const search = deps.searchNodes ?? graphitiSearchNodes
@@ -700,9 +738,14 @@ export async function augmentWithGraphitiEdges(
     }
     if (added) graph.adjacency = buildAdjacency(graph.edges)
     graph.graphitiApplied = true
+    graph.graphitiEpisodeGen = currentGen
   } catch {
     // MCP unreachable, malformed reply, or deadline hit — the graph is fully
     // usable without this pass; return silently, never throw, never block.
+    // graphitiApplied stays false (retryable), but graphitiEpisodeGen still
+    // advances so a warm cache doesn't hammer a down FalkorDB every cascade —
+    // only a new episode (generation bump) earns another attempt.
+    graph.graphitiEpisodeGen = currentGen
   }
 }
 
@@ -768,10 +811,13 @@ async function applyRequestedPasses(
   }
   // Graphiti entity edges: user-initiated builds only (same privacy stance as
   // the LLM/embedding passes — background typing must never trigger MCP
-  // traffic). Deliberately NOT part of the cache-hit condition in getDocGraph:
-  // when FalkorDB is down (the usual dev state) a warm cache must not re-pay
-  // the connection attempt on every cascade.
-  if (wanted.graphiti && !graph.graphitiApplied) {
+  // traffic). No `!graph.graphitiApplied` gate here — that flag never resets
+  // once true, which would permanently skip this call after the first
+  // success. augmentWithGraphitiEdges own-guards on graphitiEpisodeGen, so it
+  // is safe (and necessary) to call unconditionally whenever graphiti is
+  // wanted: it no-ops when nothing has been ingested since its last attempt,
+  // and retries exactly once per new episode otherwise.
+  if (wanted.graphiti) {
     await augmentWithGraphitiEdges(graph, deps.graphiti)
   }
 }
@@ -948,8 +994,28 @@ export async function getDocGraph(
   // correct for them (matches original behavior).
   const wanted: RequestedPasses = { llm: llmRequested, embeddings: embeddingsWanted, graphiti: graphitiWanted }
 
+  // Same generation source augmentWithGraphitiEdges itself will consult, read
+  // once so the fast-path decision and the eventual attempt (if any) agree.
+  const episodeGen = deps.graphiti?.episodeGeneration ?? getEpisodeGeneration()
   const cached = graphCache.get(hash)
-  if (cached && (cached.llmApplied || !llmWanted) && (cached.embeddingsApplied || !embeddingsWanted)) {
+  if (
+    cached &&
+    // `!llmRequested`, not `!llmWanted`: the same intent-vs-availability
+    // distinction from the top of this function applies here too — a cached
+    // graph that never ran carry-forward (because the caller's raw intent
+    // was skipLlm) must not be treated as a hit for a caller who DOES want
+    // carry-forward now, even if that caller is currently unavailable. Using
+    // the availability-gated flag here let an unavailable-but-requesting
+    // caller silently accept a stale cache entry missing edges that
+    // carry-forward would have restored — the same bug shape already fixed
+    // for the `wanted` object above and the inflight `covers` check below,
+    // just one call site further along.
+    (cached.llmApplied || !llmRequested) &&
+    (cached.embeddingsApplied || !embeddingsWanted) &&
+    // A prior Graphiti attempt (success or failure) at the CURRENT episode
+    // generation is still good; skipGraphiti call sites never need it at all.
+    (deps.skipGraphiti || cached.graphitiEpisodeGen === episodeGen)
+  ) {
     // Cache hits publish too — a fresh page with a warm cache still needs the
     // UI store filled before the chip / edge paths can render. Synchronous
     // resolution: publish 'ready' directly, never a 'building' flicker.
