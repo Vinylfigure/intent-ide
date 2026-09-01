@@ -82,6 +82,8 @@ Closes #137 (on merge). Files #138.
 
 ## [2026-08-28] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 open (not yet merged)
 
+## [2026-08-28 → merged 2026-08-30] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 MERGED
+
 Closes issue #127, filed 2026-08-27 as a work-loop idle-evaluation proposal and named as a known pre-existing debt in the Cascade v2 roadmap close-out (`raw_reflection_log.md`/`progress.md` "Inflight-dedupe race" carry-forward line) but never fixed until now.
 
 ### Fixed
@@ -97,9 +99,52 @@ Closes issue #127, filed 2026-08-27 as a work-loop idle-evaluation proposal and 
 
 **PR #131 (branch `claude/docgraph-inflight-capability`, https://github.com/Vinylfigure/intent-ide/pull/131, body "Closes #127") MERGED to `main`** — confirmed via the merge-conflict resolution entry at the top of this file (2026-08-30).
 
+**PR #131 (branch `claude/docgraph-inflight-capability`, https://github.com/Vinylfigure/intent-ide/pull/131, body "Closes #127") MERGED to `main`** — confirmed merged as of the memory-bank catch-up session (2026-08-30).
+
 Closes #127.
 
 **Also for continuity, not actioned this session:** at the start of this session, **PR #123** (closes #117) and **PR #124** (closes #121) — both logged below as "open" — had since **merged**; issue #122 (the `loadDoc()` outgoing-autosave-flush data-loss bug PR #123 disclosed but didn't fix) gained an open **PR #125**, which went stale (`mergeable_state: dirty`) after #123/#124 merged and was superseded by **PR #130** ("Rebase #125 onto main after #123 merged", also closes #122, `mergeable_state: clean`, CI green) — both #125 and #130 are still open, untouched this session (their own CI is green). **PR #129** (closes #126, `changesStore` documentId migration mirroring `annotationStore`'s) merged before this session started. New issue **#128** was filed by the repo owner (not this session) about a migration-fallback data-integrity gap in `migrateAnnotations`/`migrateChanges`, discovered from PR #129's own adversarial review — still open, not evaluated this session since #127 was chosen first as the older ready task.
+
+## [2026-08-30] Documentation catch-up — PRs #130 and #132 merged without memory-bank updates
+
+Two PRs merged to `main` since the last memory-bank update (the PR #131 session, 2026-08-28) with no `memory-bank/` changes in their diffs — pure code+test PRs, violating this repo's own CLAUDE.md convention of bundling memory-bank updates into the PR that does the work: **PR #130** (rebase of #125, closes #122) and **PR #132** (closes #128, files #133). PR #131 itself already carried its own entry above when it merged — only its header/status line needed correcting here, not a new entry. Documented here retroactively, as its own small documentation-only PR (`claude/memory-bank-catchup-130-131-132`); `main` was at `f322e4c` at the time of this catch-up and already includes all three PRs' code. No `src/` files were touched by this session.
+
+## [2026-08-30] Legacy `documentId` migration fallback hardened (PR #132, documented retroactively)
+
+`migrateAnnotations` (`annotationStore.ts`) and `migrateChanges` (`changesStore.ts`) both backfilled a missing/undefined `documentId` on pre-multi-document (pre-Phase-8, 2026-03-16) persisted records using whatever `activeDocumentId` happened to be active at the moment of the first post-upgrade rehydration — a user who'd used the app across multiple distinct pre-Phase-8 documents could have all that history silently merged onto whichever document happened to be open, contaminating its `AnnotationPanel`/`ChangesPanel`/`StatusBar` views.
+
+### Fixed
+- Both migrations now always fall back to one fixed `LEGACY_DOCUMENT_ID = 'legacy'` placeholder, shared via new file `src/lib/documents/legacyDocumentId.ts`, never `activeDocumentId`.
+
+### Investigated, deliberately not pursued
+- Whether a stable per-document identifier survives in the persisted data to properly un-merge distinct legacy documents: no stored foreign key exists, but `anchor.text`/`beforeSlice`/`afterSlice` do carry quoted document text that could in principle content-match against the legacy document bodies `documentStore.ts`'s `runLegacyProjectMigration` already recovers under real ids. Not pursued — reasoning recorded in `legacyDocumentId.ts`'s doc comment: no rehydration-order guarantee across three independent Zustand `persist` stores; duplicate/near-duplicate phrasing is exactly what a text match would collide on; likely small affected population.
+
+### Process
+- One round of pre-push adversarial (troublemaker) review, **NO-MERGE with 1 HIGH + 2 MEDIUM**, all fixed before the PR was opened.
+- (MEDIUM) the doc comment's first draft overstated the investigation, falsely claiming no field survives at all — corrected to state the real reasoning above.
+- **(HIGH, disclosed rather than silently shipped)** the fix trades silent cross-document contamination for a new cost: since no real document is ever created with `LEGACY_DOCUMENT_ID`, a migrated record becomes permanently invisible to every `documentId === activeDocumentId` filtered view (`AnnotationPanel`/`ChangesPanel`/`StatusBar`/`AnnotationMap`/`FloatingAnswer`), with no UI path to view/manage/delete it. Explicitly documented as an accepted trade-off, bounded by each store's existing FIFO persistence caps (orphaned records eventually age out rather than growing unbounded), and covered by a regression test per store asserting the invisibility holds against every possible active document. Giving users an actual UI path to reach this bucket was ruled out of scope for #128 and filed as follow-up **issue #133**.
+- (MEDIUM) `annotationStore.migration.test.ts` had re-implemented `migrateAnnotations` by hand with a comment claiming it "is not exported" — false as of this PR since it's now exported (mirroring `migrateChanges`, exported since #129) — switched to import and test the real function instead of a hand-rolled duplicate that could silently drift from it.
+- `npm run test` — 1132 passing + 10 skipped at merge (up from 1120 baseline). 2 new/updated test files.
+
+**PR #132 (branch `claude/legacy-documentid-migration-fallback`, body "Closes #128") MERGED to `main`.**
+
+Closes #128. Files #133.
+
+## [2026-08-30] `loadDoc()` flush-before-switch fix rebased onto `main` — PR #130 MERGED, supersedes PR #125 (documented retroactively)
+
+Consumes issue #122 (filed by PR #123/#117's own adversarial review, 2026-08-27 — see the PR #123 entry below): `DocInputModal`'s `loadDoc()` never flushed the outgoing document's dirty autosave before switching documents, causing silent data loss (full repro chain recorded in the PR #123 entry below).
+
+### Fixed
+- **`loadDoc()` now flushes the outgoing document's dirty state** via `saveDocument`/`recordCommit` before replacing editor content, mirroring `EditorShell.tsx`'s existing flush-before-switch guard.
+
+### Process
+- **PR #130 (branch `claude/rebase-125`)** rebased PR #125's fix onto `main` after PR #123 (`loadDoc-undo-history-guard`, closes #117) had already merged and created a conflict.
+- PR #125 itself is also now marked merged by GitHub (its commits landed via #130's rebase) — treated as superseded/subsumed by #130 rather than a separate delivery, per #130's own PR body ("Supersedes #125 — close it rather than merging once this lands").
+- `npm run test` — 1122 passed, 10 skipped, at merge.
+
+**PR #130 (branch `claude/rebase-125`, body "Rebase #125 (loadDoc flush) onto main after #123 merged") MERGED to `main`.**
+
+Closes #122.
 
 ## [2026-08-27 → merged 2026-08-28] StatusBar "N thinking…" chip scoped to active document — fix delivered, PR #124 MERGED
 
