@@ -5,6 +5,62 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-08-30] PR #135 brought current with `main` after PRs #130/#131/#132 merged; PR #136 folded in by the operator
+
+Housekeeping, not a feature entry. `main` advanced past PR #135's stacked base (PR #132's branch) once the operator merged PRs #130, #131, and #132 to `main`; GitHub retargeted #135's base to `main`, exposing a real `mergeable_state: dirty` — three `memory-bank/*.md` append-at-top conflicts only (same class PR #130 resolved for #125/#123), no source-code conflicts. Separately, the operator merged **PR #136** (closes #134) directly into PR #135's branch rather than into `main`, so #135's diff now also carries #134's fix.
+
+- Merged `origin/main` into `claude/legacy-data-ui` with a merge commit (never a rebase — the branch already carries the operator's own merge commit from landing #136, so history was not rewritten).
+- Resolved all three memory-bank conflicts by concatenating both sides' entries in true chronological order, dropping nothing from either parallel firing.
+- Re-ran `npm run typecheck` / `npm run lint` / `npm run test` on the merged tree before pushing.
+- Updated PR #135's body to also say "Closes #134", since #136's commits are now part of its diff.
+
+## [2026-08-29] `changesStore` wiring for document delete — fix delivered, PR #136 MERGED into PR #135's branch (not `main`) by the operator, 2026-08-29 → 2026-08-30
+
+Closes issue #134 (task: label, filed 2026-08-28, `discovered-from: work-loop adversarial review of the PR for #133, 2026-08-28`). `DocumentHubSidebar.tsx`'s `handleDeleteDocument` called `useAnnotationStore.getState().removeByDocumentId(documentId)` (fixed for annotations by #107/PR #106) but never called the `changesStore` equivalent, because until PR #135 `changesStore.ts` had no `removeByDocumentId` action at all. #135 added that action (for #133); #134's scope was purely wiring it into the document-delete handler. **PR #136's base branch is `claude/legacy-data-ui` (PR #135's branch), not `main`** — the `removeByDocumentId` action it depends on doesn't exist on `main` yet.
+
+### Fixed
+- **`src/components/Layout/DocumentHubSidebar.tsx`:** added `import { useChangesStore } from '@/stores/changesStore'`; `handleDeleteDocument` now also calls `useChangesStore.getState().removeByDocumentId(documentId)`, right after the existing `useAnnotationStore` call and before `deleteDocument(documentId)`.
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**, no blocking findings. Independently reproduced typecheck/lint/test and the mutation test (stashed the fix, confirmed the new test fails with the `e-1` entry surviving deletion; restored, confirmed green). Independently re-verified that `deleteCollection` (`documentStore.ts`) has no analogous gap — it never cascade-deletes member documents, only strips `collectionIds` — by reading the function directly. Grepped repo-wide for `deleteDocument(` — `DocumentHubSidebar.tsx` is the only call site; both its `onDelete` entry points (all-documents row, expanded-collection row) funnel through the same `handleDeleteDocument`, so one test covers both.
+- **One LOW, disclosed, not fixed, pre-existing from #135 (not this diff):** `changesStore.removeByDocumentId` doesn't touch `snapshots` (`VersionSnapshot` has no `documentId` field) — mitigated since snapshots are never persisted (`onRehydrateStorage` always resets to `[]`), so it's an in-memory-only, session-bounded gap, not a storage leak. Not filed as a new issue.
+- New test file `src/components/Layout/__tests__/documentHubSidebar.deleteClearsChanges.test.tsx` (2 tests): deleting a document via the UI confirmation flow removes only that document's `changesStore` entries/changeSets, others untouched; cancelling leaves `changesStore` untouched.
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — **1139 passing + 10 skipped** (up from 1137 on PR #135's branch; +2 new tests).
+
+**PR #136 (branch `claude/changesstore-delete-wiring`, https://github.com/Vinylfigure/intent-ide/pull/136, base `claude/legacy-data-ui`) MERGED** — confirmed via the GitHub API: `merged: true`, `merged_by: Vinylfigure`, merge commit `f2196d7`. Merged into PR #135's branch rather than `main` directly, so #134's fix reaches `main` only once #135 itself merges (see the entry above).
+
+Closes #134 (reaches `main` once #135 merges).
+
+**Also for continuity, not actioned this firing:** as of this firing's ready-sweep, four other open PRs exist, all green CI, all `mergeable_state: clean` except one: PR #135 (closes #133, stacked on #132), PR #132 (closes #128, base `main`), PR #131 (closes #127, base `main`), PR #130 (closes #122, base `main`, supersedes and should replace #125 which is now `mergeable_state: dirty` — #130's own body says close #125 without merging once #130 lands). None had red checks, so per the work-loop skill's priority rule they didn't outrank starting new work on #134.
+
+## [2026-08-28] Legacy-data view/manage/purge UI for the `LEGACY_DOCUMENT_ID` bucket — fix delivered, PR #135 open (base retargeted to `main` 2026-08-30 after PR #132 merged)
+
+Closes issue #133 ("no UI path to view/manage/purge the LEGACY_DOCUMENT_ID migration bucket"), filed as a follow-up from PR #132's own adversarial review. **PR #135's base branch is `claude/legacy-documentid-migration-fallback` (PR #132's branch), not `main`** — #133's fix depends on `src/lib/documents/legacyDocumentId.ts`, which PR #132 introduces and which does not exist on `main` yet.
+
+### Added
+- **`changesStore.ts` gains `removeByDocumentId(documentId)`** (filters `entries` + `changeSets`), mirroring `annotationStore.ts`'s existing action of the same name — `changesStore` had no equivalent before this PR.
+- **New "Legacy data" section in `ApiKeyModal.tsx`'s API Configuration modal**, shown only when non-empty: counts of `LEGACY_DOCUMENT_ID`-scoped annotations/change-sets/changes, and a "Clear legacy data" button wired to both stores' `removeByDocumentId(LEGACY_DOCUMENT_ID)`.
+
+### Decided against
+- **Did not make `LEGACY_DOCUMENT_ID` selectable as `activeDocumentId`** — the issue's other suggested approach. Verified via `EditorShell.tsx` that new annotations/changes are stamped `documentId: activeDocumentId` at creation time, so making the placeholder "active" would let new records leak into the bucket — a new contamination vector into the exact thing PR #132 just closed off. A dedicated settings-panel view/clear affordance was used instead.
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**, no blocking findings.
+- **MEDIUM, disclosed not fixed:** "Clear legacy data" has no confirmation gate and is irreversible, foreclosing a hypothetical future content-matching un-merge recovery path `legacyDocumentId.ts`'s own doc comment describes as "left undone" (not abandoned). Judged acceptable — CLAUDE.md's HITL mandate is scoped to "global document changes"; this is orphaned metadata attached to no real, visible document, unlike `DocumentHubSidebar`'s Confirmation-gated document/collection delete. Precedent: this same modal already has an unguarded irreversible "Reset" button for calibration stats.
+- **LOW, moot:** `removeByDocumentId` doesn't touch `snapshots` (no `documentId` field) — confirmed `createSnapshot()` has zero production call sites anywhere in `src/`, dead code today.
+- **LOW, pre-existing, confirmed, NOT fixed here, filed as follow-up issue #134:** `DocumentHubSidebar.tsx`'s real document-delete handler only calls `useAnnotationStore.getState().removeByDocumentId`, never a `useChangesStore` equivalent (which didn't exist until this PR added it) — so deleting a real document has always silently orphaned that document's changesStore entries/changeSets, independent of this PR (`discovered-from: work-loop adversarial review of the PR for #133, 2026-08-28`).
+- **LOW, cosmetic, not blocking:** since the section renders on the sum of three counts, an individual count can read "0" in the rendered sentence.
+- New test files: `src/stores/__tests__/changesStore.removeByDocumentId.test.ts` (2 tests), `src/components/Settings/__tests__/apiKeyModal.legacyData.test.tsx` (3 tests) — both mutation-tested (fail against reverted production code).
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — **1137 passing + 10 skipped** on the PR branch (up from 1132 on PR #132's branch, the merge base).
+
+**PR #135 (branch `claude/legacy-data-ui`) is OPEN.** PR #132 merged to `main` 2026-08-30; GitHub retargeted #135's base to `main`, exposing a memory-bank-only merge conflict resolved in the entry at the top of this file. #135 now also carries PR #136's fix (closes #134), merged into its branch by the operator — see above.
+
+Closes #133, #134 (on merge).
+
+**Also for continuity, not actioned this session:** as of this sweep, three PRs besides #135 are open, all green CI / clean `mergeable_state`, all awaiting operator review/merge: PR #130 (closes #122, supersedes and should replace #125 which went dirty), PR #131 (closes #127, docGraph inflight capability keying), PR #132 (closes #128, legacy documentId migration fallback — PR #135 above stacks on it). PR #125 is superseded by #130 and should be closed (not merged) once #130 lands — operator's call, not actioned by this firing. Issue #134 (filed above) is not yet consumed.
+
+## [2026-08-28] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 MERGED (2026-08-30, confirmed via the merge-conflict resolution entry at the top of this file)
+
 ## [2026-08-30] `getDocGraph` Graphiti fast-cache-hit staleness — fix delivered, PR #139 open (not yet merged)
 
 Closes issue #137.
@@ -39,9 +95,9 @@ Closes issue #127, filed 2026-08-27 as a work-loop idle-evaluation proposal and 
 - `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1126 passing + 10 skipped (up from 1120 on `main` at merge base `2f388a9`; +6 new tests, nothing else regressed).
 - No new follow-up issues filed — the one disclosed known limitation (chained continuations serialize rather than parallelize disjoint capability requests) was closed with a regression test rather than deferred, and is explicitly within #127's own stated scope, not a descoped remainder.
 
-**PR #131 (branch `claude/docgraph-inflight-capability`, https://github.com/Vinylfigure/intent-ide/pull/131, body "Closes #127") is OPEN, not yet merged to `main` — subscribed for PR-activity events, awaiting operator review.**
+**PR #131 (branch `claude/docgraph-inflight-capability`, https://github.com/Vinylfigure/intent-ide/pull/131, body "Closes #127") MERGED to `main`** — confirmed via the merge-conflict resolution entry at the top of this file (2026-08-30).
 
-Closes #127 (on merge).
+Closes #127.
 
 **Also for continuity, not actioned this session:** at the start of this session, **PR #123** (closes #117) and **PR #124** (closes #121) — both logged below as "open" — had since **merged**; issue #122 (the `loadDoc()` outgoing-autosave-flush data-loss bug PR #123 disclosed but didn't fix) gained an open **PR #125**, which went stale (`mergeable_state: dirty`) after #123/#124 merged and was superseded by **PR #130** ("Rebase #125 onto main after #123 merged", also closes #122, `mergeable_state: clean`, CI green) — both #125 and #130 are still open, untouched this session (their own CI is green). **PR #129** (closes #126, `changesStore` documentId migration mirroring `annotationStore`'s) merged before this session started. New issue **#128** was filed by the repo owner (not this session) about a migration-fallback data-integrity gap in `migrateAnnotations`/`migrateChanges`, discovered from PR #129's own adversarial review — still open, not evaluated this session since #127 was chosen first as the older ready task.
 

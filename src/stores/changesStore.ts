@@ -45,6 +45,13 @@ interface ChangesState {
   updateChangeSetStatus: (id: string, status: ChangeSetStatus) => void
   setChangeSetCommitHash: (id: string, commitHash: string) => void
   getChangeSetByAnnotationId: (annotationId: string) => ChangeSet | undefined
+  /**
+   * Removes every entry and change set belonging to a given document —
+   * mirrors annotationStore.ts's `removeByDocumentId`. Used both for real
+   * document deletion and, via `LEGACY_DOCUMENT_ID`, to let a user clear the
+   * invisible pre-Phase-8 migration bucket (#133).
+   */
+  removeByDocumentId: (documentId: string) => void
   clear: () => void
 }
 
@@ -217,6 +224,12 @@ export const useChangesStore = create<ChangesState>()(
 
       getChangeSetByAnnotationId: (annotationId) =>
         get().changeSets.find((changeSet) => changeSet.annotationIds.includes(annotationId)),
+
+      removeByDocumentId: (documentId) =>
+        set((s) => ({
+          entries: s.entries.filter((e) => e.documentId !== documentId),
+          changeSets: s.changeSets.filter((cs) => cs.documentId !== documentId),
+        })),
 
       clear: () => set({ entries: [], changeSets: [], snapshots: [] }),
     }),
