@@ -80,6 +80,25 @@ Closes issue #137.
 
 Closes #137 (on merge). Files #138.
 
+## [2026-08-30] GitHub Actions CI broken repo-wide at the infrastructure level — diagnosed, not fixed (no code shipped, no PR opened)
+
+This firing found and reported a blocker rather than shipping a feature/bugfix; recorded here so the next firing doesn't have to re-diagnose it from scratch.
+
+### Found
+- **Three PRs open at firing start, all with RED `verify`/`gate-integrity` checks:** PR #135 ("Add a way to view and clear the LEGACY_DOCUMENT_ID migration bucket", closes #133/#134), PR #139 ("Retry Graphiti entity edges when a new episode lands...", closes #137, files #138), and PR #140 ("docs: memory-bank catch-up for PRs #130, #131, #132", documentation-only, from a prior firing — itself still open/unmerged, which is why this session's memory-bank read at start didn't yet contain #130/#131/#132's own write-up even though all three had already merged to `main`).
+- **`main`'s own push-triggered `CI` workflow has been failing since the #130/#131/#132 merges** — all three merge commits landed 2026-08-30 between 06:47 and 06:49 UTC; the prior push to `main` (merging #129, 2026-08-28 06:02 UTC) was green. The break is bounded to that window.
+- **Not a code regression:** every failed `verify` job attempt (4 total across the run's history, including one `rerun_failed_jobs` triggered this session specifically to rule out a one-off flake) completed in 0-5 seconds with 0ms billable runner time (`get_workflow_run_usage`) and a 404 on log download — the job never started executing a step. One attempt sat queued ~5.5 hours before failing this way. Likely operator-side: a GitHub Actions spending-limit/included-minutes exhaustion, a repo-visibility change (private repos lose the unlimited free Actions minutes public repos get on standard runners), or Actions disabled at the repo/org level — none of which an unattended firing can see or fix, and `.github/workflows/**` is off-limits to a headless firing to edit regardless of what's suspected.
+
+### Action taken
+- Posted a detailed diagnostic comment on the Status dashboard issue (#25) and a short pointer comment on each of #135, #139, #140 noting their red checks are not caused by their own diffs. No code was written or pushed; no new PR was opened; no new task issue was filed (this is a blocker report, not a proposal).
+
+### Process
+- This firing's "arm": blocked on operator (CI infrastructure) — the mid-sweep equivalent of the work-loop's operator-only preflight block, found against the existing PR queue rather than a specific issue's done-means.
+- **Next firing:** check whether `main`'s most recent push-triggered `CI` run is green before doing anything else. If still red with the same 0ms-billable-runtime signature, it's the same operator-side block — comment again only if something material has changed; otherwise treat hosted CI as unusable for now and consider proceeding with local `typecheck`/`lint`/`test` (per the `test` skill) rather than re-running the same diagnostic report every 4 hours.
+
+### Resolved
+- **2026-09-01 (fleet merge sweep):** the outage was account-level GitHub Actions capacity, not this repo — the identical `runner_id: 0` / empty `runner_name` / logs-404 signature hit `Vinylfigure/aegis-sentinel` and `Vinylfigure/job-search` over the same window. It cleared on its own (aegis-sentinel ran clean at 2026-09-01T00:50Z); `rerun_failed_jobs` on this repo's four stuck runs then returned **green with real durations** on the same unchanged head SHAs, proving the red was never the diffs. No code change was needed or made.
+
 ## [2026-08-28] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 open (not yet merged)
 
 ## [2026-08-28 → merged 2026-08-30] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 MERGED
