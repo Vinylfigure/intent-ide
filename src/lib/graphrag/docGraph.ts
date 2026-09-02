@@ -648,7 +648,7 @@ export async function augmentWithGraphitiEdges(
     )
 
     const ordered = [...graph.nodes.values()].sort((a, b) => a.pos - b.pos)
-    const edgeKeys = new Set(graph.edges.map((e) => `${e.from} ${e.to} ${e.type}`))
+    const edgeKeys = new Set(graph.edges.map((e) => `${e.from}\u0000${e.to}\u0000${e.type}`))
     let added = false
     let processedEntities = 0
     let addedEdges = 0
@@ -673,8 +673,8 @@ export async function augmentWithGraphitiEdges(
           const to = containing[j].blockId
           // Direction-normalized dedupe: check BOTH orientations so a graphiti
           // pair can never shadow-duplicate a reversed deterministic term edge.
-          const key = `${from} ${to} references`
-          const reverseKey = `${to} ${from} references`
+          const key = `${from}\u0000${to}\u0000references`
+          const reverseKey = `${to}\u0000${from}\u0000references`
           if (edgeKeys.has(key) || edgeKeys.has(reverseKey)) continue
           if (addedEdges >= GRAPHITI_MAX_EDGES_PER_BUILD) {
             edgeCapHit = true
@@ -812,7 +812,14 @@ let publishSeq = 0
  * Publish build lifecycle to the UI store (StatusBar chip, edge-path
  * affordances). Browser-only via lazy import — node tests and server code
  * never touch the store (same precedent as scheduleDocGraphRebuild's lazy
- * settings-store import). Failures are swallowed: publishing is cosmetic.
+ * settings-store import).
+ *
+ * This used to be cosmetic — the store fed a status chip and the "why this
+ * proposal?" edge paths. It is now load-bearing: the answer envelope's
+ * related-passage layer, the selection popup's offer counts, and the
+ * pre-apply blast-radius preview all read the published graph. A failure
+ * here means the graph is built and reaches nobody, so it stays non-fatal
+ * but is no longer silent.
  */
 function publishDocGraph(seq: number, status: 'building' | 'ready', graph?: DocGraph): void {
   if (typeof window === 'undefined') return
@@ -820,7 +827,9 @@ function publishDocGraph(seq: number, status: 'building' | 'ready', graph?: DocG
     .then(({ useDocGraphStore }) => {
       useDocGraphStore.getState().publish(seq, status, graph)
     })
-    .catch(() => {})
+    .catch((err) => {
+      console.warn('[docGraph] could not publish graph to the UI store', err)
+    })
 }
 
 /** User toggle for the embedding pass (settings store, default true). */
@@ -1050,7 +1059,13 @@ export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void 
         skipEmbeddings: true,
         skipGraphiti: true,
       })
-    })().catch(() => {})
+    })().catch((err) => {
+      // Swallowing this entirely meant a failed build left the graph null
+      // forever with no signal anywhere — every consumer degrading silently
+      // and permanently. Still non-fatal (the editor must not break because
+      // an index failed), but no longer invisible.
+      console.warn('[docGraph] background rebuild failed; section map unavailable', err)
+    })
   }, delayMs)
 }
 

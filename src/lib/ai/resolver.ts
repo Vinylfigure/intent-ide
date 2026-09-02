@@ -5,7 +5,14 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { useAgentConfigStore } from '@/stores/agentConfigStore'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useChangesStore } from '@/stores/changesStore'
-import { getBlockText, getSectionText } from '@/lib/prosemirror/helpers'
+import { getSectionText } from '@/lib/prosemirror/helpers'
+import {
+  buildBranchChain,
+  buildIntentContext,
+  formatBranchChain,
+  formatIntentContext,
+} from '@/lib/ai/intentContext'
+import { inferScopeFromText } from '@/lib/annotations/selectionOffers'
 import { runMADS } from './mads'
 import { logResolutionAudit } from '@/lib/audit/auditLogger'
 import { primaryProposedEdit, proposeCascadeEdits } from './orchestrator'
@@ -175,8 +182,18 @@ export async function resolveAnnotation(
   const sessionContext = useSessionStore.getState().context
 
   // Build context
-  const localBlock = getBlockText(editorState, annotation.anchor.from)
   const sectionText = getSectionText(editorState, annotation.anchor.from)
+  // Context is no longer just what is physically adjacent to the span: the
+  // envelope adds the section's objective, the passages the doc graph says
+  // bear on this block, and the facts the author declared about them. Every
+  // layer is capped — see intentContext.ts for why that matters on a small
+  // local context window.
+  const intentContext = await buildIntentContext(
+    editorState,
+    annotation.anchor.from,
+    annotation.anchor.scope,
+    annotation.sourceQuote ? inferScopeFromText(annotation.sourceQuote) : undefined,
+  )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
   // Try MADS pipeline for complex intents (correction, restructure, ambiguous fixes)
@@ -223,13 +240,23 @@ export async function resolveAnnotation(
     typePrompt = agentConfig.customInstructions + '\n\n' + typePrompt
   }
 
-  const scope = annotation.anchor.scope
+  // A sub-chat spun off an answer inherits the parent's document positions
+  // (so gutter/map/cascade keep working) but is ABOUT its own quoted span.
+  // Size and instruct it from that quote, or a two-word question inherits a
+  // paragraph-sized budget and answers far too broadly.
+  const scope = annotation.sourceQuote
+    ? inferScopeFromText(annotation.sourceQuote)
+    : annotation.anchor.scope
   const scopeLimit = SCOPE_TOKEN_LIMITS[scope]
   const verbosity = resolveAdaptiveVerbosity(annotation)
   const verbosityMul = VERBOSITY_MULTIPLIER[verbosity]
   const effectiveMaxTokens = Math.round(Math.min(agentConfig.maxTokens, scopeLimit) * verbosityMul)
   const scopeInstruction = SCOPE_INSTRUCTIONS[scope]
   const reviewProgress = buildReviewProgress(annotation.id)
+  // Rabbit-holing is where a model quietly contradicts itself: each answer is
+  // generated against its own span, so nothing stops level 3 from asserting
+  // the opposite of level 1. Carry the ancestry and ask for the check.
+  const branchChain = formatBranchChain(buildBranchChain(annotation.id))
 
   const messages: LLMMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -239,11 +266,9 @@ export async function resolveAnnotation(
   Type: ${annotation.type}
   Scope: ${scope}
   User said: "${annotation.transcript}"
-  Selected text: "${annotation.anchor.text}"
+  Selected text: "${annotation.anchor.text}"${annotation.sourceQuote ? `\n  Quoted from a previous answer — ANSWER ONLY ABOUT THIS: "${annotation.sourceQuote}"` : ''}
 
-CONTEXT:
-  Local block: "${localBlock}"
-  Section: "${sectionText.slice(0, 1000)}"
+${formatIntentContext(intentContext)}${branchChain}
 ${reviewProgress}
 
 ${typePrompt}
@@ -342,8 +367,18 @@ export async function streamResolveAnnotation(
   // Re-read after compaction — see resolveAnnotation's identical comment.
   const sessionContext = useSessionStore.getState().context
 
-  const localBlock = getBlockText(editorState, annotation.anchor.from)
   const sectionText = getSectionText(editorState, annotation.anchor.from)
+  // Context is no longer just what is physically adjacent to the span: the
+  // envelope adds the section's objective, the passages the doc graph says
+  // bear on this block, and the facts the author declared about them. Every
+  // layer is capped — see intentContext.ts for why that matters on a small
+  // local context window.
+  const intentContext = await buildIntentContext(
+    editorState,
+    annotation.anchor.from,
+    annotation.anchor.scope,
+    annotation.sourceQuote ? inferScopeFromText(annotation.sourceQuote) : undefined,
+  )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
   // MADS doesn't stream — fall back to non-streaming for complex intents
@@ -391,13 +426,23 @@ export async function streamResolveAnnotation(
     typePrompt = agentConfig.customInstructions + '\n\n' + typePrompt
   }
 
-  const scope = annotation.anchor.scope
+  // A sub-chat spun off an answer inherits the parent's document positions
+  // (so gutter/map/cascade keep working) but is ABOUT its own quoted span.
+  // Size and instruct it from that quote, or a two-word question inherits a
+  // paragraph-sized budget and answers far too broadly.
+  const scope = annotation.sourceQuote
+    ? inferScopeFromText(annotation.sourceQuote)
+    : annotation.anchor.scope
   const scopeLimit = SCOPE_TOKEN_LIMITS[scope]
   const verbosity = resolveAdaptiveVerbosity(annotation)
   const verbosityMul = VERBOSITY_MULTIPLIER[verbosity]
   const effectiveMaxTokens = Math.round(Math.min(agentConfig.maxTokens, scopeLimit) * verbosityMul)
   const scopeInstruction = SCOPE_INSTRUCTIONS[scope]
   const reviewProgress = buildReviewProgress(annotation.id)
+  // Rabbit-holing is where a model quietly contradicts itself: each answer is
+  // generated against its own span, so nothing stops level 3 from asserting
+  // the opposite of level 1. Carry the ancestry and ask for the check.
+  const branchChain = formatBranchChain(buildBranchChain(annotation.id))
 
   const messages: LLMMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -407,11 +452,9 @@ export async function streamResolveAnnotation(
   Type: ${annotation.type}
   Scope: ${scope}
   User said: "${annotation.transcript}"
-  Selected text: "${annotation.anchor.text}"
+  Selected text: "${annotation.anchor.text}"${annotation.sourceQuote ? `\n  Quoted from a previous answer — ANSWER ONLY ABOUT THIS: "${annotation.sourceQuote}"` : ''}
 
-CONTEXT:
-  Local block: "${localBlock}"
-  Section: "${sectionText.slice(0, 1000)}"
+${formatIntentContext(intentContext)}${branchChain}
 ${reviewProgress}
 
 ${typePrompt}
@@ -554,8 +597,18 @@ export async function continueThread(
   const sessionContext = useSessionStore.getState().context
 
   // Build context
-  const localBlock = getBlockText(editorState, annotation.anchor.from)
   const sectionText = getSectionText(editorState, annotation.anchor.from)
+  // Context is no longer just what is physically adjacent to the span: the
+  // envelope adds the section's objective, the passages the doc graph says
+  // bear on this block, and the facts the author declared about them. Every
+  // layer is capped — see intentContext.ts for why that matters on a small
+  // local context window.
+  const intentContext = await buildIntentContext(
+    editorState,
+    annotation.anchor.from,
+    annotation.anchor.scope,
+    annotation.sourceQuote ? inferScopeFromText(annotation.sourceQuote) : undefined,
+  )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
   const agentConfig = useAgentConfigStore.getState().getConfig(annotation.type)
@@ -566,13 +619,23 @@ export async function continueThread(
     typePrompt = agentConfig.customInstructions + '\n\n' + typePrompt
   }
 
-  const scope = annotation.anchor.scope
+  // A sub-chat spun off an answer inherits the parent's document positions
+  // (so gutter/map/cascade keep working) but is ABOUT its own quoted span.
+  // Size and instruct it from that quote, or a two-word question inherits a
+  // paragraph-sized budget and answers far too broadly.
+  const scope = annotation.sourceQuote
+    ? inferScopeFromText(annotation.sourceQuote)
+    : annotation.anchor.scope
   const scopeLimit = SCOPE_TOKEN_LIMITS[scope]
   const verbosity = resolveAdaptiveVerbosity(annotation)
   const verbosityMul = VERBOSITY_MULTIPLIER[verbosity]
   const effectiveMaxTokens = Math.round(Math.min(agentConfig.maxTokens, scopeLimit) * verbosityMul)
   const scopeInstruction = SCOPE_INSTRUCTIONS[scope]
   const reviewProgress = buildReviewProgress(annotation.id)
+  // Rabbit-holing is where a model quietly contradicts itself: each answer is
+  // generated against its own span, so nothing stops level 3 from asserting
+  // the opposite of level 1. Carry the ancestry and ask for the check.
+  const branchChain = formatBranchChain(buildBranchChain(annotation.id))
 
   // Build messages from full conversation history
   const messages: LLMMessage[] = [
@@ -583,11 +646,9 @@ export async function continueThread(
   Type: ${annotation.type}
   Scope: ${scope}
   User said: "${annotation.transcript}"
-  Selected text: "${annotation.anchor.text}"
+  Selected text: "${annotation.anchor.text}"${annotation.sourceQuote ? `\n  Quoted from a previous answer — ANSWER ONLY ABOUT THIS: "${annotation.sourceQuote}"` : ''}
 
-CONTEXT:
-  Local block: "${localBlock}"
-  Section: "${sectionText.slice(0, 1000)}"
+${formatIntentContext(intentContext)}${branchChain}
 ${reviewProgress}
 
 ${typePrompt}

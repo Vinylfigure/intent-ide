@@ -26,6 +26,25 @@ function collectChildren(parentId: string, byParent: Map<string, Annotation[]>):
   return children.flatMap((child) => [child, ...collectChildren(child.id, byParent)])
 }
 
+/**
+ * Depth of `id` within its group's parentId chain, walked iteratively (not
+ * recursively) so a parentId cycle, or a parentId pointing outside the
+ * group, just stops the walk instead of looping forever — both cases fall
+ * back to however many real ancestors were found before the walk stopped
+ * (0 for an immediate cycle or a missing/absent parent).
+ */
+function computeDepth(id: string, byId: Map<string, Annotation>): number {
+  let depth = 0
+  let current = byId.get(id)
+  const seen = new Set<string>([id])
+  while (current?.parentId && byId.has(current.parentId) && !seen.has(current.parentId)) {
+    seen.add(current.parentId)
+    depth += 1
+    current = byId.get(current.parentId)
+  }
+  return depth
+}
+
 export function AnnotationPanel() {
   const annotations = useAnnotationStore((s) => s.annotations)
   const activeId = useAnnotationStore((s) => s.activeAnnotationId)
@@ -64,6 +83,7 @@ export function AnnotationPanel() {
 
     return [...groups.values()]
       .map((group) => {
+        const byId = new Map(group.map((annotation) => [annotation.id, annotation]))
         const byParent = new Map<string, Annotation[]>()
         group.forEach((annotation) => {
           if (!annotation.parentId) return
@@ -75,12 +95,14 @@ export function AnnotationPanel() {
         const roots = sortThreads(group.filter((annotation) => !annotation.parentId || !group.some((item) => item.id === annotation.parentId)))
         const flattened = roots.flatMap((root) => [root, ...collectChildren(root.id, byParent)])
         const anchor = group.reduce((lowest, annotation) => Math.min(lowest, annotation.anchor.from), Number.POSITIVE_INFINITY)
+        const depths = new Map(group.map((annotation) => [annotation.id, computeDepth(annotation.id, byId)]))
 
         return {
           key: group[0].locationGroupKey,
           anchor,
           anchorText: group[0].anchor.text,
           annotations: flattened,
+          depths,
         }
       })
       .sort((a, b) => a.anchor - b.anchor)
@@ -99,7 +121,7 @@ export function AnnotationPanel() {
           </svg>
         </div>
         <p className="text-sm text-muted-foreground">No annotations for this document</p>
-        <p className="text-xs text-muted-foreground/60 mt-1">Highlight text and annotate in place</p>
+        <p className="text-xs text-muted-foreground mt-1">Highlight text and annotate in place</p>
       </div>
     )
   }
@@ -174,15 +196,31 @@ export function AnnotationPanel() {
                   </p>
                 </div>
                 <div className="divide-y divide-border/70">
-                  {group.annotations.map((annotation) => (
-                    <div key={annotation.id} className={annotation.parentId ? 'ml-4 border-l border-border/60 bg-warm/10' : ''}>
-                      <AnnotationCard
-                        annotation={annotation}
-                        isActive={annotation.id === activeId}
-                        detailElsewhere={placement === 'floating'}
-                      />
-                    </div>
-                  ))}
+                  {group.annotations.map((annotation) => {
+                    const depth = group.depths.get(annotation.id) ?? 0
+                    // Cap the visual indent — a level-9 sub-chat still reads
+                    // as "deeply nested," it just doesn't shove the card off
+                    // the edge of a narrow rail.
+                    const indent = Math.min(depth, 5)
+                    return (
+                      <div
+                        key={annotation.id}
+                        className={depth > 0 ? 'border-l border-border/60 bg-warm/10' : ''}
+                        style={depth > 0 ? { marginLeft: `${indent}rem` } : undefined}
+                      >
+                        {annotation.sourceQuote && (
+                          <p className="px-2.5 pt-1.5 text-[10px] font-mono text-muted-foreground truncate">
+                            “{annotation.sourceQuote}”
+                          </p>
+                        )}
+                        <AnnotationCard
+                          annotation={annotation}
+                          isActive={annotation.id === activeId}
+                          detailElsewhere={placement === 'floating'}
+                        />
+                      </div>
+                    )
+                  })}
                 </div>
               </section>
             ))}

@@ -89,7 +89,7 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
               <p className="text-sm text-ink">
                 <span className="font-bold">You:</span> {message.content}
               </p>
-              <span className="text-[10px] font-mono text-muted">
+              <span className="text-[10px] font-mono text-muted-foreground">
                 {formatTimestamp(message.timestamp)}
               </span>
             </div>
@@ -100,9 +100,14 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                   content={message.content}
                   isStreaming={isStreaming && message.role === 'agent' && message.id === messages[messages.length - 1]?.id}
                   interactive={!!annotationId && !isStreaming}
-                  onDrill={({ transcript, suggestedIntent, skipClassify }) => {
+                  onDrill={({ transcript, suggestedIntent, skipClassify, quote }) => {
                     if (!annotationId) return
-                    // Use the parent's anchor positions for the child
+                    // Deliberate split: the DOCUMENT position comes from the
+                    // parent's anchor (there is no document position for
+                    // text that only exists inside the AI's answer), while
+                    // the SUBJECT MATTER comes from `quote` — the exact
+                    // answer text the user highlighted. Do not "fix" this to
+                    // derive both from the same source.
                     const parentAnn = useAnnotationStore.getState().getById(annotationId)
                     const from = parentAnn?.anchor.from ?? 0
                     const to = parentAnn?.anchor.to ?? 0
@@ -110,12 +115,13 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                       parentId: annotationId,
                       suggestedType: suggestedIntent,
                       skipClassify,
+                      quote,
                     })
                     useToastStore.getState().addToast('Sub-annotation created', 'success')
                   }}
                 />
               </div>
-              <span className="text-[10px] font-mono text-muted">
+              <span className="text-[10px] font-mono text-muted-foreground">
                 {formatTimestamp(message.timestamp)}
               </span>
               {message.auditFailed && (
@@ -175,7 +181,7 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                         e.stopPropagation()
                         setSpinOffMessageId(message.id)
                       }}
-                      className="text-[10px] font-medium text-muted hover:text-accent transition-colors"
+                      className="text-[10px] font-medium text-muted-foreground hover:text-accent transition-colors"
                     >
                       Spin off annotation
                     </button>

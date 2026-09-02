@@ -11,7 +11,7 @@ export function TranscriptPreview() {
   return (
     <div className="px-4 py-2 bg-warm border-b border-border text-sm">
       {isTranscribing ? (
-        <span className="text-muted italic">Transcribing...</span>
+        <span className="text-muted-foreground italic">Transcribing...</span>
       ) : (
         <span className="text-ink">{transcript}</span>
       )}

@@ -128,6 +128,16 @@ export function EditorShell() {
     setView(view)
     // The restored (or empty) mount doc is the first direct-edit baseline.
     resetDirectEditBaseline(view.state.doc)
+    // Prime the retrieval graph for the doc we just mounted. Rebuilds were
+    // previously triggered ONLY by docChanged, so a document opened and merely
+    // read — the common case for review — left the graph cold, and everything
+    // that queries it (related passages in the answer envelope, blast-radius
+    // preview, "why this proposal?" edge paths) silently degraded to nothing.
+    // The scheduled pass is the deterministic build: local, cheap, no model
+    // call. Delay 0, not the typing debounce: an open is one discrete event
+    // with nothing to coalesce, and the 2s default is a window in which a
+    // reader who highlights immediately gets a silently empty envelope.
+    scheduleDocGraphRebuild(view, 0)
 
     return () => {
       // Flush any pending save
@@ -205,6 +215,13 @@ export function EditorShell() {
         // stale against the new one.
         resetDirectEditBaseline(view.state.doc)
         useDirectEditOfferStore.getState().clearOffer()
+        // The dispatch above already scheduled a rebuild via the generic
+        // docChanged path, but at the 2s typing debounce — during which the
+        // store still holds the PREVIOUS document's graph. Block ids are
+        // random per block, so readers degrade to "unavailable" rather than
+        // leaking the other document, but that is still a two-second window
+        // of wrongly-empty context. Re-schedule at 0 to collapse it.
+        scheduleDocGraphRebuild(view, 0)
       } catch {
         // keep current document if replacement payload is invalid
       }

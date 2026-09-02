@@ -5,7 +5,7 @@ import { Node } from 'prosemirror-model'
  * Markdown-to-ProseMirror parser.
  * Handles headings, paragraphs, bold/italic/code inline marks,
  * bullet lists, ordered lists, blockquotes, code blocks, horizontal rules,
- * and tables (rendered as readable code blocks).
+ * and native editable tables.
  */
 export function parseTextToDoc(text: string): Node {
   const lines = text.split('\n')
@@ -57,18 +57,12 @@ export function parseTextToDoc(text: string): Node {
       continue
     }
 
-    // Table detection (pipe-formatted: | col | col |)
-    if (line.match(/^\|(.+)\|/) && i + 1 < lines.length && lines[i + 1].match(/^\|[-:\s|]+\|/)) {
-      const tableLines: string[] = []
-      while (i < lines.length && lines[i].match(/^\|(.+)\|/)) {
-        tableLines.push(lines[i])
-        i++
-      }
-      // Render table as a readable code block (lightweight editor, no full table support)
-      const tableText = tableLines.join('\n')
-      nodes.push(
-        schema.nodes.code_block.create(null, schema.text(tableText))
-      )
+    // GFM pipe table. A real delimiter row is required, which keeps ordinary
+    // prose containing pipes from being promoted to table structure.
+    const parsedTable = parseMarkdownTable(lines, i)
+    if (parsedTable) {
+      nodes.push(parsedTable.node)
+      i = parsedTable.nextLine
       continue
     }
 
@@ -181,7 +175,7 @@ export function parseTextToDoc(text: string): Node {
       !lines[i].match(/^[\s]*[-*+]\s+/) &&
       !lines[i].match(/^[\s]*\d+[.)]\s+/) &&
       !lines[i].match(/^(-{3,}|\*{3,}|_{3,})\s*$/) &&
-      !lines[i].match(/^\|(.+)\|/)
+      !parseMarkdownTable(lines, i)
     ) {
       paraLines.push(lines[i])
       i++
@@ -197,6 +191,120 @@ export function parseTextToDoc(text: string): Node {
   }
 
   return schema.nodes.doc.create(null, nodes)
+}
+
+type CellAlignment = 'left' | 'center' | 'right' | null
+
+interface ParsedTable {
+  node: Node
+  nextLine: number
+}
+
+/** Split a pipe row without treating escaped pipes or pipes in code spans as separators. */
+function splitTableRow(line: string): string[] | null {
+  const source = line.trim()
+  if (!source) return null
+
+  const cells: string[] = []
+  let cell = ''
+  let escaped = false
+  let codeFenceLength = 0
+  let separatorCount = 0
+
+  for (let index = 0; index < source.length; index++) {
+    const char = source[index]
+    if (escaped) {
+      cell += char === '|' ? '|' : `\\${char}`
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (char === '`') {
+      let run = 1
+      while (source[index + run] === '`') run++
+      if (codeFenceLength === 0) codeFenceLength = run
+      else if (codeFenceLength === run) codeFenceLength = 0
+      cell += '`'.repeat(run)
+      index += run - 1
+      continue
+    }
+    if (char === '|' && codeFenceLength === 0) {
+      cells.push(cell.trim())
+      cell = ''
+      separatorCount++
+      continue
+    }
+    cell += char
+  }
+  if (escaped) cell += '\\'
+  cells.push(cell.trim())
+
+  if (separatorCount === 0) return null
+  if (source.startsWith('|')) cells.shift()
+  if (source.endsWith('|') && !source.endsWith('\\|')) cells.pop()
+  return cells.length > 0 ? cells : null
+}
+
+function parseDelimiterCell(cell: string): CellAlignment | undefined {
+  const compact = cell.replace(/\s/g, '')
+  if (!/^:?-{3,}:?$/.test(compact)) return undefined
+  if (compact.startsWith(':') && compact.endsWith(':')) return 'center'
+  if (compact.endsWith(':')) return 'right'
+  if (compact.startsWith(':')) return 'left'
+  return null
+}
+
+function createTableCell(type: 'table_header' | 'table_cell', text: string, align: CellAlignment): Node {
+  const content = parseInlineMarks(text)
+  const paragraph = schema.nodes.paragraph.create(null, content.length > 0 ? content : undefined)
+  return schema.nodes[type].create({ align }, paragraph)
+}
+
+/** Parse a complete GFM-style table beginning at `start`, or return null. */
+function parseMarkdownTable(lines: string[], start: number): ParsedTable | null {
+  if (start + 1 >= lines.length) return null
+  const header = splitTableRow(lines[start])
+  const delimiterCells = splitTableRow(lines[start + 1])
+  if (!header || !delimiterCells || header.length !== delimiterCells.length) return null
+
+  const alignments = delimiterCells.map(parseDelimiterCell)
+  if (alignments.some((alignment) => alignment === undefined)) return null
+
+  const bodyRows: string[][] = []
+  let nextLine = start + 2
+  while (nextLine < lines.length && lines[nextLine].trim() !== '') {
+    const row = splitTableRow(lines[nextLine])
+    if (!row) break
+    bodyRows.push(row)
+    nextLine++
+  }
+
+  // Preserve every imported cell. Wider body rows extend the table; shorter
+  // rows are padded so the tableEditing plugin receives a valid rectangle.
+  const columnCount = Math.max(header.length, ...bodyRows.map((row) => row.length))
+  const paddedAlignments: CellAlignment[] = Array.from(
+    { length: columnCount },
+    (_, column) => (alignments[column] ?? null) as CellAlignment,
+  )
+  const pad = (row: string[]) => Array.from({ length: columnCount }, (_, column) => row[column] ?? '')
+
+  const rows: Node[] = [
+    schema.nodes.table_row.create(
+      null,
+      pad(header).map((cell, column) => createTableCell('table_header', cell, paddedAlignments[column])),
+    ),
+    ...bodyRows.map((row) =>
+      schema.nodes.table_row.create(
+        null,
+        pad(row).map((cell, column) => createTableCell('table_cell', cell, paddedAlignments[column])),
+      ),
+    ),
+  ]
+
+  return { node: schema.nodes.table.create(null, rows), nextLine }
 }
 
 function parseInlineMarks(text: string): Node[] {
@@ -261,7 +369,7 @@ export function parseHtmlToDoc(html: string): Node {
       const rowMatches = tableHtml.match(/<tr[\s\S]*?<\/tr>/gi) || []
       rowMatches.forEach((row, idx) => {
         const cells = (row.match(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi) || [])
-          .map(c => stripTags(c).trim())
+          .map(c => stripTags(c).trim().replace(/\|/g, '\\|'))
         rows.push('| ' + cells.join(' | ') + ' |')
         if (idx === 0) {
           rows.push('| ' + cells.map(() => '---').join(' | ') + ' |')

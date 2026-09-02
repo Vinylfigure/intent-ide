@@ -83,17 +83,17 @@ export function ApiKeyModal() {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 backdrop-blur-sm">
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] backdrop-blur-sm">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <h2 className="font-serif text-xl">API Configuration</h2>
-          <button onClick={() => setShow(false)} aria-label="Close" title="Close" className="text-muted hover:text-ink text-xl leading-none">&times;</button>
+          <button onClick={() => setShow(false)} aria-label="Close" title="Close" className="text-muted-foreground hover:text-ink text-xl leading-none">&times;</button>
         </div>
 
         <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
           {/* Provider */}
           <div>
-            <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">Provider</label>
+            <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">Provider</label>
             <div className="grid grid-cols-4 gap-2">
               {(['claude', 'openai', 'openrouter', 'ollama'] as LLMProvider[]).map((p) => (
                 <button
@@ -102,7 +102,7 @@ export function ApiKeyModal() {
                   className={`py-2 px-3 text-sm font-medium rounded-lg border transition-colors ${
                     provider === p
                       ? 'border-accent bg-accent/5 text-accent'
-                      : 'border-border text-muted hover:text-ink hover:border-ink/30'
+                      : 'border-border text-muted-foreground hover:text-ink hover:border-ink/30'
                   }`}
                 >
                   {p === 'claude' ? 'Claude' : p === 'openai' ? 'OpenAI' : p === 'openrouter' ? 'OpenRouter' : 'Ollama'}
@@ -115,7 +115,7 @@ export function ApiKeyModal() {
               </p>
             )}
             {provider === 'claude' && (
-              <p className="mt-2 text-xs text-muted">
+              <p className="mt-2 text-xs text-muted-foreground">
                 Claude does not expose token-level uncertainty (logprobs), so the
                 per-token confidence overlay is unavailable.
               </p>
@@ -125,7 +125,7 @@ export function ApiKeyModal() {
           {/* API Key — hidden for Ollama */}
           {provider !== 'ollama' && (
             <div>
-              <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">API Key</label>
+              <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">API Key</label>
               <input
                 type="password"
                 value={apiKey}
@@ -138,7 +138,7 @@ export function ApiKeyModal() {
 
           {/* Model selection */}
           <div>
-            <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">Model</label>
+            <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">Model</label>
             <select
               value={isCustomModel ? '__custom__' : model}
               onChange={(e) => {
@@ -171,7 +171,7 @@ export function ApiKeyModal() {
               </p>
             )}
             {provider === 'claude' && modelRejectsSampling(effectiveModel) && (
-              <p className="mt-1 text-xs text-muted">
+              <p className="mt-1 text-xs text-muted-foreground">
                 This model ignores <code>temperature</code>, so the multi-agent
                 debate&apos;s diversity tuning is disabled.
               </p>
@@ -181,7 +181,7 @@ export function ApiKeyModal() {
           {/* Base URL — shown for Ollama, OpenRouter (pre-filled default), or custom */}
           {(provider === 'ollama' || provider === 'openrouter' || baseUrl) && (
             <div>
-              <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
+              <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">
                 Base URL {provider === 'ollama' ? '' : '(optional)'}
               </label>
               <input
@@ -195,9 +195,9 @@ export function ApiKeyModal() {
 
           {/* Whisper key — shown for all providers */}
           <div>
-            <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
+            <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">
               Whisper Key{' '}
-              <span className="normal-case font-sans text-muted/70">
+              <span className="normal-case font-sans text-muted-foreground">
                 (voice transcription{provider === 'ollama' ? '' : ', defaults to above key'})
               </span>
             </label>
@@ -208,7 +208,7 @@ export function ApiKeyModal() {
               placeholder={provider === 'ollama' ? 'sk-proj-... (OpenAI key)' : 'Leave empty to use the key above'}
               className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
             />
-            <p className="mt-1 text-xs text-muted">
+            <p className="mt-1 text-xs text-muted-foreground">
               {provider === 'ollama'
                 ? 'Voice transcription requires an OpenAI Whisper key even with Ollama; leave empty to disable voice.'
                 : 'Whisper requires an OpenAI API key regardless of your LLM provider.'}
@@ -217,7 +217,7 @@ export function ApiKeyModal() {
 
           {/* AI data & spend */}
           <div className="pt-4 border-t border-border space-y-3">
-            <h3 className="text-xs font-mono uppercase tracking-wider text-muted">AI data &amp; spend</h3>
+            <h3 className="text-xs font-mono uppercase tracking-wider text-muted-foreground">AI data &amp; spend</h3>
 
             <label className="flex items-start gap-2.5 cursor-pointer">
               <input
@@ -228,7 +228,7 @@ export function ApiKeyModal() {
               />
               <span className="text-sm text-ink leading-snug">
                 Verify must-severity citations
-                <span className="block text-xs text-muted">
+                <span className="block text-xs text-muted-foreground">
                   Extra small model call that double-checks each cited conflict before it is
                   marked &ldquo;must change&rdquo;.
                 </span>
@@ -244,13 +244,13 @@ export function ApiKeyModal() {
               />
               <span className="text-sm text-ink leading-snug">
                 Check declared facts for meaning, not just figures
-                <span className="block text-xs text-muted">
+                <span className="block text-xs text-muted-foreground">
                   Off by default. When on, applying a change also asks whether any passage
                   contradicts a fact you declared in words rather than numbers (&ldquo;thirty
                   days&rdquo;). Sends those passages to your provider; the figure-matching check
                   stays on your machine either way.
                 </span>
-                <span className="block text-xs text-muted">
+                <span className="block text-xs text-muted-foreground">
                   {provider === 'claude'
                     ? 'Runs on Haiku, not your selected model.'
                     : `Runs on your selected model (${llmConfig.model}) — only Claude has a cheaper model wired up for this.`}
@@ -268,7 +268,7 @@ export function ApiKeyModal() {
               />
               <span className="text-sm text-ink leading-snug">
                 Semantic similarity edges (embeddings)
-                <span className="block text-xs text-muted">
+                <span className="block text-xs text-muted-foreground">
                   Finds paraphrased duplicates across sections. Requires a provider with an
                   embeddings API (OpenAI or Ollama).
                 </span>
@@ -283,8 +283,8 @@ export function ApiKeyModal() {
             </label>
 
             <div>
-              <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
-                Embedding model <span className="normal-case font-sans text-muted/70">(optional override)</span>
+              <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">
+                Embedding model <span className="normal-case font-sans text-muted-foreground">(optional override)</span>
               </label>
               <input
                 value={llmConfig.embedModel ?? ''}
@@ -304,7 +304,7 @@ export function ApiKeyModal() {
               />
               <span className="text-sm text-ink leading-snug">
                 Share anonymous review stats (no document content)
-                <span className="block text-xs text-muted">
+                <span className="block text-xs text-muted-foreground">
                   Sends only severity and accept/reject counts for cascade proposals —
                   never document text or identifiers. Off by default. If you connect an
                   analytics client, its standard metadata applies.
@@ -315,14 +315,14 @@ export function ApiKeyModal() {
             {/* Local severity-calibration readout — always local, never sent. */}
             <div className="rounded-lg border border-border bg-warm/40 px-3 py-2 space-y-1">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-mono text-muted">
+                <p className="text-xs font-mono text-muted-foreground">
                   Must accepted: {mustRatio.accepted}/{mustRatio.total}
                   {' '}&middot; Likely: {likelyRatio.accepted}/{likelyRatio.total}
                   {' '}&middot; Optional: {optionalRatio.accepted}/{optionalRatio.total}
                 </p>
                 <button
                   onClick={resetCalibration}
-                  className="text-xs text-muted hover:text-ink underline underline-offset-2 shrink-0"
+                  className="text-xs text-muted-foreground hover:text-ink underline underline-offset-2 shrink-0"
                   title="Reset the local cascade review statistics"
                 >
                   Reset
@@ -336,13 +336,13 @@ export function ApiKeyModal() {
               )}
             </div>
 
-            <p className="text-xs text-muted leading-relaxed">
+            <p className="text-xs text-muted-foreground leading-relaxed">
               Document text leaves this machine only when you act: on annotation resolution,
               cascade analysis, citation verification, and semantic-similarity indexing — never
               while typing. All calls go only to your configured provider.
             </p>
 
-            <p className="text-xs font-mono text-muted">
+            <p className="text-xs font-mono text-muted-foreground">
               This session: ~{sessionTokens.toLocaleString()} tokens sent (rough estimate; excludes transcription)
             </p>
           </div>
@@ -354,7 +354,7 @@ export function ApiKeyModal() {
             Save
           </button>
 
-          <p className="text-xs text-muted text-center">
+          <p className="text-xs text-muted-foreground text-center">
             Keys are stored locally in your browser. Never sent to our servers.
           </p>
         </div>

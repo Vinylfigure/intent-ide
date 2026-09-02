@@ -59,7 +59,7 @@ export function AuditLogViewer() {
   return (
     <div className="p-4 space-y-4 h-full overflow-y-auto">
       <div className="flex items-center justify-between">
-        <h2 className="text-xs font-mono uppercase tracking-[0.2em] text-muted">Audit Detail</h2>
+        <h2 className="text-xs font-mono uppercase tracking-[0.2em] text-muted-foreground">Audit Detail</h2>
         <button
           onClick={fetchRecords}
           className="status-chip px-2.5 py-1 rounded-full text-xs hover:text-ink transition-colors"
@@ -67,7 +67,7 @@ export function AuditLogViewer() {
           Refresh
         </button>
       </div>
-      <p className="text-xs text-muted">
+      <p className="text-xs text-muted-foreground">
         Raw immutable audit events. Use the Changes panel for grouped review.
       </p>
 
@@ -80,7 +80,7 @@ export function AuditLogViewer() {
             className={`px-2.5 py-1 text-[10px] font-mono rounded-full transition-colors ${
               statusFilter === s
                 ? 'bg-accent text-white shadow-sm'
-                : 'bg-white/70 text-muted hover:text-ink'
+                : 'bg-white/70 text-muted-foreground hover:text-ink'
             }`}
           >
             {s.replace('_', ' ')}
@@ -88,11 +88,11 @@ export function AuditLogViewer() {
         ))}
       </div>
 
-      {loading && <p className="text-xs text-muted">Loading...</p>}
+      {loading && <p className="text-xs text-muted-foreground">Loading...</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}
 
       {!loading && records.length === 0 && (
-        <p className="text-xs text-muted py-4 text-center">No audit records found.</p>
+        <p className="text-xs text-muted-foreground py-4 text-center">No audit records found.</p>
       )}
 
       {/* Records list */}
@@ -108,7 +108,7 @@ export function AuditLogViewer() {
                 <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${STATUS_COLORS[r.approvalStatus] ?? 'bg-gray-100 text-gray-600'}`}>
                   {r.approvalStatus}
                 </span>
-                <span className="text-muted truncate">{r.modelName}/{r.modelVersion}</span>
+                <span className="text-muted-foreground truncate">{r.modelName}/{r.modelVersion}</span>
               </div>
               <span className="status-chip px-2 py-0.5 rounded-full text-[10px] font-mono shrink-0 ml-2">
                 {new Date(r.timestampUTC).toLocaleTimeString()}
@@ -141,7 +141,7 @@ export function AuditLogViewer() {
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex gap-2">
-      <span className="text-muted shrink-0 w-28">{label}</span>
+      <span className="text-muted-foreground shrink-0 w-28">{label}</span>
       <span className="text-ink break-all">{value || '\u2014'}</span>
     </div>
   )

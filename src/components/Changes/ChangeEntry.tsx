@@ -38,7 +38,7 @@ export function ChangeEntry({ entry }: ChangeEntryProps) {
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {entry.from != null && entry.to != null && (
-            <span className="text-[9px] font-mono text-muted-foreground/60">
+            <span className="text-[9px] font-mono text-muted-foreground">
               {entry.from}:{entry.to}
             </span>
           )}
@@ -48,7 +48,7 @@ export function ChangeEntry({ entry }: ChangeEntryProps) {
 
       {/* Collapsed preview */}
       {!expanded && preview && (
-        <p className="mt-1 ml-5 text-[11px] font-mono text-muted-foreground/60 truncate">
+        <p className="mt-1 ml-5 text-[11px] font-mono text-muted-foreground truncate">
           {entry.afterSlice ? '+' : '-'} {preview}
         </p>
       )}
@@ -64,7 +64,7 @@ export function ChangeEntry({ entry }: ChangeEntryProps) {
       {!entry.undone && (
         <button
           onClick={() => undoEntry(entry.id)}
-          className="mt-2 text-xs text-muted hover:text-accent transition-colors"
+          className="mt-2 text-xs text-muted-foreground hover:text-accent transition-colors"
         >
           Undo this change
         </button>

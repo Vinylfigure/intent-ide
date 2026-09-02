@@ -1,17 +1,31 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { startVoiceCapture, stopVoiceCaptureForTranscript } from '@/lib/voice/pipeline'
 import { useVoiceStore } from '@/stores/voiceStore'
-import type { AnnotationType } from '@/lib/annotations/types'
+import type { AnnotationType, Scope } from '@/lib/annotations/types'
 import { ANNOTATION_COLORS } from '@/lib/annotations/types'
+import {
+  DEFAULT_OFFERS,
+  deriveOffers,
+  inferScopeFromText,
+  type Offer,
+  type OfferContext,
+} from '@/lib/annotations/selectionOffers'
 
 type SuggestedIntent = Exclude<AnnotationType, 'flag'>
 
 interface AnnotationComposerProps {
   initialText?: string
-  selectionAnchor?: { from: number; to: number; text?: string }
-  parentAnnotationId?: string | null
+  /**
+   * What the human actually pointed at. Drives the offered actions: a figure,
+   * a heading and a paragraph are different kinds of thing and afford
+   * different questions. Absent (voice capture, programmatic open) falls back
+   * to the generic three.
+   */
+  selectionAnchor?: { from: number; to: number; text?: string; scope?: Scope; nodeType?: string }
+  /** Graph/ledger signals that sharpen the offers. Cheap, synchronous, optional. */
+  offerContext?: OfferContext
   suggestedIntent?: SuggestedIntent | null
   mode: 'selection' | 'thread' | 'inline'
   onSubmit: (payload: {
@@ -27,29 +41,13 @@ interface AnnotationComposerProps {
 /**
  * One-click actions: a single tap submits a canned prompt with a preset
  * intent (skipClassify) — no typing required. Typed text keeps the classic
- * classify flow.
+ * classify flow. The set itself is derived from the selection's shape by
+ * `deriveOffers`; this component only renders and dispatches them.
  */
-const QUICK_ACTIONS: Array<{ label: string; intent: SuggestedIntent; prompt: string }> = [
-  {
-    label: 'Explain this',
-    intent: 'ask',
-    prompt: 'Explain this passage in plain language.',
-  },
-  {
-    label: 'Give an example',
-    intent: 'dig',
-    prompt: 'Give one concrete example that illustrates this passage.',
-  },
-  {
-    label: 'Diagram this',
-    intent: 'dig',
-    prompt:
-      'Diagram the structure or flow described in this passage. Respond with a single ```mermaid fenced code block (flowchart or sequence diagram), followed by at most one sentence of caption.',
-  },
-]
-
 export function AnnotationComposer({
   initialText = '',
+  selectionAnchor,
+  offerContext,
   suggestedIntent = null,
   mode,
   onSubmit,
@@ -61,6 +59,19 @@ export function AnnotationComposer({
   const [value, setValue] = useState(initialText)
   const [activeIntent, setActiveIntent] = useState<SuggestedIntent | null>(suggestedIntent)
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const quoted = selectionAnchor?.text?.trim() ?? ''
+  const offers = useMemo<Offer[]>(() => {
+    if (!quoted) return DEFAULT_OFFERS
+    return deriveOffers(
+      {
+        text: quoted,
+        scope: selectionAnchor?.scope ?? inferScopeFromText(quoted),
+        nodeType: selectionAnchor?.nodeType,
+      },
+      offerContext,
+    )
+  }, [quoted, selectionAnchor?.scope, selectionAnchor?.nodeType, offerContext])
 
   useEffect(() => {
     setValue(initialText)
@@ -96,7 +107,7 @@ export function AnnotationComposer({
     }
   }
 
-  const handleQuickAction = async (action: (typeof QUICK_ACTIONS)[number]) => {
+  const handleQuickAction = async (action: Offer) => {
     if (isSubmitting) return
     setIsSubmitting(true)
     try {
@@ -109,6 +120,13 @@ export function AnnotationComposer({
 
   return (
     <div className={`rounded-xl border border-border bg-white shadow-lg ${className}`}>
+      {/* Show what the box is holding — otherwise a drag that grabbed a stray
+          leading character is invisible until the answer comes back wrong. */}
+      {quoted && (
+        <p className="px-3 pt-2 text-[11px] font-mono text-muted-foreground truncate" title={quoted}>
+          &ldquo;{quoted}&rdquo;
+        </p>
+      )}
       <div className="flex items-center gap-2 px-3 py-2">
         <input
           type="text"
@@ -163,7 +181,7 @@ export function AnnotationComposer({
       </div>
 
       <div className="flex flex-wrap gap-1 px-3 pb-2">
-        {QUICK_ACTIONS.map((action) => (
+        {offers.map((action) => (
           <button
             key={action.label}
             onClick={() => handleQuickAction(action)}

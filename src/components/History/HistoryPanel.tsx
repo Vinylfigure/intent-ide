@@ -258,7 +258,7 @@ export function HistoryPanel() {
   if (!activeDocumentId) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-center px-6">
-        <p className="text-sm text-muted">No document selected</p>
+        <p className="text-sm text-muted-foreground">No document selected</p>
       </div>
     )
   }
@@ -266,7 +266,7 @@ export function HistoryPanel() {
   return (
     <div className="p-4 space-y-4 h-full overflow-y-auto">
       <div className="flex items-center justify-between">
-        <h2 className="text-xs font-mono uppercase tracking-[0.2em] text-muted">History</h2>
+        <h2 className="text-xs font-mono uppercase tracking-[0.2em] text-muted-foreground">History</h2>
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => {
@@ -290,7 +290,7 @@ export function HistoryPanel() {
           </button>
         </div>
       </div>
-      <p className="text-xs text-muted">
+      <p className="text-xs text-muted-foreground">
         Versions captured as you work — created, applied AI changes, saved edit sessions, and
         restores. Restoring adds a new version on top; earlier versions stay in the chain.
       </p>
@@ -303,24 +303,24 @@ export function HistoryPanel() {
               <span className="text-muted-foreground"> — {compareSelection.length} of 2 selected</span>
             )}
           </p>
-          {compareDiff === 'loading' && <p className="mt-2 text-xs text-muted">Loading comparison...</p>}
+          {compareDiff === 'loading' && <p className="mt-2 text-xs text-muted-foreground">Loading comparison...</p>}
           {compareDiff && compareDiff !== 'loading' && <VersionDiff {...compareDiff} />}
         </div>
       )}
 
-      {loading && <p className="text-xs text-muted">Loading...</p>}
+      {loading && <p className="text-xs text-muted-foreground">Loading...</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}
 
       {!loading && !error && commits.length === 0 && (
         <div className="flex flex-col items-center justify-center py-10 text-center px-4">
           <div className="w-12 h-12 rounded-full bg-warm flex items-center justify-center mb-3">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-foreground">
               <circle cx="12" cy="12" r="9" />
               <polyline points="12 7 12 12 15.5 13.5" />
             </svg>
           </div>
-          <p className="text-sm text-muted">No versions yet</p>
-          <p className="text-xs text-muted/60 mt-1 max-w-56">
+          <p className="text-sm text-muted-foreground">No versions yet</p>
+          <p className="text-xs text-muted-foreground mt-1 max-w-56">
             Versions appear here when a document is created, an AI change is applied, an edit
             session is saved, or a version is restored.
           </p>
@@ -379,7 +379,7 @@ export function HistoryPanel() {
                       Current
                     </span>
                   )}
-                  <span className="text-[10px] font-mono text-muted-foreground/60 ml-auto">
+                  <span className="text-[10px] font-mono text-muted-foreground ml-auto">
                     {commit.hash.slice(0, 8)}
                   </span>
                 </div>
@@ -388,7 +388,7 @@ export function HistoryPanel() {
               {!compareMode && expanded && (
                 <div className="px-3 pb-3 border-t border-border/70 bg-warm/20">
                   {expandedDiff === 'loading' && (
-                    <p className="pt-3 text-xs text-muted">Loading comparison...</p>
+                    <p className="pt-3 text-xs text-muted-foreground">Loading comparison...</p>
                   )}
                   {expandedDiff === 'first' && (
                     <p className="pt-3 text-xs text-muted-foreground">
@@ -427,14 +427,14 @@ export function HistoryPanel() {
         <button
           onClick={loadEarlier}
           disabled={loadingMore}
-          className="w-full px-3 py-2 text-xs rounded-xl border border-border/70 bg-white/60 text-muted hover:text-ink hover:border-accent/30 transition-colors disabled:opacity-50"
+          className="w-full px-3 py-2 text-xs rounded-xl border border-border/70 bg-white/60 text-muted-foreground hover:text-ink hover:border-accent/30 transition-colors disabled:opacity-50"
         >
           {loadingMore ? 'Loading earlier versions...' : 'Show earlier versions'}
         </button>
       )}
 
       {commits.length > 0 && (
-        <p className="text-[10px] text-muted-foreground/70 pt-1">
+        <p className="text-[10px] text-muted-foreground pt-1">
           Applied and imported versions are append-only at the application level (no edit or
           delete operations; server-verified hashes make records tamper-evident) and are linked to
           the audit trail in support of EU AI Act Art. 12 &amp; 14. In-progress typing snapshots are

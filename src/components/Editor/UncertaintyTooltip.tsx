@@ -108,7 +108,7 @@ export function UncertaintyTooltip() {
           <span className="uncertainty-badge">
             Uncertain
           </span>
-          <span className="text-[10px] font-mono text-muted">
+          <span className="text-[10px] font-mono text-muted-foreground">
             &ldquo;{token.originalToken}&rdquo;
           </span>
         </div>
@@ -116,7 +116,7 @@ export function UncertaintyTooltip() {
         {/* Alternatives list */}
         {hasAlternatives ? (
           <div className="uncertainty-alternatives">
-            <span className="text-[10px] font-mono text-muted">Alternatives:</span>
+            <span className="text-[10px] font-mono text-muted-foreground">Alternatives:</span>
             <div className="uncertainty-alt-list">
               {token.alternatives.map((alt, i) => (
                 <button
@@ -134,7 +134,7 @@ export function UncertaintyTooltip() {
             </div>
           </div>
         ) : (
-          <p className="text-[11px] text-muted leading-relaxed">
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
             Flagged as uncertain by MADS debate. No alternative tokens available.
           </p>
         )}

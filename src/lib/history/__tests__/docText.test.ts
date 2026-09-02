@@ -38,4 +38,33 @@ describe('docJsonToText', () => {
     expect(docJsonToText(null)).toBe('')
     expect(docJsonToText({})).toBe('')
   })
+
+  it('keeps table rows and cell boundaries legible', () => {
+    const tableDoc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'table',
+          content: [
+            {
+              type: 'table_row',
+              content: [
+                { type: 'table_header', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Name' }] }] },
+                { type: 'table_header', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Status' }] }] },
+              ],
+            },
+            {
+              type: 'table_row',
+              content: [
+                { type: 'table_cell', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Sierra' }] }] },
+                { type: 'table_cell', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Ready' }] }] },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+
+    expect(docJsonToText(tableDoc)).toBe('| Name | Status |\n| Sierra | Ready |')
+  })
 })

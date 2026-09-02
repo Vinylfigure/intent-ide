@@ -27,6 +27,7 @@ import {
   type ModalDecisionBuffer,
 } from '@/lib/telemetry/modalDecisionBuffer'
 import { showAffectedMode } from '@/lib/annotations/showAffected'
+import { previewBlastRadius } from '@/lib/annotations/blastRadius'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { refreshAnchorAfterApply, refreshedAnchorForMultiRegionApply } from '@/lib/annotations/anchoring'
 import { createCommit } from '@/lib/history/commits'
@@ -715,6 +716,14 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     }
   }
 
+  // Pre-decision blast-radius preview: what else the doc graph says this
+  // annotation's own anchor touches, shown read-only ABOVE the action
+  // controls so the human sees it before committing rather than after (the
+  // apply handler's `runCascadeCheck` toast below stays the post-apply check
+  // — this doesn't replace it). Empty whenever the graph is cold or the
+  // anchor's block is unknown, which previewBlastRadius signals with [].
+  const blastRadius = view ? previewBlastRadius(view.state, annotation.anchor.from) : []
+
   return (
     <>
     {showDiffModal && commitChanges.length > 0 && (
@@ -762,6 +771,27 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         isHighRisk={!!annotation.resolution?.usedMADS}
       />
     )}
+    {blastRadius.length > 0 && (
+      <div
+        aria-label={`Blast radius preview (${blastRadius.length})`}
+        className="mt-3 mx-1 p-3 border border-border rounded-xl bg-warm/40"
+      >
+        <p className="text-[10px] font-mono font-medium text-muted-foreground">
+          Touches {blastRadius.length} other passage{blastRadius.length !== 1 ? 's' : ''}
+        </p>
+        <div className="mt-1.5 flex flex-col gap-1.5">
+          {blastRadius.map((passage) => (
+            <div key={passage.blockId} className="rounded-lg border border-border/60 bg-warm/60 px-2.5 py-1.5">
+              <p className="text-[10px] font-mono text-muted-foreground">
+                {passage.why}
+                {passage.headingPath.length > 0 && ` · ${passage.headingPath.join(' › ')}`}
+              </p>
+              <p className="text-xs text-muted-foreground leading-snug">{passage.text}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
     <div className="flex flex-wrap gap-2 mt-3">
       {annotation.resolution.actions.map((action) => {
         const isApplyAction = action.kind === 'apply'
@@ -781,7 +811,7 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
                 : isApplyAction
                 ? 'bg-annotation-correction text-white hover:bg-annotation-correction/80'
                 : action.kind === 'dismiss'
-                ? 'bg-warm text-muted hover:bg-border'
+                ? 'bg-warm text-muted-foreground hover:bg-border'
                 : action.kind === 'deepen'
                 ? 'bg-annotation-question/10 text-annotation-question hover:bg-annotation-question/20'
                 : 'bg-warm text-ink hover:bg-border'
@@ -847,7 +877,7 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
             }
           }}
           disabled={isSimplifying}
-          className="px-3 py-1.5 text-xs font-medium rounded bg-warm text-muted hover:bg-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-3 py-1.5 text-xs font-medium rounded bg-warm text-muted-foreground hover:bg-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isSimplifying ? 'Simplifying…' : 'Simplify thread'}
         </button>

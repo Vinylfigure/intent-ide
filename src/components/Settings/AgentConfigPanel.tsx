@@ -86,7 +86,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
             onClick={onClose}
             aria-label="Close"
             title="Close"
-            className="text-muted hover:text-ink text-xl leading-none"
+            className="text-muted-foreground hover:text-ink text-xl leading-none"
           >
             &times;
           </button>
@@ -99,7 +99,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
             className={`flex-1 px-4 py-2.5 text-xs font-mono uppercase tracking-wider transition-colors ${
               section === 'builtin'
                 ? 'text-accent border-b-2 border-accent bg-white/50'
-                : 'text-muted hover:text-ink'
+                : 'text-muted-foreground hover:text-ink'
             }`}
           >
             Built-in Types
@@ -109,7 +109,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
             className={`flex-1 px-4 py-2.5 text-xs font-mono uppercase tracking-wider transition-colors ${
               section === 'custom'
                 ? 'text-accent border-b-2 border-accent bg-white/50'
-                : 'text-muted hover:text-ink'
+                : 'text-muted-foreground hover:text-ink'
             }`}
           >
             Custom Types
@@ -128,7 +128,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
                     className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
                       activeType === type
                         ? 'bg-accent text-white'
-                        : 'bg-warm text-muted hover:text-ink hover:bg-border'
+                        : 'bg-warm text-muted-foreground hover:text-ink hover:bg-border'
                     }`}
                   >
                     {ANNOTATION_LABELS[type]}
@@ -139,7 +139,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
               {/* Config for active type */}
               <div className="space-y-4">
                 <div>
-                  <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
+                  <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">
                     Temperature ({activeConfig.temperature})
                   </label>
                   <input
@@ -155,14 +155,14 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
                     }
                     className="w-full accent-accent"
                   />
-                  <div className="flex justify-between text-xs text-muted mt-1">
+                  <div className="flex justify-between text-xs text-muted-foreground mt-1">
                     <span>Precise (0)</span>
                     <span>Creative (1)</span>
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
+                  <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">
                     Max Tokens
                   </label>
                   <input
@@ -181,7 +181,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
+                  <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">
                     Custom Instructions
                   </label>
                   <textarea
@@ -209,7 +209,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
             <div className="space-y-4">
               {/* Custom types list */}
               {customTypes.length === 0 && !showNewForm && (
-                <p className="text-sm text-muted text-center py-4">
+                <p className="text-sm text-muted-foreground text-center py-4">
                   No custom annotation types yet.
                 </p>
               )}
@@ -275,7 +275,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
                       <div className="flex items-center gap-1.5">
                         <button
                           onClick={() => setEditingCustom(ct.id)}
-                          className="px-2 py-1 text-xs text-muted hover:text-ink transition-colors"
+                          className="px-2 py-1 text-xs text-muted-foreground hover:text-ink transition-colors"
                         >
                           Edit
                         </button>
@@ -301,7 +301,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
                     className="w-full px-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
                   />
                   <div>
-                    <label className="block text-xs font-mono uppercase tracking-wider text-muted mb-1.5">
+                    <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">
                       Color
                     </label>
                     <div className="flex gap-1.5 flex-wrap">
@@ -354,7 +354,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
 
           {/* Flow — presentation pacing preferences */}
           <div className="mt-6 pt-4 border-t border-border">
-            <h3 className="text-xs font-mono uppercase tracking-wider text-muted mb-2">
+            <h3 className="text-xs font-mono uppercase tracking-wider text-muted-foreground mb-2">
               Flow
             </h3>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
@@ -366,7 +366,7 @@ export function AgentConfigPanel({ onClose }: AgentConfigPanelProps) {
               />
               Buffer answers until a reading breakpoint
             </label>
-            <p className="mt-1.5 text-xs text-muted leading-relaxed">
+            <p className="mt-1.5 text-xs text-muted-foreground leading-relaxed">
               When an answer finishes while you are reading elsewhere, keep it
               as &ldquo;Thinking...&rdquo; until you reach the end of the
               annotated paragraph instead of interrupting mid-read.

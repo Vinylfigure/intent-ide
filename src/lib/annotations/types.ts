@@ -81,6 +81,8 @@ export interface Annotation {
   createdAt: number
   resolvedAt: number | null
   verbosity: Verbosity
+  /** For a sub-chat spun off an AI answer: the exact quoted span that produced it. The document `anchor` stays the parent's positions so gutter/map/cascade keep working; this records what the branch is actually about. */
+  sourceQuote?: string
 }
 
 export interface Resolution {

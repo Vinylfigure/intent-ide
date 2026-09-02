@@ -14,8 +14,8 @@ function inFlightChip(count: number): { label: string; title: string } | null {
   }
 }
 
-/** Chip state for the document-map (doc graph) build lifecycle. */
-function graphChip(
+/** Chip state for the document-map (doc graph) build lifecycle. Exported for test. */
+export function graphChip(
   status: 'idle' | 'building' | 'ready',
   graph: { llmApplied: boolean; llmPartial: boolean; embeddingsPartial: boolean } | null,
 ): { label: string; title: string } | null {
@@ -25,7 +25,17 @@ function graphChip(
       title: 'Mapping how sections of your document relate to each other.',
     }
   }
-  if (!graph) return null
+  // No graph is a REAL state, not an absent one: until it builds, related
+  // passages, blast-radius previews and edge-path explanations all quietly
+  // return nothing. Rendering no chip made that indistinguishable from
+  // "everything is fine", which is how it went unnoticed.
+  if (!graph) {
+    return {
+      label: 'graph: not built',
+      title:
+        'The section map has not been built for this document yet, so connections between sections are unavailable. It builds automatically when the document loads or changes.',
+    }
+  }
   const partial = graph.llmPartial || graph.embeddingsPartial
   const partialNote = partial
     ? ' Some sections could not be analyzed, so a few connections may be missing.'
@@ -45,7 +55,7 @@ function graphChip(
 export function StatusBar() {
   const provider = useSettingsStore((s) => s.llmConfig.provider)
   const model = useSettingsStore((s) => s.llmConfig.model)
-  const hasKeys = useSettingsStore((s) => s.llmConfig.apiKey.length > 0)
+  const hasKeys = useSettingsStore((s) => s.hasKeys())
   const annotationCount = useAnnotationStore((s) => s.annotations.length)
   const inFlightCount = useAnnotationStore(
     (s) =>
@@ -61,7 +71,7 @@ export function StatusBar() {
   const thinkingChip = inFlightChip(inFlightCount)
 
   return (
-    <div className="flex items-center justify-between px-4 py-2 border-t border-border/70 bg-white/70 backdrop-blur-sm text-xs font-mono text-muted">
+    <div className="flex items-center justify-between px-4 py-2 border-t border-border/70 bg-white/70 backdrop-blur-sm text-xs font-mono text-muted-foreground">
       <div className="flex items-center gap-4">
         <span className="status-chip px-2.5 py-1 rounded-full">{annotationCount} annotations</span>
         <span className="status-chip px-2.5 py-1 rounded-full">{changeSetCount} change sets</span>
@@ -78,7 +88,7 @@ export function StatusBar() {
         )}
       </div>
       <div className="flex items-center gap-4">
-        <span className={`status-chip px-2.5 py-1 rounded-full ${hasKeys ? 'text-annotation-correction' : 'text-accent'}`}>
+        <span className={`status-chip px-2.5 py-1 rounded-full ${hasKeys ? 'text-ink' : 'text-accent'}`}>
           {hasKeys ? `${provider} · ${model}` : 'No API key set'}
         </span>
         <span className="status-chip px-2.5 py-1 rounded-full">Voice: Ctrl+Space</span>

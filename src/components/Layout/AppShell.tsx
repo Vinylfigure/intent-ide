@@ -226,7 +226,7 @@ export function AppShell() {
                 className={`flex-1 px-3 py-3 text-[11px] font-mono uppercase tracking-[0.12em] transition-colors ${
                   sidebarTab === tab.id
                     ? 'text-accent border-b-2 border-accent bg-white/80'
-                    : 'text-muted hover:text-ink hover:bg-white/40'
+                    : 'text-muted-foreground hover:text-ink hover:bg-white/40'
                 }`}
               >
                 {tab.label}
@@ -245,7 +245,7 @@ export function AppShell() {
                 className={`px-3 py-3 text-[11px] font-mono uppercase tracking-[0.12em] transition-colors ${
                   overflowTab
                     ? 'text-accent border-b-2 border-accent bg-white/80'
-                    : 'text-muted hover:text-ink hover:bg-white/40'
+                    : 'text-muted-foreground hover:text-ink hover:bg-white/40'
                 }`}
               >
                 {overflowTab ? overflowTab.label : '\u22EF'}
@@ -277,7 +277,7 @@ export function AppShell() {
               onClick={() => setIsSidebarCollapsed(true)}
               aria-label="Collapse sidebar"
               aria-expanded={true}
-              className="px-3 py-3 text-xs text-muted hover:text-ink hover:bg-white/40 transition-colors"
+              className="px-3 py-3 text-xs text-muted-foreground hover:text-ink hover:bg-white/40 transition-colors"
               title="Collapse sidebar"
             >
               &lsaquo;
@@ -326,7 +326,7 @@ export function AppShell() {
               onClick={() => setIsSidebarCollapsed(false)}
               aria-label="Expand sidebar"
               aria-expanded={false}
-              className="w-8 h-8 rounded-full border border-border/70 text-muted hover:text-ink hover:bg-white/70 transition-colors"
+              className="w-8 h-8 rounded-full border border-border/70 text-muted-foreground hover:text-ink hover:bg-white/70 transition-colors"
               title="Expand sidebar"
             >
               &rsaquo;

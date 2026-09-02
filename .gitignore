@@ -32,3 +32,5 @@ memory-bank/consolidated_learnings.md
 
 # Live bench output (opt-in, per-run JSON reports)
 bench-results/
+.vercel
+.env*

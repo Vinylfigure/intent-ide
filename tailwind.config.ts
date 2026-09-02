@@ -24,7 +24,12 @@ const config: Config = {
         'annotation-fix': '#c44b2b',
         'annotation-explore': '#6b4dc4',
         'annotation-thought': '#d97706',
-        'annotation-correction': '#2b8c5e',
+        // Darkened from #2b8c5e, which measured ~3.75:1 on the cream surface
+        // and failed WCAG AA for the body text that uses it ("Suggested edit:",
+        // provider chip, API-key warnings). Same hue family; 4.76:1 on cream,
+        // 5.32:1 on white. Also used at ~10% alpha as a fill, where the shift
+        // is imperceptible.
+        'annotation-correction': '#1f7a4d',
         'annotation-restructure': '#8b5cf6',
         // shadcn/ui CSS variable colors
         background: "hsl(var(--background))",

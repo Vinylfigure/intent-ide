@@ -94,6 +94,67 @@
   overflow-x: auto;
 }
 
+/* Native ProseMirror tables. The wrapper owns overflow so a wide imported
+   table scrolls inside the document page rather than widening the whole app. */
+.ProseMirror .tableWrapper {
+  margin: 16px 0;
+  overflow-x: auto;
+}
+
+.ProseMirror table {
+  width: 100%;
+  min-width: 480px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.ProseMirror th,
+.ProseMirror td {
+  position: relative;
+  min-width: 80px;
+  padding: 9px 12px;
+  border: 1px solid #d9d4cc;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.ProseMirror th {
+  background: #f3efe8;
+  font-weight: 600;
+  color: #26231f;
+}
+
+.ProseMirror td {
+  background: #fffdfa;
+}
+
+.ProseMirror th p,
+.ProseMirror td p {
+  margin: 0;
+}
+
+.ProseMirror .selectedCell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: rgba(125, 73, 42, 0.12);
+}
+
+.ProseMirror .column-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  bottom: -1px;
+  width: 4px;
+  pointer-events: none;
+  background: hsl(var(--accent));
+}
+
+.resize-cursor {
+  cursor: col-resize;
+}
+
 .ProseMirror ul, .ProseMirror ol {
   margin: 12px 0;
   padding-left: 24px;
