@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { generateId } from '@/lib/utils/id'
 import { recordCommit } from '@/lib/history/commits'
+import { migrateTableBlocks } from '@/lib/docInput/migrateTableBlocks'
 
 export interface DocumentMeta {
   id: string
@@ -194,7 +195,32 @@ export const useDocumentStore = create<DocumentStoreState>()(
       loadDocumentJson: (id) => {
         try {
           const raw = localStorage.getItem(getDocumentStorageKey(id))
-          return raw ? JSON.parse(raw) : null
+          if (!raw) return null
+          const parsed = JSON.parse(raw)
+
+          // Recover tables from documents imported before the editor had any:
+          // the old parser stored every GFM table as a code_block of raw pipe
+          // text, which renders as an unreadable dark slab. Nothing else
+          // re-parses a stored document — only `docJson` is persisted, never
+          // the markdown it came from — so this is the one place it can be
+          // fixed without a manual re-import.
+          //
+          // Every read path (mount, document switch) funnels through here, so
+          // one hook covers them all. The migration returns its input by
+          // reference when nothing converts, which is the overwhelmingly
+          // common case and costs a pointer compare.
+          const { doc, converted } = migrateTableBlocks(parsed)
+          if (converted > 0) {
+            // Persist immediately. Left unsaved, the conversion would be redone
+            // on every single load, and any later save of the migrated doc
+            // would race with a caller still holding the pre-migration JSON.
+            try {
+              localStorage.setItem(getDocumentStorageKey(id), JSON.stringify(doc))
+            } catch {
+              // A failed write costs a repeat conversion next load, nothing more.
+            }
+          }
+          return doc
         } catch {
           return null
         }

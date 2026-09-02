@@ -195,7 +195,7 @@ export function parseTextToDoc(text: string): Node {
 
 type CellAlignment = 'left' | 'center' | 'right' | null
 
-interface ParsedTable {
+export interface ParsedTable {
   node: Node
   nextLine: number
 }
@@ -263,8 +263,13 @@ function createTableCell(type: 'table_header' | 'table_cell', text: string, alig
   return schema.nodes[type].create({ align }, paragraph)
 }
 
-/** Parse a complete GFM-style table beginning at `start`, or return null. */
-function parseMarkdownTable(lines: string[], start: number): ParsedTable | null {
+/**
+ * Parse a complete GFM-style table beginning at `start`, or return null.
+ *
+ * Exported for the stored-document migration (`migrateTableBlocks.ts`), which
+ * has to recognise the same table shape inside a legacy code_block.
+ */
+export function parseMarkdownTable(lines: string[], start: number): ParsedTable | null {
   if (start + 1 >= lines.length) return null
   const header = splitTableRow(lines[start])
   const delimiterCells = splitTableRow(lines[start + 1])
