@@ -10,6 +10,7 @@ import { clusterMarkers } from '@/lib/annotations/clusterMarkers'
 import { collectHeadings, visibleHeadingLabels } from '@/lib/annotations/documentOutline'
 import { readLinePluginKey } from '@/lib/prosemirror/plugins/readLinePlugin'
 import { ANNOTATION_COLORS } from '@/lib/annotations/types'
+import { scrollToPos } from '@/lib/prosemirror/scrollToPos'
 
 const HEADING_LABEL_CLASS: Record<number, string> = {
   1: 'font-semibold text-ink',
@@ -79,18 +80,6 @@ export function AnnotationMap() {
     setOpenClusterIndex(null)
   }, [clusters.length, activeDocumentId])
 
-  const scrollToPos = (pos: number) => {
-    if (!view) return
-    const coords = view.coordsAtPos(Math.min(pos, view.state.doc.content.size))
-    if (!coords) return
-    const container = view.dom.closest('.editor-scroll-container')
-    if (!container) return
-    const containerRect = container.getBoundingClientRect()
-    container.scrollTo({
-      top: container.scrollTop + (coords.top - containerRect.top) - 100,
-      behavior: 'smooth',
-    })
-  }
 
   const handleSelect = (id: string) => {
     // Map-marker selection is user attention — clear the capture mark.
@@ -98,7 +87,7 @@ export function AnnotationMap() {
     setActive(id)
     setOpenClusterIndex(null)
     const ann = visibleAnnotations.find((a) => a.id === id)
-    if (ann) scrollToPos(ann.anchor.from)
+    if (ann) scrollToPos(view, ann.anchor.from)
   }
 
   if (!snapshot.doc) {
@@ -142,7 +131,7 @@ export function AnnotationMap() {
       {headings.map((heading, index) => (
         <button
           key={`${heading.pos}-${index}`}
-          onClick={() => scrollToPos(heading.pos)}
+          onClick={() => scrollToPos(view, heading.pos)}
           title={heading.text || '(untitled heading)'}
           className="group absolute right-1/2 z-10 flex -translate-y-1/2 items-center gap-1.5 pr-0"
           style={{ top: `${clamp(heading.position)}%` }}

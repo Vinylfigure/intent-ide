@@ -39,6 +39,12 @@ export function clampSidebarWidth(value: unknown): number {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)))
 }
 
+/** Map a possibly-stale/corrupt persisted value onto a usable id list. */
+export function normalizeCollapsedAnnotationIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((id): id is string => typeof id === 'string')
+}
+
 interface LayoutState {
   answerPlacement: AnswerPlacement
   /** Width of the left sidebar rail in pixels, drag-resizable and persisted. */
@@ -50,11 +56,20 @@ interface LayoutState {
    * makes sense, and the automatic placement is the better default on load.
    */
   floatingOffset: { dx: number; dy: number }
+  /**
+   * Annotation ids collapsed to their header line in the Annotations panel.
+   * A view preference, not annotation state — deliberately lives here
+   * rather than on `Annotation.hidden` or any other annotation field, and
+   * is persisted so a reload doesn't silently re-expand every thread.
+   */
+  collapsedAnnotationIds: string[]
   setAnswerPlacement: (placement: AnswerPlacement) => void
   setSidebarWidth: (width: number) => void
   toggleAnswerPlacement: () => void
   setFloatingOffset: (offset: { dx: number; dy: number }) => void
   resetFloatingOffset: () => void
+  toggleAnnotationCollapsed: (id: string) => void
+  setAnnotationCollapsed: (id: string, collapsed: boolean) => void
 }
 
 export const ZERO_OFFSET = { dx: 0, dy: 0 }
@@ -65,6 +80,7 @@ export const useLayoutStore = create<LayoutState>()(
       answerPlacement: 'sidebar',
       sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
       floatingOffset: ZERO_OFFSET,
+      collapsedAnnotationIds: [],
       // Changing placement always re-parks the panel: the offset was chosen
       // against the old layout and means nothing in the new one.
       setAnswerPlacement: (placement) =>
@@ -77,10 +93,28 @@ export const useLayoutStore = create<LayoutState>()(
       setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),
       setFloatingOffset: (offset) => set({ floatingOffset: offset }),
       resetFloatingOffset: () => set({ floatingOffset: ZERO_OFFSET }),
+      toggleAnnotationCollapsed: (id) =>
+        set((s) => ({
+          collapsedAnnotationIds: s.collapsedAnnotationIds.includes(id)
+            ? s.collapsedAnnotationIds.filter((x) => x !== id)
+            : [...s.collapsedAnnotationIds, id],
+        })),
+      setAnnotationCollapsed: (id, collapsed) =>
+        set((s) => ({
+          collapsedAnnotationIds: collapsed
+            ? s.collapsedAnnotationIds.includes(id)
+              ? s.collapsedAnnotationIds
+              : [...s.collapsedAnnotationIds, id]
+            : s.collapsedAnnotationIds.filter((x) => x !== id),
+        })),
     }),
     {
       name: 'intent-ide-layout',
-      partialize: (s) => ({ answerPlacement: s.answerPlacement, sidebarWidth: s.sidebarWidth }),
+      partialize: (s) => ({
+        answerPlacement: s.answerPlacement,
+        sidebarWidth: s.sidebarWidth,
+        collapsedAnnotationIds: s.collapsedAnnotationIds,
+      }),
       onRehydrateStorage: () => (state) => {
         // A snapshot from an older build may carry a placement this one has
         // never heard of; fall back to the sidebar rather than render nothing.
@@ -88,6 +122,7 @@ export const useLayoutStore = create<LayoutState>()(
           state.answerPlacement = normalizeAnswerPlacement(state.answerPlacement)
           state.sidebarWidth = clampSidebarWidth(state.sidebarWidth)
           state.floatingOffset = ZERO_OFFSET
+          state.collapsedAnnotationIds = normalizeCollapsedAnnotationIds(state.collapsedAnnotationIds)
         }
       },
     },

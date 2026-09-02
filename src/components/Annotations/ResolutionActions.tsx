@@ -27,7 +27,9 @@ import {
   type ModalDecisionBuffer,
 } from '@/lib/telemetry/modalDecisionBuffer'
 import { showAffectedMode } from '@/lib/annotations/showAffected'
-import { previewBlastRadius } from '@/lib/annotations/blastRadius'
+import { previewBlastRadiusDetail } from '@/lib/annotations/blastRadius'
+import { findBlockById } from '@/lib/prosemirror/blockIds'
+import { pulseBlock, scrollToPos } from '@/lib/prosemirror/scrollToPos'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { refreshAnchorAfterApply, refreshedAnchorForMultiRegionApply } from '@/lib/annotations/anchoring'
 import { createCommit } from '@/lib/history/commits'
@@ -588,6 +590,18 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         // call (below) twice for one user action.
         if (useAnnotationStore.getState().getById(annotation.id)?.status === 'dismissed') break
         updateAnnotation(annotation.id, { status: 'dismissed' })
+        // Dismiss — including "Got it" and "Keep it" — is the reader saying
+        // they are finished with this thread, so the card gets out of the way.
+        // Nothing is destroyed: it stays in the store and in the audit trail,
+        // and "Show N resolved" brings it straight back.
+        //
+        // Applying deliberately does NOT hide. The reader has just changed
+        // their document and wants to see that it registered — the "Applied"
+        // badge, the cascade list, the change entry. Hiding there made the
+        // card vanish mid-action with no acknowledgement, which
+        // cascade-review.spec.ts caught by asserting that badge. They can
+        // collapse or dismiss it afterwards, on their own timing.
+        useAnnotationStore.getState().setHidden(annotation.id, true)
         if (changeSetId) {
           useChangesStore.getState().updateChangeSetStatus(changeSetId, 'rejected')
         }
@@ -720,9 +734,25 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   // annotation's own anchor touches, shown read-only ABOVE the action
   // controls so the human sees it before committing rather than after (the
   // apply handler's `runCascadeCheck` toast below stays the post-apply check
-  // — this doesn't replace it). Empty whenever the graph is cold or the
-  // anchor's block is unknown, which previewBlastRadius signals with [].
-  const blastRadius = view ? previewBlastRadius(view.state, annotation.anchor.from) : []
+  // — this doesn't replace it).
+  //
+  // Three outcomes, not two. A cold graph must render NOTHING: "nothing
+  // depends on this" is a claim about the document, and making it on the
+  // strength of an unbuilt index would be false rather than cautious.
+  const blast = view
+    ? previewBlastRadiusDetail(view.state, annotation.anchor.from)
+    : { passages: [], suppressed: 0, graphUnavailable: true }
+  const blastRadius = blast.passages
+
+  /** Send the reader to a related passage and mark where they landed. */
+  const goToPassage = (blockId: string) => {
+    const currentView = useEditorStore.getState().view
+    if (!currentView) return
+    const found = findBlockById(currentView.state.doc, blockId)
+    if (!found) return
+    scrollToPos(currentView, found.pos)
+    pulseBlock(currentView, blockId)
+  }
 
   return (
     <>
@@ -781,16 +811,39 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         </p>
         <div className="mt-1.5 flex flex-col gap-1.5">
           {blastRadius.map((passage) => (
-            <div key={passage.blockId} className="rounded-lg border border-border/60 bg-warm/60 px-2.5 py-1.5">
+            <button
+              key={passage.blockId}
+              type="button"
+              onClick={() => goToPassage(passage.blockId)}
+              // The machine provenance stays one hover away — `why` is the
+              // human sentence, `whyPath` is what an auditor checks it against.
+              title={passage.whyPath}
+              aria-label={`Go to related passage${
+                passage.headingPath.length > 0 ? ` in ${passage.headingPath.join(' › ')}` : ''
+              }: ${passage.text}`}
+              className="w-full text-left rounded-lg border border-border/60 bg-warm/60 px-2.5 py-1.5 transition-colors hover:bg-warm hover:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
               <p className="text-[10px] font-mono text-muted-foreground">
                 {passage.why}
                 {passage.headingPath.length > 0 && ` · ${passage.headingPath.join(' › ')}`}
               </p>
               <p className="text-xs text-muted-foreground leading-snug">{passage.text}</p>
-            </div>
+            </button>
           ))}
         </div>
       </div>
+    )}
+    {blastRadius.length === 0 && !blast.graphUnavailable && blast.suppressed > 0 && (
+      // Said plainly rather than left blank. A blank card and a card that has
+      // checked are indistinguishable to a reader, and the reader is the one
+      // deciding whether to apply the edit.
+      <p
+        aria-label="Blast radius preview (none)"
+        className="mt-3 mx-1 px-3 py-2 text-[10px] font-mono text-muted-foreground border border-dashed border-border/60 rounded-xl"
+      >
+        Nothing else in this document depends on this passage
+        {` (${blast.suppressed} nearby passage${blast.suppressed === 1 ? '' : 's'} checked).`}
+      </p>
     )}
     <div className="flex flex-wrap gap-2 mt-3">
       {annotation.resolution.actions.map((action) => {

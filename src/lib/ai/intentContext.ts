@@ -3,11 +3,13 @@ import type { Scope } from '@/lib/annotations/types'
 import { getBlockText, getSectionText } from '@/lib/prosemirror/helpers'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import {
+  describeEdgePath,
   findEdgePath,
   formatEdgePath,
   getNeighborhood,
   type DocGraph,
 } from '@/lib/graphrag/docGraph'
+import { RELATED_MIN_SCORE, scoreOneHopNeighbors, scorePath } from '@/lib/graphrag/relevanceScore'
 import { useDocGraphStore } from '@/stores/docGraphStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { listInvariants, type Invariant } from '@/lib/invariants/captureInvariant'
@@ -44,8 +46,18 @@ export interface IntentContext {
   headingPath: string[]
   /** Terms this block defines, per the graph's deterministic extractor. */
   definedTerms: string[]
-  /** Passages elsewhere that bear on this span, nearest and most precise first. */
+  /** Passages elsewhere that bear on this span, most relevant first. */
   related: RelatedPassage[]
+  /**
+   * Candidates the graph offered that scored below the relevance floor.
+   *
+   * Distinguishes "this document has nothing else on the subject" (checked, >0
+   * rejected) from "no candidates existed" (0) — and both from a cold graph,
+   * which `graphUnavailable` reports. An empty `related` alone is ambiguous
+   * between all three, and that ambiguity is what let a model fill the silence
+   * with an invented cross-reference.
+   */
+  relatedSuppressed: number
   /** Facts the author declared that touch this span or its neighbours. */
   invariants: string[]
   /**
@@ -80,11 +92,35 @@ export interface RelatedPassage {
   /** BFS hop distance from the span's block. */
   hop: number
   /**
-   * Why this block is related, as the walked edge path
-   * ("defines → references"). Provenance, not decoration: it lets the model
-   * say how it knows, and it is what a reviewer audits.
+   * Why this block is related, in a sentence a reader can act on
+   * ("defines \"Retention Period\", used here"). This is what the UI shows and
+   * what the model is given.
    */
   why: string
+  /**
+   * The same fact as machine provenance ("references → references"). Kept
+   * alongside `why` rather than replaced by it: this is the audit surface, and
+   * it is what a reviewer checks the human sentence against.
+   */
+  whyPath: string
+  /** Relevance in [0,1] — see relevanceScore.ts. Above RELATED_MIN_SCORE. */
+  score: number
+}
+
+/**
+ * What `collectRelatedDetail` found, including what it threw away.
+ *
+ * The count of rejected candidates is not bookkeeping — it is the difference
+ * between "this document has nothing else on the subject" and "the graph has
+ * not been built yet", which an empty list alone cannot express, and which
+ * decides whether the UI should say anything at all.
+ */
+export interface RelatedResult {
+  passages: RelatedPassage[]
+  /** Candidates that scored below the floor. */
+  suppressed: number
+  /** Candidates examined, before the floor. */
+  considered: number
 }
 
 /**
@@ -148,33 +184,70 @@ function truncate(text: string, max: number): string {
  * question ("what else does this touch?") and must rank identically — two
  * copies of this ordering would drift and quietly disagree with each other.
  */
+export function collectRelatedDetail(
+  graph: DocGraph,
+  seedBlockId: string,
+  budget: { passages: number; chars: number; hops: number; minScore?: number },
+): RelatedResult {
+  const minScore = budget.minScore ?? RELATED_MIN_SCORE
+  const neighborhood = getNeighborhood(graph, seedBlockId, budget.hops)
+
+  const scored: Array<{ blockId: string; hop: number; sourceRank: number; score: number; path: ReturnType<typeof findEdgePath> }> = []
+  for (const [blockId, entry] of neighborhood.entries()) {
+    if (blockId === seedBlockId) continue
+    const node = graph.nodes.get(blockId)
+    if (!node || !node.text.trim()) continue
+    const path = findEdgePath(graph, seedBlockId, blockId)
+    scored.push({
+      blockId,
+      hop: entry.hop,
+      sourceRank: entry.sourceRank,
+      score: scorePath(graph, seedBlockId, blockId, path, entry.hop),
+      path,
+    })
+  }
+
+  // Rank by SCORE, not by hop. Hop-first ordering is why a one-hop
+  // co-mention outranked a two-hop passage genuinely about the same subject;
+  // hop and source survive only as tie-breakers.
+  const kept = scored
+    .filter((c) => c.score >= minScore)
+    .sort((a, b) => b.score - a.score || a.hop - b.hop || a.sourceRank - b.sourceRank)
+    .slice(0, budget.passages)
+
+  const passages: RelatedPassage[] = kept.map((c) => {
+    const node = graph.nodes.get(c.blockId)!
+    return {
+      blockId: c.blockId,
+      text: truncate(node.text, budget.chars),
+      headingPath: node.headingPath,
+      hop: c.hop,
+      score: c.score,
+      why: c.path && c.path.length ? describeEdgePath(graph, c.path, seedBlockId) : 'related',
+      whyPath: c.path && c.path.length ? formatEdgePath(c.path) : 'related',
+    }
+  })
+
+  return {
+    passages,
+    suppressed: scored.length - kept.length,
+    considered: scored.length,
+  }
+}
+
+/**
+ * Backwards-compatible view of the above: just the passages.
+ *
+ * Kept so existing callers and their tests are unaffected by the addition of
+ * the suppressed/considered counts, which only surfaces where a UI or prompt
+ * needs to distinguish "nothing relevant" from "nothing built".
+ */
 export function collectRelated(
   graph: DocGraph,
   seedBlockId: string,
-  budget: { passages: number; chars: number; hops: number },
+  budget: { passages: number; chars: number; hops: number; minScore?: number },
 ): RelatedPassage[] {
-  const neighborhood = getNeighborhood(graph, seedBlockId, budget.hops)
-
-  const ranked = [...neighborhood.entries()]
-    .filter(([blockId]) => blockId !== seedBlockId)
-    .sort((a, b) => a[1].hop - b[1].hop || a[1].sourceRank - b[1].sourceRank)
-    .slice(0, budget.passages)
-
-  const passages: RelatedPassage[] = []
-  for (const [blockId, entry] of ranked) {
-    const node = graph.nodes.get(blockId)
-    if (!node || !node.text.trim()) continue
-
-    const path = findEdgePath(graph, seedBlockId, blockId)
-    passages.push({
-      blockId,
-      text: truncate(node.text, budget.chars),
-      headingPath: node.headingPath,
-      hop: entry.hop,
-      why: path && path.length ? formatEdgePath(path) : 'related',
-    })
-  }
-  return passages
+  return collectRelatedDetail(graph, seedBlockId, budget).passages
 }
 
 /**
@@ -235,6 +308,7 @@ export async function buildIntentContext(
     headingPath: [],
     definedTerms: [],
     related: [],
+    relatedSuppressed: 0,
     invariants: [],
     undefinedTerm: null,
     graphUnavailable: true,
@@ -250,7 +324,9 @@ export async function buildIntentContext(
     ctx.headingPath = seed.headingPath
     ctx.definedTerms = seed.definedTerms
   }
-  ctx.related = collectRelated(graph, blockId, budget)
+  const relatedResult = collectRelatedDetail(graph, blockId, budget)
+  ctx.related = relatedResult.passages
+  ctx.relatedSuppressed = relatedResult.suppressed
 
   // Deterministic answer to "does this document explain this word?", computed
   // rather than asked of the model. Skipped for a long selection (a passage,
@@ -353,7 +429,18 @@ export function peekRelatedCount(editorState: EditorState, pos: number): number 
   if (!graph) return 0
   const blockId = blockIdAtPos(editorState.doc, pos)
   if (!blockId || !graph.nodes.has(blockId)) return 0
-  return Math.max(0, getNeighborhood(graph, blockId, 1).size - 1)
+
+  // Counts only neighbours that would actually survive the relevance floor.
+  // Offering "4 related passages" and then showing one (or none) is worse
+  // than offering nothing: the popup is a promise about what a click will do.
+  //
+  // `scoreOneHopNeighbors` walks adjacency directly rather than running a BFS
+  // or a path search, so this stays O(degree) on mouse-up.
+  let count = 0
+  for (const score of scoreOneHopNeighbors(graph, blockId).values()) {
+    if (score >= RELATED_MIN_SCORE) count++
+  }
+  return count
 }
 
 /**
@@ -388,10 +475,20 @@ export function formatIntentContext(ctx: IntentContext): string {
     lines.push('', 'RELATED PASSAGES ELSEWHERE IN THIS DOCUMENT:')
     for (const passage of ctx.related) {
       const where = passage.headingPath.length ? ` [${passage.headingPath.join(' › ')}]` : ''
-      lines.push(`  - (${passage.why})${where} "${passage.text}"`)
+      lines.push(`  - (${passage.why} · relevance ${passage.score.toFixed(2)})${where} "${passage.text}"`)
     }
     lines.push(
       '  Consider whether your answer is consistent with the passages above; cite one when it bears on the question.',
+      '  Relevance is a retrieval score, not a guarantee — if a passage does not actually bear on the question, ignore it and say so.',
+    )
+  } else if (!ctx.graphUnavailable && ctx.relatedSuppressed > 0) {
+    // Said out loud, because the alternative is saying nothing — and an
+    // unexplained silence here is exactly what a model fills with "as
+    // discussed in Section 8".
+    lines.push(
+      '',
+      `NOTHING ELSE IN THIS DOCUMENT BEARS ON THIS SPAN. (${ctx.relatedSuppressed} candidate passage${ctx.relatedSuppressed === 1 ? ' was' : 's were'} checked and rejected as unrelated.)`,
+      '  Do not invent a cross-reference to another section.',
     )
   }
 

@@ -1,6 +1,6 @@
 import type { EditorState } from 'prosemirror-state'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
-import { collectRelated, type RelatedPassage } from '@/lib/ai/intentContext'
+import { collectRelatedDetail, type RelatedPassage } from '@/lib/ai/intentContext'
 import { useDocGraphStore } from '@/stores/docGraphStore'
 
 export type { RelatedPassage }
@@ -36,20 +36,45 @@ const PREVIEW_HOPS = 2
  * unknown, or the block isn't in the graph — callers must treat that as "say
  * nothing", not "nothing is related".
  */
+export interface BlastRadiusPreview {
+  passages: RelatedPassage[]
+  /** Candidates the graph offered that scored below the relevance floor. */
+  suppressed: number
+  /**
+   * True when the graph was cold or the block unknown to it. The card must
+   * render NOTHING in this state — an empty list here means "not known yet",
+   * and telling a reader "nothing depends on this" on the strength of an
+   * unbuilt index is a false statement, not a cautious one.
+   */
+  graphUnavailable: boolean
+}
+
+export function previewBlastRadiusDetail(
+  editorState: EditorState,
+  pos: number,
+  cap: number = DEFAULT_CAP,
+): BlastRadiusPreview {
+  const graph = useDocGraphStore.getState().graph
+  if (!graph) return { passages: [], suppressed: 0, graphUnavailable: true }
+
+  const blockId = blockIdAtPos(editorState.doc, pos)
+  if (!blockId || !graph.nodes.has(blockId)) {
+    return { passages: [], suppressed: 0, graphUnavailable: true }
+  }
+
+  const result = collectRelatedDetail(graph, blockId, {
+    passages: cap,
+    chars: PREVIEW_CHARS,
+    hops: PREVIEW_HOPS,
+  })
+  return { passages: result.passages, suppressed: result.suppressed, graphUnavailable: false }
+}
+
+/** Just the passages — the shape callers had before suppression was tracked. */
 export function previewBlastRadius(
   editorState: EditorState,
   pos: number,
   cap: number = DEFAULT_CAP,
 ): RelatedPassage[] {
-  const graph = useDocGraphStore.getState().graph
-  if (!graph) return []
-
-  const blockId = blockIdAtPos(editorState.doc, pos)
-  if (!blockId || !graph.nodes.has(blockId)) return []
-
-  return collectRelated(graph, blockId, {
-    passages: cap,
-    chars: PREVIEW_CHARS,
-    hops: PREVIEW_HOPS,
-  })
+  return previewBlastRadiusDetail(editorState, pos, cap).passages
 }

@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useEditorStore } from '@/stores/editorStore'
+import { useLayoutStore } from '@/stores/layoutStore'
 import { TextSelection } from 'prosemirror-state'
 import {
   setProposedEdits,
@@ -85,6 +86,11 @@ export function AnnotationCard({
   const addMessage = useAnnotationStore((s) => s.addMessage)
   const view = useEditorStore((s) => s.view)
   const [showBadgeDropdown, setShowBadgeDropdown] = useState(false)
+
+  // Per-card collapse: a view preference persisted in layoutStore, NOT
+  // annotation state (see layoutStore's doc comment on collapsedAnnotationIds).
+  const collapsed = useLayoutStore((s) => s.collapsedAnnotationIds.includes(annotation.id))
+  const toggleAnnotationCollapsed = useLayoutStore((s) => s.toggleAnnotationCollapsed)
 
   // Flow-state answer buffering: while this card's answer is held, keep
   // presenting it as "Thinking..." and hide the conversation/resolution body.
@@ -372,9 +378,33 @@ export function AnnotationCard({
           : 'hover:bg-white/70'
       }`}
     >
-      {/* Header */}
+      {/* Header — always visible, even when the card body is collapsed */}
       <div className="flex items-center justify-between mb-1.5">
-        <div className="relative">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              toggleAnnotationCollapsed(annotation.id)
+            }}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? 'Expand annotation' : 'Collapse annotation'}
+            title={collapsed ? 'Expand' : 'Collapse'}
+            className="shrink-0 p-0.5 rounded text-muted-foreground hover:bg-warm/80 transition-colors"
+          >
+            <svg
+              aria-hidden="true"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.15s ease' }}
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          <div className="relative">
           <button
             onClick={(e) => {
               e.stopPropagation()
@@ -409,8 +439,17 @@ export function AnnotationCard({
               ))}
             </div>
           )}
+          </div>
         </div>
         <div className="flex items-center gap-1.5">
+          {annotation.hidden && (
+            <span
+              className="px-2 py-0.5 rounded-full text-[9px] font-mono uppercase tracking-[0.1em] bg-stone-200 text-stone-500 border border-stone-300"
+              title="Hidden — finished and tucked away; visible now because Show resolved is on"
+            >
+              hidden
+            </span>
+          )}
           {showAnswerReadyChip && (
             <span className="answer-ready-chip">Answer ready</span>
           )}
@@ -422,6 +461,8 @@ export function AnnotationCard({
         </div>
       </div>
 
+      {!collapsed && (
+      <>
       {/* Transcript */}
       <p className="text-sm text-ink leading-relaxed mb-1 font-medium">
         {annotation.transcript}
@@ -588,6 +629,8 @@ export function AnnotationCard({
               : 'analyzing'
           }
         />
+      )}
+      </>
       )}
     </div>
   )

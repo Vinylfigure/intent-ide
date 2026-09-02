@@ -953,3 +953,24 @@
   color: #fff;
   box-shadow: 0 1px 2px rgba(71, 48, 28, 0.18);
 }
+
+/* Momentary highlight for a block the reader was just sent to — see
+   lib/prosemirror/scrollToPos.ts. Scoped to the editor so it cannot leak into
+   panel chrome. */
+.ProseMirror .block-pulse {
+  animation: block-pulse 1.6s ease-out;
+  border-radius: 4px;
+}
+
+@keyframes block-pulse {
+  0% { background-color: rgba(125, 73, 42, 0.22); }
+  100% { background-color: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ProseMirror .block-pulse {
+    animation: none;
+    outline: 2px solid rgba(125, 73, 42, 0.5);
+    outline-offset: 2px;
+  }
+}

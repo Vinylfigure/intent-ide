@@ -4,8 +4,21 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Annotation, ConversationMessage, Resolution } from '@/lib/annotations/types'
 import { mapLegacyType, normalizeProposedEdit } from '@/lib/annotations/types'
+import { isTerminalStatus } from '@/lib/annotations/lifecycle'
 import { LEGACY_DOCUMENT_ID } from '@/lib/documents/legacyDocumentId'
 import { useFlowStore } from '@/stores/flowStore'
+
+/**
+ * Whether an annotation is eligible to be hidden from the panel. Only a
+ * terminal status (`applied`/`dismissed`) qualifies — a `resolved`
+ * annotation still has actions the user hasn't taken, so hiding it would
+ * bury work still awaiting a decision. Exported so callers (and tests) can
+ * check before/alongside `setHidden`, which also enforces this guard
+ * itself so a stale check can never smuggle an illegal hide through.
+ */
+export function canHideAnnotation(annotation: Pick<Annotation, 'status'>): boolean {
+  return isTerminalStatus(annotation.status)
+}
 
 /**
  * Migrate annotations from the old 6-type system to the new 4-type system on
@@ -88,6 +101,15 @@ interface AnnotationState {
   ) => void
   remove: (id: string) => void
   /**
+   * View-level "finished, get it out of my way" flag — never annotation
+   * lifecycle state (see `lifecycle.ts`'s TRANSITIONS). Setting `hidden:
+   * true` is refused (no-op) unless the annotation's status is terminal
+   * (`canHideAnnotation`); unhiding (`hidden: false`) is always allowed.
+   * This is the ONLY place `hidden` is ever written by the store itself —
+   * `AnnotationPanel` filters on it, but never mutates it directly.
+   */
+  setHidden: (id: string, hidden: boolean) => void
+  /**
    * Removes every annotation belonging to a deleted document, routed through
    * `remove()` per-id so each also gets its `heldAnswers` purge for free
    * (#107). Lives here rather than in `documentStore.ts`'s `deleteDocument`
@@ -138,6 +160,14 @@ export const useAnnotationStore = create<AnnotationState>()(
         // calls this action, so it needs no purge of its own).
         useFlowStore.getState().revealAnswer(id)
       },
+      setHidden: (id, hidden) =>
+        set((s) => ({
+          annotations: s.annotations.map((a) => {
+            if (a.id !== id) return a
+            if (hidden && !canHideAnnotation(a)) return a
+            return { ...a, hidden }
+          }),
+        })),
       removeByDocumentId: (documentId) => {
         const ids = get()
           .annotations.filter((a) => a.documentId === documentId)

@@ -119,6 +119,7 @@ describe('formatIntentContext — how the fact is stated', () => {
     headingPath: ['Anchor stories'],
     definedTerms: [],
     related: [],
+    relatedSuppressed: 0,
     invariants: [],
     undefinedTerm: null,
     graphUnavailable: false,
@@ -148,7 +149,9 @@ describe('formatIntentContext — how the fact is stated', () => {
     const out = formatIntentContext({
       ...base,
       undefinedTerm: 'Atlantis',
-      related: [{ blockId: 'b', text: 'other', headingPath: [], hop: 1, why: 'references' }],
+      related: [
+        { blockId: 'b', text: 'other', headingPath: [], hop: 1, why: 'references', whyPath: 'references', score: 0.9 },
+      ],
     })
     expect(out.lastIndexOf('DOES NOT DEFINE')).toBeGreaterThan(out.lastIndexOf('RELATED PASSAGES'))
   })

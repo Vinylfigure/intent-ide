@@ -1087,3 +1087,173 @@ describe('formatEdgePath', () => {
     expect(out.length).toBeLessThan(45)
   })
 })
+
+// ── deterministic extractor precision ────────────────────────────────────────
+//
+// Every case below is a false positive the extractors actually produced against
+// a real document, surfaced to the user as an irrelevant "related passage" with
+// a label like `references ("Sections 8")`.
+
+describe('buildDeterministicGraph — section-number references', () => {
+  it('does not link a plural range in prose to whatever heading is eighth', () => {
+    // The exact reported failure. "Study Sections 8–14" is a reading
+    // instruction, not a pointer, and the old pattern resolved "8" as a
+    // POSITIONAL index into the heading list.
+    const graph = buildDeterministicGraph(
+      docOf(
+        h('h1', 2, 'Introduction'),
+        h('h2', 2, 'Data Handling'),
+        h('h3', 2, 'Retention'),
+        h('h4', 2, 'Access'),
+        h('h5', 2, 'Review'),
+        h('h6', 2, 'Evidence'),
+        h('h7', 2, 'Controls'),
+        h('h8', 2, 'Appendix'),
+        p('prose', 'Second pass — learning: Study Sections 8–14, starting with payments.'),
+      ),
+    )
+    expect(graph.edges.filter((e) => e.from === 'prose')).toEqual([])
+  })
+
+  it('does not link a plural list in prose either', () => {
+    const graph = buildDeterministicGraph(
+      docOf(h('h1', 2, 'One'), h('h2', 2, 'Two'), h('h3', 2, 'Three'), p('prose', 'Review Sections 2, 3 and 1 first.')),
+    )
+    expect(graph.edges.filter((e) => e.from === 'prose')).toEqual([])
+  })
+
+  it('resolves a pointer against a heading that numbers itself', () => {
+    const graph = buildDeterministicGraph(
+      docOf(
+        h('h8', 2, '8. Access Reviews'),
+        h('h82', 3, '8.2 Grant reconciliation'),
+        p('prose', 'As covered in Section 8.2, grants are reconciled nightly.'),
+      ),
+    )
+    const edge = graph.edges.find((e) => e.from === 'prose')
+    expect(edge?.to).toBe('h82')
+    expect(edge?.kind).toBe('section-number')
+    expect(edge?.weight).toBe(0.95)
+  })
+
+  it('refuses the ordinal fallback when the document numbers its headings', () => {
+    // "Section 9" in a document numbering 1..2 means something this pass
+    // cannot see; pointing at the ninth block would be a fabrication.
+    const graph = buildDeterministicGraph(
+      docOf(h('h1', 2, '1. First'), h('h2', 2, '2. Second'), p('prose', 'See Section 9 for detail.')),
+    )
+    expect(graph.edges.filter((e) => e.from === 'prose')).toEqual([])
+  })
+
+  it('falls back to the ordinal index only when nothing is numbered', () => {
+    // Unnumbered headings leave ordinal position as the only available
+    // reading — kept, but tagged as the guess it is.
+    const graph = buildDeterministicGraph(
+      docOf(h('h1', 2, 'Introduction'), h('h2', 2, 'Data Handling'), p('prose', 'See Section 2 for detail.')),
+    )
+    const edge = graph.edges.find((e) => e.from === 'prose')
+    expect(edge?.to).toBe('h2')
+    expect(edge?.kind).toBe('section-ordinal')
+    expect(edge?.weight).toBe(0.6)
+  })
+
+  it('never falls back on a dotted number — there is no ordinal reading of "8.2"', () => {
+    const graph = buildDeterministicGraph(
+      docOf(h('h1', 2, 'Introduction'), h('h2', 2, 'Data Handling'), p('prose', 'See Section 8.2 for detail.')),
+    )
+    expect(graph.edges.filter((e) => e.from === 'prose')).toEqual([])
+  })
+})
+
+describe('buildDeterministicGraph — bold lead-ins are labels, not definitions', () => {
+  function boldLead(blockId: string, term: string, rest: string): PMNode {
+    return schema.node('paragraph', { blockId }, [
+      schema.text(`${term}:`, [schema.marks.strong.create()]),
+      schema.text(` ${rest}`),
+    ])
+  }
+
+  it('does not define a term when nothing resembling a definition follows', () => {
+    const graph = buildDeterministicGraph(docOf(boldLead('a', 'Aegis', 'see below.')))
+    expect(graph.nodes.get('a')?.definedTerms).toEqual([])
+  })
+
+  it('does define one when a real definition follows', () => {
+    const graph = buildDeterministicGraph(
+      docOf(boldLead('a', 'Aegis', 'the internal access-review service that reconciles grants nightly.')),
+    )
+    expect(graph.nodes.get('a')?.definedTerms).toEqual(['Aegis'])
+  })
+
+  it('never treats a document-furniture word as a defined term', () => {
+    // "**Best use**: ..." and "**Note**: ..." are how the reported document is
+    // written throughout; each one used to become a term linking every block
+    // that contained the word.
+    for (const label of ['Note', 'Best use', 'Avoid', 'Summary']) {
+      const graph = buildDeterministicGraph(
+        docOf(boldLead('a', label, 'a sentence long enough to clear the definition-length floor easily.')),
+      )
+      expect(graph.nodes.get('a')?.definedTerms).toEqual([])
+    }
+  })
+
+  it('does not treat a bold heading as a glossary entry', () => {
+    const heading = schema.node('heading', { level: 2, blockId: 'h1' }, [
+      schema.text('Aegis:', [schema.marks.strong.create()]),
+      schema.text(' the internal access-review service that reconciles grants nightly.'),
+    ])
+    const graph = buildDeterministicGraph(docOf(heading))
+    expect(graph.nodes.get('h1')?.definedTerms).toEqual([])
+  })
+})
+
+describe('buildDeterministicGraph — hub terms', () => {
+  /** N blocks all containing `term`, plus one block defining it. */
+  function docWithTermIn(count: number, term: string): PMNode {
+    const blocks: PMNode[] = [p('def', `"${term}" means the internal access-review service.`)]
+    for (let i = 0; i < count; i++) {
+      blocks.push(p(`u${i}`, `Block ${i} discusses ${term} in passing with some filler text here.`))
+    }
+    // Pad so the 12%-of-document cap does not rise to meet the usage count.
+    for (let i = 0; i < 30; i++) {
+      blocks.push(p(`pad${i}`, `Unrelated padding block number ${i} with entirely different words.`))
+    }
+    return docOf(...blocks)
+  }
+
+  it('drops a term that links too much of the document, and records why', () => {
+    // The "Aegis" case: a project-wide noun made the whole document one hop
+    // from itself, so any two passages looked related.
+    const graph = buildDeterministicGraph(docWithTermIn(20, 'Aegis'))
+    expect(graph.edges.filter((e) => e.evidence === 'Aegis')).toEqual([])
+    expect(graph.hubTerms).toContain('Aegis')
+  })
+
+  it('keeps a term used in a few places, weighted down by how many', () => {
+    const graph = buildDeterministicGraph(docWithTermIn(3, 'Aegis'))
+    const edges = graph.edges.filter((e) => e.evidence === 'Aegis')
+    expect(edges).toHaveLength(3)
+    expect(edges[0].kind).toBe('defined-term')
+    // df=3 → 0.95 - 0.08*2
+    expect(edges[0].weight).toBeCloseTo(0.79, 5)
+    expect(graph.hubTerms ?? []).not.toContain('Aegis')
+  })
+
+  it('weights a term used in exactly one other block at full confidence', () => {
+    const graph = buildDeterministicGraph(docWithTermIn(1, 'Aegis'))
+    expect(graph.edges.find((e) => e.evidence === 'Aegis')?.weight).toBe(0.95)
+  })
+
+  it('keeps term edges in a short document, where the ratio cap would be brutal', () => {
+    // 12% of six blocks is zero; the floor is what stops a small fixture (and
+    // a short real document) from losing every term edge.
+    const graph = buildDeterministicGraph(
+      docOf(
+        p('def', '"Pilot Program" means the trial rollout of the new service.'),
+        p('u1', 'Funding for the Pilot Program comes from reserves.'),
+        p('u2', 'The Pilot Program ends in June.'),
+      ),
+    )
+    expect(graph.edges.filter((e) => e.evidence === 'Pilot Program')).toHaveLength(2)
+  })
+})
