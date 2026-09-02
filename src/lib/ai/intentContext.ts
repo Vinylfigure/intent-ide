@@ -169,6 +169,50 @@ function documentDefines(graph: DocGraph, term: string): boolean {
   return false
 }
 
+/**
+ * Whether a selection is plausibly a TERM — a name the document could define —
+ * as opposed to a sentence, a heading or a question.
+ *
+ * The gate here used to be `length <= MAX_TERM_CHARS` alone, and 60 characters
+ * happily admits a whole question. Selecting the heading "What is
+ * tokenization?" therefore asked the graph whether the document "defines" a
+ * question, which it never will for any question, and the reader was told
+ * `This document does not define "What is tokenization?"` — a true statement
+ * about a thing nobody asked about.
+ *
+ * A single trailing full stop is stripped rather than rejected: pulling the
+ * sentence's period into the selection is a normal mouse-drag artifact, and
+ * "AWS-heavy." is still a term. A `?` or `!` anywhere, or a sentence break
+ * inside the text, is not an artifact — it means a clause was selected.
+ */
+const INTERROGATIVE_OPENERS = new Set([
+  'what', 'how', 'why', 'when', 'where', 'who', 'whom', 'whose', 'which',
+  'is', 'are', 'was', 'were', 'do', 'does', 'did', 'can', 'could', 'will',
+  'would', 'shall', 'should', 'has', 'have', 'had', 'if', 'whether',
+])
+
+const MAX_TERM_WORDS = 5
+
+export function looksLikeTerm(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  if (trimmed.length > MAX_TERM_CHARS) return false
+
+  // One trailing full stop is a selection artifact; anything else is punctuation
+  // the reader actually selected.
+  const body = trimmed.replace(/\.$/, '').trim()
+  if (!body) return false
+  if (/[?!]/.test(body)) return false
+  // A sentence boundary inside the text means this is prose, not a name.
+  if (/\.\s/.test(body)) return false
+
+  const words = body.split(/\s+/)
+  if (words.length > MAX_TERM_WORDS) return false
+  if (INTERROGATIVE_OPENERS.has(words[0].toLowerCase().replace(/[^a-z]/g, ''))) return false
+
+  return true
+}
+
 function truncate(text: string, max: number): string {
   const clean = text.trim().replace(/\s+/g, ' ')
   return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`
@@ -329,11 +373,12 @@ export async function buildIntentContext(
   ctx.relatedSuppressed = relatedResult.suppressed
 
   // Deterministic answer to "does this document explain this word?", computed
-  // rather than asked of the model. Skipped for a long selection (a passage,
-  // not a name) and impossible on a cold graph, where `graphUnavailable`
-  // already tells callers not to read silence as an answer.
+  // rather than asked of the model. Skipped for anything that is not a name
+  // (see looksLikeTerm -- a sentence, heading or question is not a term the
+  // document could define) and impossible on a cold graph, where
+  // `graphUnavailable` already tells callers not to read silence as an answer.
   const term = selectedText?.trim() ?? ''
-  if (term && term.length <= MAX_TERM_CHARS && !documentDefines(graph, term)) {
+  if (term && looksLikeTerm(term) && !documentDefines(graph, term)) {
     ctx.undefinedTerm = term
   }
 
