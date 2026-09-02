@@ -45,6 +45,14 @@ if [[ -z "$REPO" ]]; then
   REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 fi
 OWNER="${REPO%%/*}"
+# The L-047 detector compares every branch against this, so it must be the
+# repo's REAL default — DryDock's is `Main`, not `main`, and guessing would
+# make every branch there look stranded.
+DEFAULT_BRANCH="${GITHUB_DEFAULT_BRANCH:-}"
+if [[ -z "$DEFAULT_BRANCH" ]]; then
+  DEFAULT_BRANCH="$(gh api "repos/$REPO" --jq .default_branch 2>/dev/null || true)"
+fi
+[[ -n "$DEFAULT_BRANCH" ]] || DEFAULT_BRANCH=main
 NOW_EPOCH="$(date -u +%s)"
 NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -158,18 +166,47 @@ run_aging_ladder() {
 # (c) L-047 detector: claude/* branches, head commit >24h old, no open PR.
 # ---------------------------------------------------------------------------
 RED_FINDINGS=()
+MERGED_BRANCHES=()
 
+# Two independent proofs that a branch's work has landed. BOTH are needed.
+#
+#   merged PR  — the head of a MERGED pull request. Under squash-merge the
+#                branch tip is NOT an ancestor of the default branch, so these
+#                read ahead=1..4 forever: content landed, commits did not.
+#   ahead == 0 — the tip IS an ancestor of the default branch (merge-commit or
+#                rebase). Catches branches merged without a PR at all.
+#
+# Anything else carrying commits of its own is genuinely unshipped work.
+# Flagging a delivered branch red rendered "already delivered" and "silently
+# stranded" as the same colour (L-064), which trained the operator to stop
+# reading the detector — so the branches that WERE stranded went unread with
+# them. `unknown` (API unreachable) stays red: fail closed, never hide a
+# possible stranding behind a failed lookup.
 detect_stale_branches() {
-  local pr_heads branch sha head_date hours
+  local pr_heads merged_heads branch sha head_date hours ahead
   pr_heads="$(jq -r '.[].headRefName' <<<"$PRS_JSON")"
+  merged_heads="$(gh pr list -R "$REPO" --state merged --limit 500 --json headRefName \
+    --jq '.[].headRefName' 2>/dev/null || true)"
   while IFS=$'\t' read -r branch sha; do
     [[ -z "$branch" ]] && continue
     [[ "$branch" == claude/* ]] || continue
     grep -qxF "$branch" <<<"$pr_heads" && continue
     head_date="$(gh api "repos/$REPO/commits/$sha" --jq .commit.committer.date)"
     hours="$(age_hours "$head_date")"
-    if (( hours > STALE_BRANCH_HOURS )); then
-      RED_FINDINGS+=("L-047: remote branch \`$branch\` head commit is ${hours}h old with no open PR — work-in-flight is going stale (open a PR or delete the branch).")
+    (( hours > STALE_BRANCH_HOURS )) || continue
+    if grep -qxF "$branch" <<<"$merged_heads"; then
+      MERGED_BRANCHES+=("\`$branch\` — its PR merged, safe to delete")
+      continue
+    fi
+    ahead="$(gh api "repos/$REPO/compare/$DEFAULT_BRANCH...$branch" \
+      --jq 'if type == "object" then (.ahead_by // 0) else "unknown" end' 2>/dev/null || echo unknown)"
+    [[ -n "$ahead" ]] || ahead=unknown
+    if [[ "$ahead" == "0" ]]; then
+      MERGED_BRANCHES+=("\`$branch\` — already in \`$DEFAULT_BRANCH\`, safe to delete")
+    elif [[ "$ahead" == "unknown" ]]; then
+      RED_FINDINGS+=("L-047: remote branch \`$branch\` head commit is ${hours}h old with no open PR, and its ahead-count could not be read — treat as stranded until proven otherwise.")
+    else
+      RED_FINDINGS+=("L-047: remote branch \`$branch\` head commit is ${hours}h old, has no merged PR, and carries **${ahead} commit(s) not in \`$DEFAULT_BRANCH\`** — work-in-flight is going stale (open a PR or delete the branch).")
     fi
   done <<<"$BRANCHES_TSV"
 }
@@ -278,6 +315,21 @@ build_body() {
     local f
     for f in "${RED_FINDINGS[@]}"; do
       body+="- :red_circle: $f"$'\n'
+    done
+  fi
+  body+=$'\n'
+
+  # -- Merged branches, not yet deleted --------------------------------------
+  # Housekeeping, deliberately NOT a red finding: the work is already in the
+  # default branch, so nothing is at risk and nothing should fail a check.
+  body+="## Merged branches, not yet deleted"$'\n\n'
+  if (( ${#MERGED_BRANCHES[@]} == 0 )); then
+    body+="_None._"$'\n'
+  else
+    body+="Housekeeping only — the work is already in \`$DEFAULT_BRANCH\`."$'\n\n'
+    local m
+    for m in "${MERGED_BRANCHES[@]}"; do
+      body+="- $m"$'\n'
     done
   fi
   body+=$'\n'
