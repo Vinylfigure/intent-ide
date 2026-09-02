@@ -5,7 +5,7 @@ import type { Node as PMNode } from 'prosemirror-model'
 import { schema } from '@/lib/prosemirror/schema'
 import { useDocGraphStore } from '@/stores/docGraphStore'
 import type { DocGraph, DocGraphNode } from '@/lib/graphrag/docGraph'
-import { buildIntentContext, formatIntentContext, type IntentContext } from '../intentContext'
+import { buildIntentContext, formatIntentContext, looksLikeTerm, type IntentContext } from '../intentContext'
 
 // The reported failure: a reader selected "Atlantis" — a term the document
 // names in a heading and never explains — and asked what it was. The model
@@ -154,5 +154,69 @@ describe('formatIntentContext — how the fact is stated', () => {
       ],
     })
     expect(out.lastIndexOf('DOES NOT DEFINE')).toBeGreaterThan(out.lastIndexOf('RELATED PASSAGES'))
+  })
+})
+
+describe('looksLikeTerm — a question is not a term', () => {
+  // The reported failure: three levels into a thread the reader asked "is the
+  // token in this context a hash value?" and was told
+  //   This document does not define "What is tokenization?"
+  // The root's HEADING had been carried down as the subject, and the only gate
+  // on it was a 60-character length cap, which a 21-character question passes.
+  // No document defines a question, so this fired every single time.
+
+  it('rejects a question', () => {
+    expect(looksLikeTerm('What is tokenization?')).toBe(false)
+  })
+
+  it('rejects an interrogative opener even without the question mark', () => {
+    expect(looksLikeTerm('How tokenization works')).toBe(false)
+    expect(looksLikeTerm('is the token a hash')).toBe(false)
+  })
+
+  it('rejects an exclamation and a sentence break', () => {
+    expect(looksLikeTerm('Never do this!')).toBe(false)
+    expect(looksLikeTerm('One thing. Then another')).toBe(false)
+  })
+
+  it('rejects a phrase longer than a name', () => {
+    expect(looksLikeTerm('the retention period for cardholder data records')).toBe(false)
+  })
+
+  it('accepts the names this guard exists to catch', () => {
+    expect(looksLikeTerm('Atlantis')).toBe(true)
+    expect(looksLikeTerm('Cloud Asset Inventory')).toBe(true)
+    expect(looksLikeTerm('WIF')).toBe(true)
+  })
+
+  it('tolerates a trailing full stop dragged in with the selection', () => {
+    // Pulling the sentence's period into the selection is a normal mouse
+    // artifact; "AWS-heavy" is still a term. (Whether the reader actually
+    // wanted a definition is a separate question, answered by the anchor
+    // relation, not by this gate.)
+    expect(looksLikeTerm('AWS-heavy.')).toBe(true)
+  })
+
+  it('rejects empty and whitespace-only selections', () => {
+    expect(looksLikeTerm('')).toBe(false)
+    expect(looksLikeTerm('   ')).toBe(false)
+    expect(looksLikeTerm('.')).toBe(false)
+  })
+})
+
+describe('buildIntentContext — a heading carried down a thread', () => {
+  it('does not announce that the document fails to define a question', async () => {
+    // The exact depth-3 regression, end to end through the real gate.
+    useDocGraphStore.setState({
+      graph: graphOf([{ blockId: 'a', text: 'What is tokenization?' }]),
+    })
+    const ctx = await buildIntentContext(
+      stateWith('What is tokenization?'),
+      1,
+      'sentence',
+      undefined,
+      'What is tokenization?',
+    )
+    expect(ctx.undefinedTerm).toBeNull()
   })
 })

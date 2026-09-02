@@ -13,6 +13,7 @@ import {
   formatIntentContext,
 } from '@/lib/ai/intentContext'
 import { inferScopeFromText } from '@/lib/annotations/selectionOffers'
+import { annotationSubject } from '@/lib/annotations/subject'
 import { runMADS } from './mads'
 import { logResolutionAudit } from '@/lib/audit/auditLogger'
 import { primaryProposedEdit, proposeCascadeEdits } from './orchestrator'
@@ -193,9 +194,10 @@ export async function resolveAnnotation(
     annotation.anchor.from,
     annotation.anchor.scope,
     annotation.sourceQuote ? inferScopeFromText(annotation.sourceQuote) : undefined,
-    // A sub-chat quotes out of an AI answer, so the term under discussion is
-    // the quote, not the parent's document anchor.
-    annotation.sourceQuote || annotation.anchor.text,
+    // What the annotation is ABOUT, which is not the same question as where
+    // it is anchored. A child inherits its parent's document POSITION on
+    // purpose, but never its subject -- see annotationSubject.
+    annotationSubject(annotation),
   )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
@@ -381,9 +383,10 @@ export async function streamResolveAnnotation(
     annotation.anchor.from,
     annotation.anchor.scope,
     annotation.sourceQuote ? inferScopeFromText(annotation.sourceQuote) : undefined,
-    // A sub-chat quotes out of an AI answer, so the term under discussion is
-    // the quote, not the parent's document anchor.
-    annotation.sourceQuote || annotation.anchor.text,
+    // What the annotation is ABOUT, which is not the same question as where
+    // it is anchored. A child inherits its parent's document POSITION on
+    // purpose, but never its subject -- see annotationSubject.
+    annotationSubject(annotation),
   )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
@@ -614,9 +617,10 @@ export async function continueThread(
     annotation.anchor.from,
     annotation.anchor.scope,
     annotation.sourceQuote ? inferScopeFromText(annotation.sourceQuote) : undefined,
-    // A sub-chat quotes out of an AI answer, so the term under discussion is
-    // the quote, not the parent's document anchor.
-    annotation.sourceQuote || annotation.anchor.text,
+    // What the annotation is ABOUT, which is not the same question as where
+    // it is anchored. A child inherits its parent's document POSITION on
+    // purpose, but never its subject -- see annotationSubject.
+    annotationSubject(annotation),
   )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
