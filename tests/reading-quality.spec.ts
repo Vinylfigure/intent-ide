@@ -49,14 +49,23 @@ const FIXTURE_DOC = [
 
 async function loadDocument(page: Page, text: string) {
   await page.goto('/')
-  const modal = page.locator('.fixed.inset-0').first()
-  if (await modal.isVisible().catch(() => false)) {
-    const paste = page.getByRole('button', { name: /paste/i }).first()
-    if (await paste.isVisible().catch(() => false)) await paste.click()
-    await page.locator('textarea').first().fill(text)
-    await page.getByRole('button', { name: /load document/i }).first().click()
-  }
+
+  // WAIT for the first-run modal rather than sampling whether it is visible
+  // right now. The point-in-time check this replaces returned false on a cold
+  // CI page before the modal had mounted, silently skipped the paste, and left
+  // the test asserting against an empty editor — a failure that reproduced
+  // only in CI and said nothing about why.
+  await expect(page.getByRole('heading', { name: 'Load Document' })).toBeVisible({
+    timeout: 60_000, // first dev-server compile
+  })
+  await page.getByRole('button', { name: /^paste$/i }).click()
+  await page.locator('textarea').first().fill(text)
+  await page.getByRole('button', { name: /load document/i }).first().click()
+
   await page.waitForSelector('.ProseMirror', { timeout: 60_000 })
+  // The paste is applied through a store update; wait for content rather than
+  // for the element, or an assertion can run against a mounted-but-empty doc.
+  await expect(page.locator('.ProseMirror')).not.toBeEmpty({ timeout: 30_000 })
 }
 
 test.describe('tables render as tables, not as dark code blocks', () => {

@@ -801,3 +801,92 @@ When building the backend database for the Intent IDE, the AI must ensure the `A
     *   **Action taken:** posted a detailed diagnostic comment on the Status dashboard issue (#25), plus a short pointer comment on each of #135, #139, #140 noting their red checks are not caused by their own diffs. No code was written or pushed. No new PR was opened. No new task issue was filed — this finding is a blocker report, not a proposal.
     *   **Guidance recorded for the next firing:** check whether `main`'s most recent push-triggered `CI` run is green before doing anything else. If still red with the identical 0ms-billable-runtime / 404-log signature, it is the same operator-side block — comment again only if something material has changed; otherwise treat hosted CI as unusable for the time being and consider whether the ready-sweep can still proceed using local `typecheck`/`lint`/`test` (per the `test` skill) rather than re-running the same diagnostic every 4 hours.
 *   **Approval:** Human verified (record-keeping and diagnostic report only — no code changed, no PR opened by this session).
+
+**[2026-09-02 00:00:00 UTC] - ARCHITECTURE_CHANGE**
+*   **Action:** Committed ~47 files of substantial, previously-uncommitted local work as a snapshot commit (`89739de`, "feat(editor): native tables, intent-context envelope, selection offers") on new branch `feat/reading-quality`, before syncing with `origin/main`. **Branch NOT YET opened as a PR — no adversarial review has run on it.**
+*   **Agent:** Claude Code (interactive session), no adversarial review yet.
+*   **Context:** Local `main` had drifted 40 commits behind `origin/main` while this work accumulated uncommitted in the working tree — a risk of silent loss (force-push, checkout, or a careless reset would have destroyed it with no git history to recover from). Committing first, before reconciling with upstream, preserves the work as a citable commit regardless of what the merge does next.
+*   **Decisions Logged:**
+    *   Native ProseMirror tables replace the prior "render as a readable code block" fallback: `tableNodes` schema with block-id-bearing cells, GFM pipe-table parsing in `docInput/parser.ts`, `tableEditing`/`columnResizing` plugins.
+    *   New `lib/ai/intentContext.ts`: a budgeted context envelope handed to the resolver (local block, section, heading path, defined terms, graph neighbours, author invariants, branch chain) — the substrate the branch's later grounding fix builds on.
+    *   New `lib/annotations/selectionOffers.ts` (one-click selection offers) and `lib/annotations/blastRadius.ts` (pre-apply "touches N other passages").
+    *   Dropped the inert duplicate `src/app/api/transcribe/route 2.ts`.
+*   **Approval:** Pending — PR #146 open, CI green, awaiting operator review.
+
+**[2026-09-02 00:00:00 UTC] - PROCESS**
+*   **Action:** Merged `origin/main` into `feat/reading-quality` (`f01fb47`) — 40 commits, 4 conflicts resolved keeping both sides.
+*   **Agent:** Claude Code (interactive session).
+*   **Context:** Reconciling the snapshot commit above with everything that had landed on `origin/main` in the interim.
+*   **Decisions Logged:**
+    *   StatusBar: kept local `hasKeys()` selector (Ollama needs no API key) AND upstream's active-document scoping of the annotation count.
+    *   ApiKeyModal: kept upstream's separate transcription-spend line (issue #113) rendered with the local `text-muted-foreground` readability class.
+    *   DocInputModal: comment wording only, kept the longer local version.
+    *   blastRadius test fixture: upstream made `graphitiEpisodeGen` a required `DocGraph` field (#139); the hand-built graph literal set to -1 to satisfy the type without asserting a real value.
+    *   Verified green post-merge: typecheck, lint, 1211 unit tests, build.
+*   **Approval:** Pending — PR #146 open, CI green, awaiting operator review.
+
+**[2026-09-02 00:00:00 UTC] - ARCHITECTURE_CHANGE**
+*   **Action:** Ollama switched from the OpenAI-compatibility endpoint to its native `/api/chat` dialect (`5962c86`, "fix(ollama): talk to Ollama natively so context size and reasoning behave").
+*   **Agent:** Claude Code (interactive session).
+*   **Context:** Measured against a live Ollama 0.33.0 running qwen3:8b: the OpenAI-compat shim accepted `options.num_ctx` but silently ignored it (`GET /api/ps` still reported 4096 after a request for 16384, while qwen3:8b advertises 40960 — an over-long prompt truncates with no error), and routed a thinking model's tokens to an unread `reasoning` field, so `message.content` could come back empty or truncated while the token budget was spent on deliberation. Both are the "inaccurate answer" symptom this branch started from.
+*   **Decisions Logged:**
+    *   `ollama` is now its own dialect posting to native `/api/chat`: `options.num_ctx` from a new `x-context-tokens` header (default 16384, backfilled into existing persisted settings — an existing local user pinned at 4096 was judged the bug, not a compatibility requirement); `think: false` suppresses chain-of-thought at the source; sampling/length moved into `options`; native NDJSON streaming (no `data:` prefix, no `[DONE]`); tool `arguments` arrive already parsed as an object, not a JSON string.
+    *   `redirect: 'manual'` extended to guard every non-Anthropic dialect, not just the OpenAI one — a validated public base URL can still 3xx to a private address whichever wire format follows (same SSRF class as the 2026-07-09 hardening pass, applied to a second code path).
+    *   Second line of defence in the renderer: `AgentMarkdown` now also extracts qwen3's `<think>` tag (not just Anthropic's `<thinking>`), including an unclosed tag.
+    *   `agentMarkdown.pure.test.ts`'s "verbatim" copy of `extractBlocks` (which had drifted and could keep passing while the real renderer broke) replaced with an import of the real function — immediately caught the unclosed-tag behaviour change. Its `splitIntoBlocks` copy left in place but now mirrors a function the source has since deleted; noted in-file as a known drift risk, not fixed.
+    *   qwen3:8b added to the Ollama presets and made its default model.
+    *   Verification: live through the running app — non-streaming/streaming `/api/resolve` and tool-calling `/api/structured` return clean content with no reasoning leakage, `/api/ps` reports ctx=16384. 1234 unit tests green.
+*   **Approval:** Pending — PR #146 open, CI green, awaiting operator review.
+
+**[2026-09-02 00:00:00 UTC] - BUG_FIX**
+*   **Action:** `migrateTableBlocks` recovers native tables from documents imported before tables existed (`1513875`, "fix(tables): recover tables from documents imported before tables existed").
+*   **Agent:** Claude Code (interactive session).
+*   **Context:** `documentStore` persists only `docJson`, never the source markdown, so a document imported under the pre-native-tables parser (which rendered a table as a `code_block`, per that code path's own comment: "render table as a readable code block, lightweight editor, no full table support") kept that code_block forever — styled light-on-near-black with a horizontal scrollbar, an unreadable dark slab for a 40-row grid of prose, with re-importing by hand the only prior escape.
+*   **Decisions Logged:**
+    *   Recovery is exact, not approximate: a stored `code_block`'s text round-trips through the same `parseMarkdownTable` the live import path uses — no second table grammar to drift.
+    *   Deliberately conservative: a `code_block` converts only when it parses as exactly ONE table consuming the whole block. A real code sample containing a pipe, a block holding a table plus trailing prose, and a ragged header/delimiter mismatch are all left untouched. A missed conversion costs a dark block; a wrong one destroys source code.
+    *   Hooked into `loadDocumentJson` (the single choke point both editor mount and document-switch read through) and persisted immediately, since an unsaved migration would be redone every load and could race a caller still holding pre-migration JSON. The converted table's `blockId` is carried over so existing annotations, doc-graph nodes, and audit records still resolve.
+    *   New `tests/reading-quality.spec.ts` deterministic e2e suite added (first e2e coverage of table rendering): real table nodes, single-cell Google-Docs callout tables, light computed background, legacy conversion across a reload, and — when present locally — the real 41-table `Sierra_Onsite_Deep_Study_Guide.md` rendering with no pipe left in any `<pre>`.
+    *   Verification: 15 migration unit tests, 6 store-boundary tests, 5 e2e tests green, the last against the real document.
+*   **Approval:** Pending — PR #146 open, CI green, awaiting operator review.
+
+**[2026-09-02 00:00:00 UTC] - BUG_FIX**
+*   **Action:** Grounding now states what the document does not define instead of asking the model to judge it (`61c3e70`, "fix(grounding): state what the document does not define, don't ask the model").
+*   **Agent:** Claude Code (interactive session).
+*   **Context:** Two defects behind a wrong "what is Atlantis?" answer. (1) `getSectionText` called `textBetween` with no block separator, running a heading straight into its paragraph (`...Atlantis "sniff test"The stated process was IaC...`) — a grounding failure wearing a formatting disguise. (2) Nothing told the model the document never explains the term; a first attempt added a system rule asking the model to determine that for itself, and this was MEASURED on qwen3:8b to make things worse — it glossed "Atlantis" as "a Terraform sniff test," building a definition out of the words beside the term, which is the reported bug in a new costume.
+*   **Decisions Logged:**
+    *   Both `getSectionText` and the resolver now separate blocks rather than running them together.
+    *   The "is this term defined" fact is now computed, not asked: `buildIntentContext` checks the selected term against the same deterministic `definedTerms` the doc graph already extracts, and `formatIntentContext` states the result last, nearest generation (previously buried among system rules the type prompt's "2-3 key insights, bullets" instruction tended to dominate). Rule recorded generally: an 8B-class local model follows a stated fact far more reliably than it evaluates a conditional — compute the determinable fact, then state it, rather than asking the model to determine it inline.
+    *   Conservative by design: silent on a cold graph (an absence it cannot know), silent for a selection too long to plausibly be a term, and a partial/case-insensitive match against a longer defined term counts as defined — an announced-but-wrong absence is judged the costlier error than a missed one.
+    *   **Disclosed, not a code defect:** measured on the real question through the running app, qwen3:8b correctly said "This document does not define 'Atlantis'." then still answered the outside-knowledge half wrong (first "Plato", then "a staging environment" — the real answer is Terraform pull-request automation). Recorded as a model-knowledge limit, not a code path; the explicit "From outside the document:" label is what makes it survivable, since the reader can see which half to distrust.
+    *   First tests added for `helpers.ts`, previously untested despite deciding how much document context the resolver sees (including the heading-selection widening that governs the exact reported case).
+    *   Verification: typecheck, lint, 1279 unit tests green.
+*   **Approval:** Pending — PR #146 open, CI green, awaiting operator review.
+
+**[2026-09-02 00:00:00 UTC] - ARCHITECTURE_CHANGE**
+*   **Action:** Related-passage retrieval gained a scored relevance threshold, replacing "return the top N neighbours because they're the only N" (`e1073a0`, "fix(retrieval): score related passages, and say when nothing is related").
+*   **Agent:** Claude Code (interactive session).
+*   **Context:** Reported symptom: a passage about "Jira + Splunk access-grant reconciliation" surfaced two unrelated passages, labelled `references ("Sections 8")` and `references ("Sections 8") → references ("Aegis")`. Four independent causes, each measured against the real document with new script `scripts/calibrate-relevance.ts`: no relevance threshold at all; a section-reference regex matching a plural range ("Study Sections 8–14") and resolving it as a positional index; any bolded lead-in counting as a definition; and a project-wide term ("Aegis") linking every containing block to one definer, collapsing the whole document to one hop from itself so ranking had nothing left to discriminate with.
+*   **Decisions Logged:**
+    *   `collectRelatedDetail` scores every candidate as `structural × corroboration` (IDF-weighted vocabulary overlap, gating every multi-hop path unconditionally — two hops is transitive inference, never evidence). The 0.45 cut-off is derived, not chosen by feel: the arithmetic separating the weakest reject (0.372) from the weakest accept (0.630) is written out at the constant.
+    *   Section-reference matching now singular-only with ranges/lists excluded, resolved against the headings' own numbering; the old positional-index fallback survives only where a document numbers nothing, and is tagged as the guess it is.
+    *   Terms linking more than `clamp(12% of blocks, 4, 8)` blocks now produce NO edges and are recorded in `graph.hubTerms` — dropped rather than truncated, since "the first 8 in document order" is not a relevance signal.
+    *   An empty result now distinguishes three meanings (cold graph / no candidates / candidates checked and rejected) — the third states itself explicitly ("NOTHING ELSE IN THIS DOCUMENT BEARS ON THIS SPAN … Do not invent a cross-reference") because an unexplained silence is what a model fills with an invented cross-reference; a cold graph still says nothing, since claiming an absence from an unbuilt index would itself be false.
+    *   Threads gained hide/collapse and "Show N resolved" — `hidden` is a view flag only, annotations remain the audit record, `remove()` stays whole-document-deletion-only, and applying deliberately does NOT hide (the reader has changed the document and wants that registered).
+    *   Two `cascade-review.spec.ts` assertions, already failing before this work (verified at the merge commit, not caused by it), were realigned to the live UI — one to shortened truncated summary text, one to a dropdown-trigger status element with a chevron.
+    *   Measured on `Sierra_Onsite_Deep_Study_Guide.md` (512 blocks): the "Sections 8" edge no longer exists at all; "Aegis" dropped as a hub term (with Authorization, Integrity, Evidence); 192 of 320 candidates now cut. Verification: typecheck, lint, 1379 unit tests, 7 e2e green.
+*   **Approval:** Pending — PR #146 open, CI green, awaiting operator review.
+
+**[2026-09-02 00:00:00 UTC] - ARCHITECTURE_CHANGE / PROCESS**
+*   **Action:** Reading flow gains meaning-based edges from an idle-timer embeddings pass, an opt-in LLM judge, and CI runs e2e for the first time (`6ecad36`, "feat: meaning-based edges while reading, an opt-in judge, and e2e in CI") — closes out the `feat/reading-quality` branch's six commits. **Branch still NOT opened as a PR; no adversarial review has run on any of the six commits.**
+*   **Agent:** Claude Code (interactive session), no adversarial review yet.
+*   **Context:** The background docGraph rebuild is deliberately deterministic-only (document text must never leave the machine as a side effect of typing), and the LLM/embedding passes only ever ran from `proposeCascadeEdits` — i.e. only when an `edit`-type annotation resolved — so a reader who never triggered a cascade never saw a semantic connection between passages at all.
+*   **Decisions Logged:**
+    *   New `scheduleDocGraphEnrichment`: a second, 12-second idle timer running the embedding pass only (never the LLM `link_blocks` pass — whole-doc `link_blocks` on a local 8B model would take minutes and blow the window), gated by a new `graphEnrichment` setting defaulting to `local-only` so it only runs when the provider is Ollama and vectors never leave the machine.
+    *   `embedEdges`'s `SIMILARITY_THRESHOLD` (previously one constant, documented in-file as uncalibrated for anything but `text-embedding-3-small`) is now a per-model default plus a self-calibrating in-document floor (mean + 1.5σ, engaged only above 200 pairs so the existing fixture is untouched). Embedding edges now carry `kind: 'similarity'` and a cosine-derived weight.
+    *   New `judgeRelatedPassages`: reuses `relevanceJudge.ts`'s batched verdict-tool shape and trust boundary verbatim (zero valid verdicts throws rather than reading as an all-deny — same malfunction-vs-denial distinction as the 2026-07-09 Wave A judge). Wired to an explicit "Check these" button, never the mouse-up path. Rejected passages are struck through and labelled with the judge's reason rather than removed.
+    *   New `tests/local-model.spec.ts` (LIVE_LOCAL=1, self-skipping): drives the real Ollama, covering context-window arrival, no reasoning leakage (streamed and non-streamed), tool-call survival of Ollama's object-valued `arguments`, and the computed "does not define" fact from the grounding fix above. 5/5 pass against qwen3:8b.
+    *   **CI now runs e2e in its own job for the first time.** It had been running none, which is why two `cascade-review.spec.ts` assertions (fixed in the retrieval commit above) had been failing against long-removed UI wording without anyone knowing.
+    *   Two real bugs found and fixed while writing these tests: the scroll-to-passage highlight never appeared because ProseMirror re-renders the `[data-block-id]` node view on the read-line plugin's own scroll transactions and strips an added class within a frame (confirmed via MutationObserver; fixed as an overlay in the scroll container, outside `.ProseMirror`, where nothing can strip it); and two of this session's own new e2e assertions matched for the wrong reason (`/review item/i` also matches "0 review items"; the blast-radius card's first button is "Check these," not a passage) — both re-addressed by role/exact text.
+    *   Verification: typecheck, lint, 1412 unit tests, build, 12 e2e, and 5 live-model tests against a real qwen3:8b.
+*   **Approval:** Pending — branch not yet opened as a PR, not yet reviewed, not yet in `main`.
