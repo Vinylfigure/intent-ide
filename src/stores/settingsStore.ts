@@ -103,6 +103,23 @@ export const PROVIDER_BASE_URLS: Record<LLMProvider, string | undefined> = {
   ollama: 'http://localhost:11434',
 }
 
+/**
+ * Privacy gate for the idle background enrichment pass
+ * (`scheduleDocGraphEnrichment` in docGraph.ts), which embeds block text on a
+ * long idle timer while the user is just reading — no annotation resolved, no
+ * explicit user action.
+ *
+ * - 'off': never enrich.
+ * - 'local-only' (default): enrich only when the configured provider is
+ *   'ollama' — vectors never leave the machine, which is the user's actual
+ *   working setup (nomic-embed-text via /api/embed's Ollama branch).
+ * - 'always': opt in to sending block text to a hosted embeddings API
+ *   (OpenAI) on idle, not just when the user explicitly triggers a cascade.
+ */
+export type GraphEnrichmentSetting = 'off' | 'local-only' | 'always'
+
+const VALID_GRAPH_ENRICHMENT_SETTINGS = new Set<string>(['off', 'local-only', 'always'])
+
 interface SettingsState {
   llmConfig: LLMConfig
   whisperApiKey: string
@@ -136,6 +153,8 @@ interface SettingsState {
    * never leaves the machine.
    */
   telemetryEnabled: boolean
+  /** See `GraphEnrichmentSetting` above. Default 'local-only'. */
+  graphEnrichment: GraphEnrichmentSetting
   setLLMConfig: (config: Partial<LLMConfig>) => void
   setContextTokens: (tokens: number) => void
   setWhisperKey: (key: string) => void
@@ -144,6 +163,7 @@ interface SettingsState {
   setJudgeEnabled: (enabled: boolean) => void
   setInvariantEntailmentEnabled: (enabled: boolean) => void
   setTelemetryEnabled: (enabled: boolean) => void
+  setGraphEnrichment: (setting: GraphEnrichmentSetting) => void
   hasKeys: () => boolean
 }
 
@@ -163,6 +183,7 @@ export const useSettingsStore = create<SettingsState>()(
       judgeEnabled: true,
       invariantEntailmentEnabled: false,
       telemetryEnabled: false,
+      graphEnrichment: 'local-only',
       setLLMConfig: (config) =>
         set((s) => ({ llmConfig: { ...s.llmConfig, ...config } })),
       setContextTokens: (tokens) =>
@@ -173,6 +194,7 @@ export const useSettingsStore = create<SettingsState>()(
       setJudgeEnabled: (enabled) => set({ judgeEnabled: enabled }),
       setInvariantEntailmentEnabled: (enabled) => set({ invariantEntailmentEnabled: enabled }),
       setTelemetryEnabled: (enabled) => set({ telemetryEnabled: enabled }),
+      setGraphEnrichment: (setting) => set({ graphEnrichment: setting }),
       hasKeys: () => {
         const s = get()
         // Ollama runs locally — no API key needed
@@ -224,6 +246,18 @@ export const useSettingsStore = create<SettingsState>()(
             'boolean'
         ) {
           state.setInvariantEntailmentEnabled(false)
+        }
+        // Snapshots written before this field existed (or carrying a retired
+        // value) backfill to the default 'local-only' — never silently
+        // upgraded to 'always' (which would newly opt a snapshot into sending
+        // block text to a hosted API on idle).
+        if (
+          state &&
+          !VALID_GRAPH_ENRICHMENT_SETTINGS.has(
+            (state as { graphEnrichment?: unknown }).graphEnrichment as string,
+          )
+        ) {
+          state.setGraphEnrichment('local-only')
         }
       },
     }

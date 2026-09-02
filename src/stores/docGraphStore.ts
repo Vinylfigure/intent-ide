@@ -11,7 +11,14 @@ import type { DocGraph } from '@/lib/graphrag/docGraph'
  * latest graph without triggering a build themselves.
  */
 
-export type DocGraphStatus = 'idle' | 'building' | 'ready'
+/**
+ * 'enriching' publishes ALONGSIDE an already-usable graph — the deterministic
+ * (or deterministic+LLM) build already published 'ready' before the idle
+ * enrichment pass (`scheduleDocGraphEnrichment`) started improving it, so a
+ * consumer must never treat 'enriching' as "no usable graph yet" the way it
+ * treats 'building'.
+ */
+export type DocGraphStatus = 'idle' | 'building' | 'ready' | 'enriching'
 
 interface DocGraphState {
   graph: DocGraph | null

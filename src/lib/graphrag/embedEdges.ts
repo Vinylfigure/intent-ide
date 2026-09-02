@@ -27,8 +27,67 @@ export type EmbedFn = (texts: string[], config: LLMConfig) => Promise<number[][]
 // NOTE: uncalibrated across embedding models — 0.82 was picked against
 // text-embedding-3-small-style cosine distributions, and different models
 // (or dimensions) shift the similarity range. If a swapped embed model over-
-// or under-links paraphrases, this constant is where to tune.
-const SIMILARITY_THRESHOLD = 0.82
+// or under-links paraphrases, this is where to tune per model (see
+// `MODEL_SIMILARITY_THRESHOLDS`/`embedModelThreshold` below).
+const DEFAULT_SIMILARITY_THRESHOLD = 0.82
+
+// nomic-embed-text is called through /api/embed WITHOUT its task prefixes
+// (`search_document:`/`search_query:`), which shifts its cosine range higher
+// than a prefixed call would produce — 0.82 (calibrated against
+// text-embedding-3-small) over-links paraphrases at that shifted range. 0.78
+// is a first-pass per-model correction, not a rigorous calibration; retune
+// against `scripts/calibrate-relevance.ts`-style evidence if it still over-
+// or under-links.
+const MODEL_SIMILARITY_THRESHOLDS: Record<string, number> = {
+  'nomic-embed-text': 0.78,
+}
+
+/** Per-embedding-model base threshold before the adaptive floor below. */
+export function embedModelThreshold(config: LLMConfig): number {
+  const model = config.embedModel
+  return (model ? MODEL_SIMILARITY_THRESHOLDS[model] : undefined) ?? DEFAULT_SIMILARITY_THRESHOLD
+}
+
+// A per-document distribution estimate (mean/sd of the candidate-pair cosine
+// similarities) is noise below this many pairs — small documents keep the
+// flat per-model threshold instead.
+const ADAPTIVE_FLOOR_MIN_PAIRS = 200
+// How many standard deviations above the document's own mean similarity
+// count as "actually similar" rather than "everything in this document is
+// vaguely alike" (a symptom of some embedding models/documents, where the
+// whole similarity distribution sits high and a flat threshold over-links).
+const ADAPTIVE_FLOOR_STD_MULTIPLIER = 1.5
+// However high the document's own distribution runs, never require a
+// near-duplicate to pass — some genuine paraphrase pairs must stay reachable.
+const ADAPTIVE_FLOOR_MAX = 0.95
+
+/**
+ * Self-calibrating in-document floor: `max(modelThreshold, mean + 1.5·sd)`
+ * over the candidate-pair similarity distribution, clamped to
+ * `ADAPTIVE_FLOOR_MAX`. Only engages at `ADAPTIVE_FLOOR_MIN_PAIRS` or more
+ * pairs — below that a mean/sd estimate is noise, not a document-specific
+ * distribution, and the flat per-model threshold is used unchanged (this is
+ * also what keeps small-document fixtures/tests stable).
+ */
+export function similarityThreshold(config: LLMConfig, sims: readonly number[]): number {
+  const modelThreshold = embedModelThreshold(config)
+  if (sims.length < ADAPTIVE_FLOOR_MIN_PAIRS) return modelThreshold
+  const mean = sims.reduce((sum, s) => sum + s, 0) / sims.length
+  const variance = sims.reduce((sum, s) => sum + (s - mean) ** 2, 0) / sims.length
+  const sd = Math.sqrt(variance)
+  const floor = Math.max(modelThreshold, mean + ADAPTIVE_FLOOR_STD_MULTIPLIER * sd)
+  return Math.min(floor, ADAPTIVE_FLOOR_MAX)
+}
+
+/**
+ * Monotonic confidence for a similarity edge: a cosine right at the floor is
+ * barely-justified (0.5), scaling up 2.5x per unit of cosine above the floor,
+ * capped at 0.95 (never full certainty — see `edgeConfidence` in
+ * relevanceScore.ts for how `weight` folds into overall relevance).
+ */
+export function similarityWeight(sim: number, floor: number): number {
+  return Math.min(0.95, Math.max(0.5, 0.5 + (sim - floor) * 2.5))
+}
 
 // Cap on the embedding pass: only the first EMBED_MAX_BLOCKS blocks in doc
 // order are embedded. Beyond it the graph is marked embeddingsPartial and
@@ -160,7 +219,11 @@ export async function augmentWithEmbeddingEdges(
   }
 
   const vecs = ordered.map((n) => vectorCache.get(hashOf(n.blockId)))
-  const added: DocGraphEdge[] = []
+  // Two passes: first collect every eligible pair's cosine (the candidate
+  // pool the adaptive floor is estimated over), THEN decide the threshold and
+  // filter — so the floor is computed from the same distribution it gates,
+  // not from an already-truncated one.
+  const candidates: Array<{ i: number; j: number; sim: number }> = []
   for (let i = 0; i < ordered.length; i++) {
     const va = vecs[i]
     if (!va) continue
@@ -169,16 +232,26 @@ export async function augmentWithEmbeddingEdges(
       const vb = vecs[j]
       if (!vb) continue
       if (isGraphAdjacent(graph, ordered[i].blockId, ordered[j].blockId)) continue
-      const sim = cosine(va, vb)
-      if (sim <= SIMILARITY_THRESHOLD) continue
-      added.push({
-        from: ordered[i].blockId,
-        to: ordered[j].blockId,
-        type: 'duplicates',
-        source: 'embedding',
-        evidence: `semantic similarity ${sim.toFixed(2)}`,
-      })
+      candidates.push({ i, j, sim: cosine(va, vb) })
     }
+  }
+
+  const threshold = similarityThreshold(
+    config,
+    candidates.map((c) => c.sim),
+  )
+  const added: DocGraphEdge[] = []
+  for (const { i, j, sim } of candidates) {
+    if (sim <= threshold) continue
+    added.push({
+      from: ordered[i].blockId,
+      to: ordered[j].blockId,
+      type: 'duplicates',
+      source: 'embedding',
+      kind: 'similarity',
+      weight: similarityWeight(sim, threshold),
+      evidence: `semantic similarity ${sim.toFixed(2)}`,
+    })
   }
 
   if (added.length > 0) {

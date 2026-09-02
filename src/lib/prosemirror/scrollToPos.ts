@@ -40,18 +40,58 @@ export function scrollToPos(view: EditorView | null | undefined, pos: number): v
 /**
  * Briefly highlight a block so the eye lands on it after the scroll.
  *
- * Uses the `.block-pulse` class rather than inline styles, and removes itself;
- * a caller that navigates away mid-pulse leaves no residue because the node is
- * looked up fresh each time.
+ * Drawn as an OVERLAY in the scroll container, not as a class on the block.
+ * The obvious implementation — add a class to the `[data-block-id]` element —
+ * was tried and measured: ProseMirror re-renders the node view within a frame
+ * of the scroll (the read-line plugin dispatches on scroll) and strips it, so
+ * the highlight appeared for one frame and vanished. A MutationObserver
+ * confirmed the class was applied exactly once and removed immediately.
+ *
+ * The overlay sits outside `.ProseMirror` entirely, so nothing ProseMirror
+ * does can take it away. It is inert (`pointer-events: none`), removes itself,
+ * and never survives into a second call.
  */
+
+/** How long the highlight lingers. Matches the CSS animation duration. */
+const PULSE_MS = 1600
+
 export function pulseBlock(view: EditorView | null | undefined, blockId: string): void {
   if (!view) return
-  const el = view.dom.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`)
+  const container = view.dom.closest('.editor-scroll-container')
+  if (!(container instanceof HTMLElement)) return
+
+  let el: Element | null = null
+  try {
+    el = view.dom.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`)
+  } catch {
+    return
+  }
   if (!(el instanceof HTMLElement)) return
-  el.classList.remove('block-pulse')
-  // Force a reflow so re-adding the class restarts the animation when the
-  // same block is clicked twice.
-  void el.offsetWidth
-  el.classList.add('block-pulse')
-  window.setTimeout(() => el.classList.remove('block-pulse'), 1600)
+
+  // One highlight at a time: a reader clicking two passages in quick
+  // succession must not be left with two competing marks.
+  container.querySelectorAll('.block-pulse-overlay').forEach((node) => node.remove())
+
+  // The container is the scrolling/positioning context, so offsets are taken
+  // against it rather than the viewport — a smooth scroll in flight would
+  // otherwise leave the overlay behind.
+  const containerRect = container.getBoundingClientRect()
+  const rect = el.getBoundingClientRect()
+
+  const overlay = document.createElement('div')
+  overlay.className = 'block-pulse-overlay'
+  overlay.setAttribute('aria-hidden', 'true')
+  overlay.style.top = `${rect.top - containerRect.top + container.scrollTop - 4}px`
+  overlay.style.left = `${rect.left - containerRect.left + container.scrollLeft - 6}px`
+  overlay.style.width = `${rect.width + 12}px`
+  overlay.style.height = `${rect.height + 8}px`
+
+  // The container needs to be a positioning context for an absolutely
+  // positioned child; set it only if it is not one already, so an existing
+  // layout choice is never overridden.
+  if (getComputedStyle(container).position === 'static') {
+    container.style.position = 'relative'
+  }
+  container.appendChild(overlay)
+  window.setTimeout(() => overlay.remove(), PULSE_MS)
 }

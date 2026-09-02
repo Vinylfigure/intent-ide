@@ -149,3 +149,138 @@ test.describe('documents stored before tables existed', () => {
     await expect(page.locator('.ProseMirror pre')).toHaveCount(0)
   })
 })
+
+// ── the annotation surfaces ──────────────────────────────────────────────────
+//
+// A document whose deterministic graph has real, non-hub edges: "Pilot
+// Program" is defined once and used twice, so those two blocks genuinely bear
+// on the definer and on each other. Chosen over a synthetic fixture because
+// the point of these tests is that the SAME rules a reader hits produce the
+// links they see.
+const LINKED_DOC = [
+  '# Programme handbook',
+  '',
+  '## 1. Definitions',
+  '',
+  '"Pilot Program" means the limited trial rollout of the reconciliation service.',
+  '',
+  '## 2. Funding',
+  '',
+  'Funding for the Pilot Program comes from the reconciliation reserve and is',
+  'reviewed each quarter against the trial rollout milestones.',
+  '',
+  '## 3. Unrelated matters',
+  '',
+  'Catering arrangements for the annual offsite are handled by the events desk.',
+  '',
+].join('\n')
+
+/** Fake out the LLM boundary so the suite is deterministic. */
+async function interceptLlm(page: Page, answer = 'A short grounded answer.') {
+  await page.route('**/api/graphiti', (route) => route.abort())
+  await page.route('**/api/embed', (route) => route.fulfill({ json: { vectors: [] } }))
+  await page.route('**/api/classify', (route) => route.fulfill({ json: { type: 'dig' } }))
+  await page.route('**/api/structured', (route) => route.fulfill({ json: { toolCalls: [] } }))
+  await page.route('**/api/resolve', (route) => {
+    const body = route.request().postDataJSON() as { stream?: boolean }
+    if (body.stream) {
+      return route.fulfill({
+        contentType: 'text/event-stream',
+        body:
+          `data: ${JSON.stringify({ responseId: 'rq-1' })}\n\n` +
+          `data: ${JSON.stringify({ text: answer })}\n\n`,
+      })
+    }
+    return route.fulfill({ json: { content: answer, responseId: 'rq-1', logprobs: null } })
+  })
+}
+
+/** Select a paragraph and ask something about it, then wait for the answer. */
+async function annotate(page: Page, containing: string, question: string) {
+  const target = page.locator('.ProseMirror p', { hasText: containing }).first()
+  await target.click({ clickCount: 3 })
+  const composer = page.getByPlaceholder("What's on your mind?")
+  await composer.waitFor({ state: 'visible', timeout: 30_000 })
+  await composer.fill(question)
+  await composer.press('Enter')
+  await expect(page.getByText('Ready').first()).toBeVisible({ timeout: 60_000 })
+}
+
+test.describe('related passages', () => {
+  test('shows a genuinely related passage, described in words a reader can act on', async ({ page }) => {
+    await interceptLlm(page)
+    await loadDocument(page, LINKED_DOC)
+    await annotate(page, 'Funding for the Pilot Program', 'what does this depend on?')
+
+    const card = page.locator('[aria-label^="Blast radius preview"]')
+    await expect(card).toBeVisible({ timeout: 30_000 })
+
+    // The old UI showed raw machine provenance — `references ("Pilot
+    // Program")` — which tells a reader nothing about why they should look.
+    await expect(card).toContainText('Pilot Program')
+    await expect(card).not.toContainText('references (')
+    await expect(card).toContainText('trial rollout')
+  })
+
+  test('does not offer the unrelated passage from the same document', async ({ page }) => {
+    await interceptLlm(page)
+    await loadDocument(page, LINKED_DOC)
+    await annotate(page, 'Funding for the Pilot Program', 'what does this depend on?')
+
+    const card = page.locator('[aria-label^="Blast radius preview"]')
+    await expect(card).toBeVisible({ timeout: 30_000 })
+    await expect(card).not.toContainText('Catering')
+  })
+
+  test('a related passage is a real button that scrolls the editor to it', async ({ page }) => {
+    await interceptLlm(page)
+    await loadDocument(page, LINKED_DOC)
+    await annotate(page, 'Funding for the Pilot Program', 'what does this depend on?')
+
+    // Addressed by role, not by position in the card — the card also holds the
+    // "Check these" judge button.
+    const passage = page.getByRole('button', { name: /Go to related passage/ }).first()
+    await expect(passage).toBeVisible({ timeout: 30_000 })
+    await passage.click()
+    // The target block is briefly marked so the eye lands on it. Asserted on
+    // the overlay rather than a class on the block: ProseMirror strips a class
+    // within a frame of the scroll, which is why the marker lives outside it.
+    await expect(page.locator('.block-pulse-overlay')).toHaveCount(1)
+  })
+})
+
+test.describe('threads can be closed', () => {
+  test('dismissing removes the card and decrements the review count', async ({ page }) => {
+    await interceptLlm(page)
+    await loadDocument(page, LINKED_DOC)
+    await annotate(page, 'Catering arrangements', 'is this needed?')
+
+    await expect(page.getByText('1 review item')).toBeVisible()
+    const card = page.locator('[aria-label^="Blast radius preview"], .annotation-card').first()
+
+    // "Got it" is the dig-type accept action; it routes through the same
+    // dismiss case as "Dismiss" and "Keep it".
+    await page.getByRole('button', { name: /^(Got it|Dismiss|Keep it)$/ }).first().click()
+
+    // The header keeps rendering — it now reads zero. (Asserting the whole
+    // "review item" phrase disappears would pass for the wrong reason: "0
+    // review items" still contains it.)
+    await expect(page.getByText('0 review items')).toBeVisible({ timeout: 15_000 })
+    await expect(card).toBeHidden()
+    await expect(page.getByRole('button', { name: /show 1 resolved/i })).toBeVisible()
+  })
+
+  test('nothing is destroyed — Show resolved brings it back', async ({ page }) => {
+    await interceptLlm(page)
+    await loadDocument(page, LINKED_DOC)
+    await annotate(page, 'Catering arrangements', 'is this needed?')
+    await page.getByRole('button', { name: /^(Got it|Dismiss|Keep it)$/ }).first().click()
+    await expect(page.getByText('0 review items')).toBeVisible({ timeout: 15_000 })
+
+    await page.getByRole('button', { name: /show \d+ resolved/i }).click()
+    await expect(page.getByText('1 review item')).toBeVisible()
+    // Still dismissed, just visible again — restoring must not resurrect it
+    // into the reader's queue.
+    await expect(page.getByText('Dismissed').first()).toBeVisible()
+  })
+})

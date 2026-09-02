@@ -31,6 +31,8 @@ export function ApiKeyModal() {
   const setEmbeddingsEnabled = useSettingsStore((s) => s.setEmbeddingsEnabled)
   const telemetryEnabled = useSettingsStore((s) => s.telemetryEnabled)
   const setTelemetryEnabled = useSettingsStore((s) => s.setTelemetryEnabled)
+  const graphEnrichment = useSettingsStore((s) => s.graphEnrichment)
+  const setGraphEnrichment = useSettingsStore((s) => s.setGraphEnrichment)
   const calibrationCounts = useCascadeCalibrationStore((s) => s.counts)
   const resetCalibration = useCascadeCalibrationStore((s) => s.reset)
   // Records the pre-Phase-8 migration fallback stamped onto legacy
@@ -342,6 +344,34 @@ export function ApiKeyModal() {
                 )}
               </span>
             </label>
+
+            <div>
+              <label className={`block text-xs font-mono uppercase tracking-wider mb-1.5 ${caps.embeddings ? 'text-muted-foreground' : 'text-muted-foreground opacity-60'}`}>
+                Link meaning while reading (background)
+              </label>
+              <select
+                value={graphEnrichment}
+                disabled={!caps.embeddings}
+                onChange={(e) => setGraphEnrichment(e.target.value as typeof graphEnrichment)}
+                className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <option value="off">Off — never link meaning while idle</option>
+                <option value="local-only">Local only — only when using Ollama</option>
+                <option value="always">Always — may send text to a hosted API</option>
+              </select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                On a long idle pause while reading, finds meaning-based connections between
+                passages (not just shared wording) using embeddings. Never runs the full AI
+                extraction pass.
+              </p>
+              {!caps.embeddings && (
+                <p className="mt-1 text-xs text-annotation-correction">
+                  {provider === 'openrouter'
+                    ? 'Unavailable: OpenRouter does not proxy an embeddings API.'
+                    : 'Unavailable: Claude has no embeddings API (set a base URL proxy that serves one to enable).'}
+                </p>
+              )}
+            </div>
 
             <div>
               <label className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5">

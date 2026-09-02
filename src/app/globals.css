@@ -955,11 +955,17 @@
 }
 
 /* Momentary highlight for a block the reader was just sent to — see
-   lib/prosemirror/scrollToPos.ts. Scoped to the editor so it cannot leak into
-   panel chrome. */
-.ProseMirror .block-pulse {
-  animation: block-pulse 1.6s ease-out;
-  border-radius: 4px;
+   lib/prosemirror/scrollToPos.ts.
+   An OVERLAY rather than a class on the block itself: ProseMirror re-renders
+   node views on the transactions the read-line plugin dispatches while
+   scrolling, which stripped the class within a frame. This sits outside
+   .ProseMirror, where nothing can take it away. */
+.block-pulse-overlay {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  border-radius: 6px;
+  animation: block-pulse 1.6s ease-out forwards;
 }
 
 @keyframes block-pulse {
@@ -968,7 +974,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ProseMirror .block-pulse {
+  .block-pulse-overlay {
     animation: none;
     outline: 2px solid rgba(125, 73, 42, 0.5);
     outline-offset: 2px;

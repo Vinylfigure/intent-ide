@@ -28,6 +28,7 @@ import {
 } from '@/lib/telemetry/modalDecisionBuffer'
 import { showAffectedMode } from '@/lib/annotations/showAffected'
 import { previewBlastRadiusDetail } from '@/lib/annotations/blastRadius'
+import { judgeRelatedPassages, type JudgeSeed, type PassageVerdict } from '@/lib/ai/judgeRelatedPassages'
 import { findBlockById } from '@/lib/prosemirror/blockIds'
 import { pulseBlock, scrollToPos } from '@/lib/prosemirror/scrollToPos'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
@@ -65,6 +66,13 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   const [showTweakInput, setShowTweakInput] = useState(false)
   const [tweakText, setTweakText] = useState('')
   const [isSimplifying, setIsSimplifying] = useState(false)
+  // Opt-in LLM second opinion on the blast-radius preview (never on the
+  // mouse-up/selection path — only when the reader clicks "Check these").
+  // Keyed by blockId, not array index, so a verdict never gets misattributed
+  // if the underlying passage list changes shape between renders.
+  const [isJudgingPassages, setIsJudgingPassages] = useState(false)
+  const [passageVerdicts, setPassageVerdicts] = useState<Map<string, PassageVerdict> | null>(null)
+  const judgeEnabled = useSettingsStore((s) => s.judgeEnabled)
   // Plugin statuses at modal-open time — cancel restores these so an
   // abandoned review session never leaks its toggles into the inline surfaces.
   const commitSnapshotRef = useRef<CommitStatusSnapshot | null>(null)
@@ -754,6 +762,34 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     pulseBlock(currentView, blockId)
   }
 
+  // Opt-in second opinion: the heuristic list is the ONLY thing ever shown
+  // until the reader explicitly clicks. On failure (throw, network, zero
+  // verdicts) every passage is left exactly as the heuristic rendered it —
+  // a failed second opinion must never destroy the first one.
+  const checkRelatedPassages = async () => {
+    if (isJudgingPassages || blastRadius.length === 0) return
+    setIsJudgingPassages(true)
+    try {
+      const seed: JudgeSeed = { text: annotation.anchor.text, headingPath: [] }
+      const config = useSettingsStore.getState().llmConfig
+      const verdicts = await judgeRelatedPassages(seed, blastRadius, config)
+      const byBlock = new Map<string, PassageVerdict>()
+      blastRadius.forEach((passage, i) => {
+        const v = verdicts.get(i)
+        if (v) byBlock.set(passage.blockId, v)
+      })
+      setPassageVerdicts(byBlock)
+    } catch (err) {
+      console.error('Related-passage judge failed:', err)
+      useToastStore.getState().addToast(
+        'Checking these passages failed — the original list is unchanged.',
+        'error',
+      )
+    } finally {
+      setIsJudgingPassages(false)
+    }
+  }
+
   return (
     <>
     {showDiffModal && commitChanges.length > 0 && (
@@ -806,30 +842,64 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         aria-label={`Blast radius preview (${blastRadius.length})`}
         className="mt-3 mx-1 p-3 border border-border rounded-xl bg-warm/40"
       >
-        <p className="text-[10px] font-mono font-medium text-muted-foreground">
-          Touches {blastRadius.length} other passage{blastRadius.length !== 1 ? 's' : ''}
-        </p>
-        <div className="mt-1.5 flex flex-col gap-1.5">
-          {blastRadius.map((passage) => (
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[10px] font-mono font-medium text-muted-foreground">
+            Touches {blastRadius.length} other passage{blastRadius.length !== 1 ? 's' : ''}
+          </p>
+          {judgeEnabled && (
             <button
-              key={passage.blockId}
               type="button"
-              onClick={() => goToPassage(passage.blockId)}
-              // The machine provenance stays one hover away — `why` is the
-              // human sentence, `whyPath` is what an auditor checks it against.
-              title={passage.whyPath}
-              aria-label={`Go to related passage${
-                passage.headingPath.length > 0 ? ` in ${passage.headingPath.join(' › ')}` : ''
-              }: ${passage.text}`}
-              className="w-full text-left rounded-lg border border-border/60 bg-warm/60 px-2.5 py-1.5 transition-colors hover:bg-warm hover:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              onClick={checkRelatedPassages}
+              disabled={isJudgingPassages}
+              aria-busy={isJudgingPassages}
+              className="shrink-0 px-2 py-1 text-[10px] font-mono font-medium rounded-md border border-border/60 bg-warm/60 text-muted-foreground transition-colors hover:bg-warm hover:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <p className="text-[10px] font-mono text-muted-foreground">
-                {passage.why}
-                {passage.headingPath.length > 0 && ` · ${passage.headingPath.join(' › ')}`}
-              </p>
-              <p className="text-xs text-muted-foreground leading-snug">{passage.text}</p>
+              {isJudgingPassages ? 'Checking…' : 'Check these'}
             </button>
-          ))}
+          )}
+        </div>
+        <div className="mt-1.5 flex flex-col gap-1.5">
+          {blastRadius.map((passage) => {
+            const verdict = passageVerdicts?.get(passage.blockId) ?? null
+            // Never removed — struck through / dimmed and labelled with the
+            // judge's reason. The reader asked a question and deserves to
+            // see the answer, not have rows silently vanish.
+            const rejected = verdict !== null && !verdict.related
+            return (
+              <button
+                key={passage.blockId}
+                type="button"
+                onClick={() => goToPassage(passage.blockId)}
+                // The machine provenance stays one hover away — `why` is the
+                // human sentence, `whyPath` is what an auditor checks it against.
+                title={passage.whyPath}
+                aria-label={`Go to related passage${
+                  passage.headingPath.length > 0 ? ` in ${passage.headingPath.join(' › ')}` : ''
+                }: ${passage.text}${verdict ? ` — second opinion: ${verdict.related ? 'related' : 'not related'}, ${verdict.reason}` : ''}`}
+                className={`w-full text-left rounded-lg border border-border/60 bg-warm/60 px-2.5 py-1.5 transition-colors hover:bg-warm hover:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                  rejected ? 'opacity-50' : ''
+                }`}
+              >
+                <p className="text-[10px] font-mono text-muted-foreground">
+                  {passage.why}
+                  {passage.headingPath.length > 0 && ` · ${passage.headingPath.join(' › ')}`}
+                </p>
+                <p className={`text-xs text-muted-foreground leading-snug ${rejected ? 'line-through' : ''}`}>
+                  {passage.text}
+                </p>
+                {verdict && (
+                  <p
+                    className={`mt-1 text-[10px] font-mono ${
+                      verdict.related ? 'text-muted-foreground' : 'text-muted-foreground/80'
+                    }`}
+                  >
+                    {verdict.related ? 'Confirmed related: ' : 'Judge says not related: '}
+                    {verdict.reason}
+                  </p>
+                )}
+              </button>
+            )
+          })}
         </div>
       </div>
     )}

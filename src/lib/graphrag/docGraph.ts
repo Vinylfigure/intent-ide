@@ -1111,7 +1111,11 @@ let publishSeq = 0
  * here means the graph is built and reaches nobody, so it stays non-fatal
  * but is no longer silent.
  */
-function publishDocGraph(seq: number, status: 'building' | 'ready', graph?: DocGraph): void {
+function publishDocGraph(
+  seq: number,
+  status: 'building' | 'ready' | 'enriching',
+  graph?: DocGraph,
+): void {
   if (typeof window === 'undefined') return
   void import('@/stores/docGraphStore')
     .then(({ useDocGraphStore }) => {
@@ -1156,8 +1160,17 @@ export async function getDocGraph(
     skipGraphiti?: boolean
     /** Injectable Graphiti MCP client (tests: scripted searchNodes/getSubgraph). */
     graphiti?: GraphitiEdgeDeps
+    /**
+     * Publish the interim (pre-'ready') lifecycle status as 'enriching'
+     * instead of 'building' — used by `scheduleDocGraphEnrichment` so the
+     * StatusBar can distinguish "linking meaning in the background over an
+     * already-usable graph" from an ordinary first build, where nothing is
+     * usable yet. The final published status is always 'ready' either way.
+     */
+    interimStatus?: 'building' | 'enriching'
   } = {},
 ): Promise<DocGraph> {
+  const interimStatus = deps.interimStatus ?? 'building'
   const hash = contentHash(doc)
   // `llmRequested` is the caller's raw intent (not skipped) — it's what gates
   // entering the LLM branch in applyRequestedPasses, matching the ORIGINAL
@@ -1235,7 +1248,7 @@ export async function getDocGraph(
     // finished), so there is no concurrent-mutation race, and a THIRD caller
     // needing even more replaces this entry in `inflight` the same way.
     const seq = ++publishSeq
-    publishDocGraph(seq, 'building')
+    publishDocGraph(seq, interimStatus)
     let entry: InflightEntry
     const built = (async () => {
       const graph = await existing.promise
@@ -1257,7 +1270,7 @@ export async function getDocGraph(
   }
 
   const seq = ++publishSeq
-  publishDocGraph(seq, 'building')
+  publishDocGraph(seq, interimStatus)
   let entry: InflightEntry
   const built = (async () => {
     const graph = cached ?? buildDeterministicGraph(doc)
@@ -1499,9 +1512,77 @@ export function cancelScheduledDocGraphRebuild(): void {
   }
 }
 
-/** Test hygiene: clear cache, inflight builds, and any pending rebuild. */
+/** Long idle debounce before the enrichment pass — long enough to fire only once a reader has settled, never mid-typing. */
+const ENRICHMENT_DELAY_MS = 12000
+
+let enrichmentTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Second, LONGER idle timer, separate from `scheduleDocGraphRebuild`: once a
+ * reader settles (no edits for ~12s), runs the embedding pass ONLY
+ * (`skipLlm: true, skipGraphiti: true, skipEmbeddings: false`) over the
+ * already-warm deterministic graph, so meaning-based connections exist for
+ * the read/dig flow — not just when an edit-type annotation resolves.
+ *
+ * Deliberately never enables the LLM edge pass here: whole-document
+ * `link_blocks` on a local model at a few thousand tokens of context can take
+ * minutes and would blow this idle window. The embedding pass is local
+ * (Ollama's native embeddings endpoint), cheap, and — subject to the
+ * `graphEnrichment` privacy gate below — never sends text off-machine unless
+ * the user opted in.
+ *
+ * Gated by `useSettingsStore.getState().graphEnrichment`:
+ * - 'off': never runs.
+ * - 'local-only' (default): runs only when the configured provider is
+ *   'ollama' — vectors never leave the machine.
+ * - 'always': runs regardless of provider (may send block text to a hosted
+ *   embeddings API).
+ *
+ * Same privacy contract as `scheduleDocGraphRebuild` otherwise: document text
+ * must never leave the machine as an UNREQUESTED side effect of reading, so
+ * this checks the gate itself rather than relying on a caller to have
+ * checked it. All failures are swallowed — a failed enrichment pass must
+ * never disturb the editor or the already-usable deterministic graph.
+ */
+export function scheduleDocGraphEnrichment(view: EditorView, delayMs = ENRICHMENT_DELAY_MS): void {
+  if (enrichmentTimer) clearTimeout(enrichmentTimer)
+  enrichmentTimer = setTimeout(() => {
+    enrichmentTimer = null
+    if (view.isDestroyed) return
+    void (async () => {
+      const { useSettingsStore } = await import('@/stores/settingsStore')
+      const { llmConfig, graphEnrichment } = useSettingsStore.getState()
+      const allowed =
+        graphEnrichment === 'always' ||
+        (graphEnrichment === 'local-only' && llmConfig.provider === 'ollama')
+      if (!allowed) return
+      await getDocGraph(view.state.doc, llmConfig, {
+        skipLlm: true,
+        skipGraphiti: true,
+        skipEmbeddings: false,
+        interimStatus: 'enriching',
+      })
+    })().catch((err) => {
+      // Non-fatal: the deterministic graph already published is fully usable
+      // without this pass — a failed enrichment just leaves meaning-based
+      // edges absent for this build, never breaks reading.
+      console.warn('[docGraph] background enrichment failed', err)
+    })
+  }, delayMs)
+}
+
+/** Cancel any pending background enrichment (editor unmount, or a fresh build invalidating the cache). */
+export function cancelScheduledDocGraphEnrichment(): void {
+  if (enrichmentTimer) {
+    clearTimeout(enrichmentTimer)
+    enrichmentTimer = null
+  }
+}
+
+/** Test hygiene: clear cache, inflight builds, and any pending rebuild/enrichment. */
 export function invalidateDocGraphCache(): void {
   graphCache.clear()
   inflight.clear()
   cancelScheduledDocGraphRebuild()
+  cancelScheduledDocGraphEnrichment()
 }
