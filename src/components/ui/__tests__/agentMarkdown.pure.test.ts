@@ -1,47 +1,18 @@
 import { describe, it, expect } from 'vitest'
+import { extractBlocks } from '@/components/ui/AgentMarkdown'
 
-// splitIntoBlocks and extractBlocks are not exported from AgentMarkdown.tsx.
-// We test them as pure functions by replicating them here verbatim from the
-// source.  Any change to the source logic will produce a mismatch that
-// surfaces both here (logic test) and in the component's rendering.
+// extractBlocks is imported from the source. It used to be copied in here
+// "verbatim", which meant the copy could drift and keep passing while the real
+// renderer broke — so it is imported now, not re-implemented.
+//
+// splitIntoBlocks below IS still a local re-implementation, and no longer
+// corresponds to anything in AgentMarkdown.tsx: the source function it mirrored
+// has since been deleted. Those cases now test only themselves.
 
 // ---------------------------------------------------------------------------
 // Source-faithful re-implementations
 // ---------------------------------------------------------------------------
 
-interface ExtractedContent {
-  reasoning: string | null
-  debateLog: string | null
-  body: string
-}
-
-function extractBlocks(content: string): ExtractedContent {
-  let body = content
-  let reasoning: string | null = null
-  let debateLog: string | null = null
-
-  const cotMatch = body.match(/<chain-of-thought>([\s\S]*?)<\/chain-of-thought>/i)
-  if (cotMatch) {
-    debateLog = cotMatch[1].trim()
-    body = body.replace(cotMatch[0], '').trim()
-  }
-
-  const thinkingMatch = body.match(/<thinking>([\s\S]*?)<\/thinking>/i)
-  if (thinkingMatch) {
-    reasoning = thinkingMatch[1].trim()
-    body = body.replace(thinkingMatch[0], '').trim()
-  }
-
-  if (!reasoning) {
-    const reasoningMatch = body.match(/^REASONING:\s*([\s\S]*?)(?:\n\n|$)/i)
-    if (reasoningMatch) {
-      reasoning = reasoningMatch[1].trim()
-      body = body.slice(reasoningMatch[0].length).trim()
-    }
-  }
-
-  return { reasoning, debateLog, body }
-}
 
 function splitIntoBlocks(body: string): string[] {
   const blocks: string[] = []
@@ -374,10 +345,35 @@ describe('extractBlocks — malformed / adversarial inputs', () => {
     expect(body).toBe('<chain-of-thought>never closed')
   })
 
-  it('does not extract unclosed thinking tag', () => {
+  it('treats an unclosed thinking tag as reasoning, not as the answer', () => {
+    // Behaviour deliberately reversed. This used to assert the tag was left
+    // alone, which meant a stream that ended mid-reasoning rendered the model's
+    // deliberation to the user as if it were the answer.
     const input = '<thinking>no closing tag'
-    const { reasoning } = extractBlocks(input)
-    expect(reasoning).toBeNull()
+    const { reasoning, body } = extractBlocks(input)
+    expect(reasoning).toBe('no closing tag')
+    expect(body).toBe('')
+  })
+
+  it('extracts qwen3-style <think> reasoning, closed or not', () => {
+    // Local thinking models emit <think>, not <thinking>. The Ollama dialect
+    // sets think:false to stop it at the source; this is the second line of
+    // defence for a model that ignores the flag.
+    const closed = extractBlocks('<think>weighing it up</think>\n\nThe answer.')
+    expect(closed.reasoning).toBe('weighing it up')
+    expect(closed.body).toBe('The answer.')
+
+    const unclosed = extractBlocks('<think>still weighing')
+    expect(unclosed.reasoning).toBe('still weighing')
+    expect(unclosed.body).toBe('')
+  })
+
+  it('does not treat a mismatched open/close pair as a matched block', () => {
+    // <think>…</thinking> is not a real block; the backreference must not
+    // let one tag name close the other.
+    const { reasoning, body } = extractBlocks('<think>a</thinking>')
+    expect(reasoning).toBe('a</thinking>')
+    expect(body).toBe('')
   })
 
   it('handles nested angle-bracket content without matching partial tags', () => {

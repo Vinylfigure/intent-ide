@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
       method: 'POST',
       headers,
       // A validated public base URL could still 3xx to a private address.
-      ...(kind === 'openai' ? { redirect: 'manual' as const } : {}),
+      ...(kind === 'anthropic' ? {} : { redirect: 'manual' as const }),
       body: JSON.stringify(body),
     })
 

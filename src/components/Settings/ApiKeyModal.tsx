@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react'
 import {
   useSettingsStore,
   type LLMProvider,
+  CONTEXT_TOKEN_CHOICES,
+  DEFAULT_OLLAMA_CONTEXT_TOKENS,
   PROVIDER_MODELS,
   PROVIDER_DEFAULT_MODEL,
   PROVIDER_BASE_URLS,
@@ -70,6 +72,9 @@ export function ApiKeyModal() {
   const [customModel, setCustomModel] = useState('')
   const [baseUrl, setBaseUrl] = useState(llmConfig.baseUrl ?? PROVIDER_BASE_URLS[llmConfig.provider] ?? '')
   const [wKey, setWKey] = useState(whisperKey)
+  const [contextTokens, setContextTokens] = useState(
+    llmConfig.contextTokens ?? DEFAULT_OLLAMA_CONTEXT_TOKENS,
+  )
   // Spend estimate is module state, not reactive — poll it while the modal is
   // open so long-lived sessions see the line move without reopening.
   const [sessionTokens, setSessionTokens] = useState(() => getSessionEstimate())
@@ -100,6 +105,7 @@ export function ApiKeyModal() {
       apiKey: provider === 'ollama' ? '' : apiKey,
       model: effectiveModel,
       baseUrl: baseUrl || undefined,
+      contextTokens,
     })
     // Ollama has no provider key to fall back to — persist the Whisper key
     // verbatim (empty disables voice).
@@ -215,6 +221,36 @@ export function ApiKeyModal() {
                 placeholder={provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'http://localhost:11434'}
                 className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
               />
+            </div>
+          )}
+
+          {/* Context window — Ollama only; every other provider sizes its own. */}
+          {provider === 'ollama' && (
+            <div>
+              <label
+                htmlFor="ollama-context-tokens"
+                className="block text-xs font-mono uppercase tracking-wider text-muted-foreground mb-1.5"
+              >
+                Context window
+              </label>
+              <select
+                id="ollama-context-tokens"
+                value={contextTokens}
+                onChange={(e) => setContextTokens(Number(e.target.value))}
+                className="w-full px-3 py-2 text-sm font-mono border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-accent/20"
+              >
+                {CONTEXT_TOKEN_CHOICES.map((n) => (
+                  <option key={n} value={n}>
+                    {n.toLocaleString()} tokens{n === 4096 ? " (Ollama's default)" : ''}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Ollama defaults every model to 4,096 tokens however large its real window
+                (qwen3:8b holds 40,960) and truncates a longer prompt without saying so — the
+                answer just comes back grounded in half the document. Raising this costs
+                memory; Ollama caps it at whatever the model actually supports.
+              </p>
             </div>
           )}
 

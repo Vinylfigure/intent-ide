@@ -31,7 +31,14 @@ interface ExtractedContent {
   body: string
 }
 
-function extractBlocks(content: string): ExtractedContent {
+/**
+ * Split an agent answer into its reasoning, debate log, and renderable body.
+ *
+ * Exported for test only. It used to be private, and the test kept a
+ * verbatim copy of it — which meant a change here could break the real
+ * renderer while the test went on passing against its own stale copy.
+ */
+export function extractBlocks(content: string): ExtractedContent {
   let body = content
   let reasoning: string | null = null
   let debateLog: string | null = null
@@ -43,11 +50,26 @@ function extractBlocks(content: string): ExtractedContent {
     body = body.replace(cotMatch[0], '').trim()
   }
 
-  // Extract <thinking> reasoning
-  const thinkingMatch = body.match(/<thinking>([\s\S]*?)<\/thinking>/i)
+  // Extract reasoning. Two spellings, two sources: <thinking> is what the
+  // Anthropic-shaped prompts ask for, <think> is what qwen3-class local models
+  // emit unprompted. The Ollama dialect sets think:false to stop the latter at
+  // the source, but a model that ignores the flag, or a partially-streamed
+  // answer, must still never render a chain of thought as the answer body.
+  const thinkingMatch = body.match(/<(thinking|think)>([\s\S]*?)<\/\1>/i)
   if (thinkingMatch) {
-    reasoning = thinkingMatch[1].trim()
+    reasoning = thinkingMatch[2].trim()
     body = body.replace(thinkingMatch[0], '').trim()
+  }
+
+  // An unclosed opening tag means the stream ended mid-reasoning (or the model
+  // never closed it). Everything after it is reasoning, not an answer — left
+  // in place it renders as a confident answer that is actually deliberation.
+  if (!reasoning) {
+    const unclosed = body.match(/<(thinking|think)>([\s\S]*)$/i)
+    if (unclosed) {
+      reasoning = unclosed[2].trim()
+      body = body.slice(0, unclosed.index).trim()
+    }
   }
 
   // Extract REASONING: prefix
