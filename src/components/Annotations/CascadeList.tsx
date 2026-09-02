@@ -7,6 +7,7 @@ import { findEdgePath, formatEdgePath } from '@/lib/graphrag/docGraph'
 import { recordCascadeStatusChange } from '@/lib/telemetry/cascadeCalibration'
 import type { Annotation, CascadeSeverity, ProposedEdit, ProposedEditStatus } from '@/lib/annotations/types'
 import { SEVERITY_LABELS, SEVERITY_ORDER } from '@/lib/annotations/types'
+import { scrollToPos } from '@/lib/prosemirror/scrollToPos'
 
 interface CascadeListProps {
   annotation: Annotation
@@ -86,27 +87,10 @@ export function CascadeList({ annotation }: CascadeListProps) {
     return getProposedAnchors(view.state).get(edit.id)?.status ?? edit.status
   }
 
-  /** Scroll the editor to the edit's live region (AnnotationMap scroll pattern). */
+  /** Scroll the editor to the edit's live (re-anchored) region. */
   const scrollToEdit = (edit: ProposedEdit) => {
     if (!view) return
-    const livePos = getProposedAnchors(view.state).get(edit.id)?.from ?? edit.from
-    const maxPos = view.state.doc.content.size
-    const safePos = Math.min(livePos, maxPos)
-    try {
-      const coords = view.coordsAtPos(safePos)
-      if (coords) {
-        const container = view.dom.closest('.editor-scroll-container')
-        if (container) {
-          const containerRect = container.getBoundingClientRect()
-          container.scrollTo({
-            top: container.scrollTop + (coords.top - containerRect.top) - 100,
-            behavior: 'smooth',
-          })
-        }
-      }
-    } catch {
-      // Position may be out of range after a concurrent doc change — ignore.
-    }
+    scrollToPos(view, getProposedAnchors(view.state).get(edit.id)?.from ?? edit.from)
   }
 
   const setStatus = (edit: ProposedEdit, status: ProposedEditStatus) => {

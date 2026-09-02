@@ -23,6 +23,7 @@ import { ingestAnnotationEpisode } from '@/lib/graphrag/episodeIngestion'
 import { generateId } from '@/lib/utils/id'
 import { getDefaultVerbosity } from '@/lib/annotations/types'
 import type { Annotation, AnnotationType, TextAnchor } from '@/lib/annotations/types'
+import { inferScopeFromText } from '@/lib/annotations/selectionOffers'
 
 const recorder = new AudioRecorder()
 
@@ -120,6 +121,8 @@ interface CreateAnnotationOptions {
    * it; 'quiet' skips the scroll event so capture never yanks attention.
    */
   notify?: 'panel' | 'quiet'
+  /** The exact quoted span from an AI answer this annotation was spun off from — see Annotation.sourceQuote. */
+  quote?: string
 }
 
 /**
@@ -192,7 +195,14 @@ export function captureAnnotationFromText(
     childIds: [],
     createdAt: Date.now(),
     resolvedAt: null,
-    verbosity: getDefaultVerbosity(scope, provisionalType),
+    // A quoted sub-chat's subject matter is the quote itself, not the
+    // parent's (possibly much larger) document anchor — a two-word quote
+    // should get a two-word-sized budget, not the paragraph the parent was
+    // anchored to.
+    verbosity: options.quote
+      ? getDefaultVerbosity(inferScopeFromText(options.quote), provisionalType)
+      : getDefaultVerbosity(scope, provisionalType),
+    sourceQuote: options.quote,
   }
 
   annotationStore.add(annotation)

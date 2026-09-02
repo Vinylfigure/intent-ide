@@ -28,6 +28,13 @@ export function docJsonToText(docJson: unknown): string {
   const lines: string[] = []
   const visit = (node: DocJsonNode) => {
     if (!node || typeof node !== 'object') return
+    if (node.type === 'table_row') {
+      const cells = (node.content ?? [])
+        .filter((child) => child.type === 'table_header' || child.type === 'table_cell')
+        .map((cell) => inlineText(cell).trim())
+      lines.push(`| ${cells.join(' | ')} |`)
+      return
+    }
     if (node.type && TEXTBLOCK_TYPES.has(node.type)) {
       lines.push(inlineText(node))
       return

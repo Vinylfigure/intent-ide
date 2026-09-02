@@ -1,6 +1,7 @@
 import { EditorState } from 'prosemirror-state'
 import { Node } from 'prosemirror-model'
 import type { Scope } from '@/lib/annotations/types'
+import { inferScopeFromText } from '@/lib/annotations/selectionOffers'
 
 // Infer scope from a selection range
 export function inferScope(state: EditorState, from: number, to: number): Scope {
@@ -20,11 +21,9 @@ export function inferScope(state: EditorState, from: number, to: number): Scope 
     return 'paragraph'
   }
 
-  // Count sentences in selection
-  const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0)
-  if (sentences.length <= 1 && text.length < 100) return 'phrase'
-  if (sentences.length === 1) return 'sentence'
-  return 'paragraph'
+  // No document structure to key off of here — same text-only heuristic
+  // used when scoring a selection made outside the editor (selectionOffers.ts).
+  return inferScopeFromText(text)
 }
 
 // Get the text content of the block containing a position. The position is
@@ -38,7 +37,9 @@ export function getBlockText(state: EditorState, pos: number): string {
   if ($pos.depth === 0) return ''
   const start = $pos.start($pos.depth)
   const end = $pos.end($pos.depth)
-  return state.doc.textBetween(start, end)
+  // Same separator rule as getSectionText: a block containing nested content
+  // (a table cell, a list item) must not have its parts concatenated blind.
+  return state.doc.textBetween(start, end, '\n\n', ' ')
 }
 
 // Get the section (heading to heading) containing a position
@@ -63,7 +64,13 @@ export function getSectionText(state: EditorState, pos: number): string {
     }
   })
 
-  return state.doc.textBetween(sectionStart, sectionEnd)
+  // Separators matter more than they look. textBetween's default joins blocks
+  // with NOTHING, so a heading and the paragraph under it arrive as
+  // `...Atlantis "sniff test"The stated process was IaC...` — and the resolver
+  // then collapses whitespace on top of that. A small local model reads the
+  // run-on as one malformed sentence, which is a grounding failure disguised
+  // as a formatting one.
+  return state.doc.textBetween(sectionStart, sectionEnd, '\n\n', ' ')
 }
 
 // Get all text content of the document

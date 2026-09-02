@@ -98,3 +98,27 @@ describe('Context compression prompt', () => {
     expect(CONTEXT_COMPRESSION_PROMPT).toContain('{{history}}')
   })
 })
+
+describe('RESOLVER_SYSTEM_PROMPT — grounding', () => {
+  it('requires document knowledge and the model\'s own to be told apart', () => {
+    // The reported failure: a reader asked what "Atlantis" was. The document
+    // names it in a heading and never explains it, and nothing asked the model
+    // to say so — it just answered, wrongly and confidently.
+    expect(RESOLVER_SYSTEM_PROMPT).toContain('label the second kind')
+  })
+
+  it('does not ask the model to JUDGE whether a term is defined', () => {
+    // Measured on qwen3:8b: told to decide for itself, it invented a
+    // definition out of the surrounding words — worse than saying nothing.
+    // The fact is computed in intentContext.ts and stated; this prompt only
+    // says to obey it. See intentContext's undefined-term tests.
+    expect(RESOLVER_SYSTEM_PROMPT).toContain('stated for you in the')
+  })
+
+  it('forbids inventing a cross-reference', () => {
+    // Paired with the "nothing else bears on this" context line: without this
+    // rule an empty related-passages section is an invitation to gesture at a
+    // section that might exist.
+    expect(RESOLVER_SYSTEM_PROMPT).toContain('Never invent a cross-reference')
+  })
+})

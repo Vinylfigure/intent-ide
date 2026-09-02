@@ -247,7 +247,7 @@ export function CommandPalette({ onClose }: CommandPaletteProps) {
           <>
             {/* Intent input mode */}
             <div className="px-4 py-3 border-b border-border">
-              <div className="text-[10px] font-mono text-muted mb-1.5">
+              <div className="text-[10px] font-mono text-muted-foreground mb-1.5">
                 {intentAction === 'check' ? 'Check for Conflicts' : 'Make Change'}
                 {' '}&mdash; describe your intent:
               </div>
@@ -262,7 +262,7 @@ export function CommandPalette({ onClose }: CommandPaletteProps) {
               />
             </div>
             <div className="px-4 py-3 flex items-center justify-between">
-              <span className="text-xs text-muted">
+              <span className="text-xs text-muted-foreground">
                 {isAnalyzing ? 'Analyzing document...' : 'Press Enter to analyze, Esc to go back'}
               </span>
               {isAnalyzing && (
@@ -292,7 +292,7 @@ export function CommandPalette({ onClose }: CommandPaletteProps) {
             {/* Command list */}
             <div className="max-h-64 overflow-y-auto py-1">
               {filtered.length === 0 && (
-                <div className="px-4 py-6 text-center text-sm text-muted">
+                <div className="px-4 py-6 text-center text-sm text-muted-foreground">
                   No matching commands
                 </div>
               )}
@@ -308,7 +308,7 @@ export function CommandPalette({ onClose }: CommandPaletteProps) {
                 >
                   <span>{cmd.label}</span>
                   {cmd.hotkey && (
-                    <span className="text-[10px] font-mono text-muted bg-warm px-1.5 py-0.5 rounded">
+                    <span className="text-[10px] font-mono text-muted-foreground bg-warm px-1.5 py-0.5 rounded">
                       {cmd.hotkey}
                     </span>
                   )}

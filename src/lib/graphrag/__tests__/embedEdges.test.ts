@@ -12,7 +12,10 @@ import {
 import {
   augmentWithEmbeddingEdges,
   clearEmbeddingVectorCache,
+  embedModelThreshold,
   fetchEmbeddings,
+  similarityThreshold,
+  similarityWeight,
   type EmbedFn,
 } from '../embedEdges'
 
@@ -321,5 +324,131 @@ describe('getDocGraph — embedding pass wiring', () => {
     useSettingsStore.getState().setEmbeddingsEnabled(false)
     expect(useSettingsStore.getState().embeddingsEnabled).toBe(false)
     useSettingsStore.getState().setEmbeddingsEnabled(true) // restore for other tests
+  })
+})
+
+describe('embedModelThreshold — per-model base threshold', () => {
+  it('nomic-embed-text gets the lower, ollama-calibrated threshold', () => {
+    expect(embedModelThreshold({ ...CONFIG, embedModel: 'nomic-embed-text' })).toBe(0.78)
+  })
+
+  it('any other (or unset) embed model falls back to the text-embedding-3-small default', () => {
+    expect(embedModelThreshold(CONFIG)).toBe(0.82) // embedModel unset
+    expect(embedModelThreshold({ ...CONFIG, embedModel: 'text-embedding-3-small' })).toBe(0.82)
+    expect(embedModelThreshold({ ...CONFIG, embedModel: 'some-other-embedder' })).toBe(0.82)
+  })
+})
+
+describe('similarityThreshold — adaptive in-document floor', () => {
+  it('below 200 pairs: returns the flat per-model threshold regardless of the distribution', () => {
+    // Regression guard: this is EXACTLY the shape of the 4-block fixture above
+    // (cos(alpha, gamma) = 0.98, only 3 candidate pairs) — if the floor ever
+    // engaged below the pair-count guard, a globally-high-similarity SMALL
+    // document could suppress a real duplicate. 199 pairs, all at a high
+    // similarity that WOULD raise the floor above 0.82 if the guard didn't hold.
+    const sims = Array.from({ length: 199 }, () => 0.9)
+    expect(similarityThreshold(CONFIG, sims)).toBe(0.82)
+    expect(similarityThreshold(CONFIG, [0.98])).toBe(0.82) // the fixture's own shape
+  })
+
+  it('at/above 200 pairs with genuine spread: floor tracks mean + 1.5*sd, never below the model threshold', () => {
+    // Half the pairs at 0.3 (unrelated), half at 0.5 (mildly related) — a
+    // low-similarity document where the floor should NOT rise above the model
+    // threshold (max(...) keeps 0.82 as the effective floor).
+    const sims = [
+      ...Array.from({ length: 100 }, () => 0.3),
+      ...Array.from({ length: 100 }, () => 0.5),
+    ]
+    expect(similarityThreshold(CONFIG, sims)).toBe(0.82)
+  })
+
+  it('clamps the adaptive floor to 0.95 even when the document distribution runs hotter', () => {
+    // mean ~0.97, sd small but nonzero — mean + 1.5*sd would exceed 0.95
+    // unclamped; a near-duplicate must stay reachable rather than requiring
+    // near-perfect cosine.
+    const sims = Array.from({ length: 250 }, (_, i) => (i % 2 === 0 ? 0.96 : 0.98))
+    const threshold = similarityThreshold(CONFIG, sims)
+    // mean 0.97, sd 0.01 → mean + 1.5*sd = 0.985, which the clamp must cap at 0.95.
+    expect(threshold).toBe(0.95)
+  })
+
+  it('a globally-high-similarity document suppresses its own baseline while a genuine duplicate still clears the floor', async () => {
+    // Construct N unit vectors with EXACT pairwise cosine = rho for every
+    // pair (the "equal correlation" construction: v_i = a*u + b*e_i for
+    // orthonormal u, e_1..e_N — cross terms vanish, so v_i . v_j = a^2 for
+    // every i != j). rho = 0.85 is comfortably above the flat 0.82 threshold,
+    // so a NAIVE flat-threshold pass would link almost every pair in the
+    // document — the "everything looks vaguely alike" failure mode the
+    // adaptive floor exists to catch. One extra block is an EXACT duplicate
+    // of block 0 (cosine 1.0) — a genuine near-duplicate that must still
+    // clear the floor even though the whole document sits high.
+    const CLUSTER_N = 26 // indices 0..25
+    const DIM = CLUSTER_N + 1 // + 1 for the shared component `u`
+    const rho = 0.85
+    const a = Math.sqrt(rho)
+    const b = Math.sqrt(1 - rho)
+    const vecFor = (i: number): number[] => {
+      const v = new Array(DIM).fill(0)
+      v[0] = a // shared `u` component (dimension 0)
+      v[i + 1] = b // idiosyncratic component (dimensions 1..CLUSTER_N)
+      return v
+    }
+    const vectors: number[][] = Array.from({ length: CLUSTER_N }, (_, i) => vecFor(i))
+    vectors.push(vecFor(0)) // block CLUSTER_N: an exact duplicate of block 0
+
+    const blocks = vectors.map((_, i) => p(`c${i}`, `cluster filler paragraph ${i}`))
+    const doc = docOf(...blocks)
+    const graph = buildDeterministicGraph(doc)
+    const embed: EmbedFn = async (texts) => texts.map((_, idx) => vectors[idx])
+    await augmentWithEmbeddingEdges(graph, CONFIG, embed)
+
+    const embEdges = graph.edges.filter((e) => e.source === 'embedding')
+    // The genuine duplicate (block 0 <-> the last block) must be linked.
+    expect(
+      embEdges.some(
+        (e) =>
+          (e.from === 'c0' && e.to === `c${CLUSTER_N}`) ||
+          (e.from === `c${CLUSTER_N}` && e.to === 'c0'),
+      ),
+    ).toBe(true)
+    // A naive flat 0.82 threshold would have linked nearly every one of the
+    // ~300 cluster-internal pairs (all sitting at cosine 0.85). The adaptive
+    // floor must suppress the vast majority of them.
+    expect(embEdges.length).toBeLessThan(5)
+  })
+})
+
+describe('similarityWeight — monotonic in cosine', () => {
+  it('is non-decreasing as cosine rises above the floor', () => {
+    const floor = 0.8
+    const sims = [0.8, 0.85, 0.9, 0.95, 0.99, 1.0]
+    const weights = sims.map((s) => similarityWeight(s, floor))
+    for (let i = 1; i < weights.length; i++) {
+      expect(weights[i]).toBeGreaterThanOrEqual(weights[i - 1])
+    }
+  })
+
+  it('is barely-justified (0.5) right at the floor, and clamped to at most 0.95', () => {
+    const floor = 0.8
+    expect(similarityWeight(floor, floor)).toBeCloseTo(0.5, 5)
+    expect(similarityWeight(1, floor)).toBeLessThanOrEqual(0.95)
+    expect(similarityWeight(1, floor)).toBeCloseTo(0.95, 5) // 0.5 + 0.2*2.5 = 1.0, clamped to 0.95
+  })
+
+  it('never drops below 0.5 even if called with a cosine below the floor', () => {
+    expect(similarityWeight(0.5, 0.8)).toBe(0.5)
+  })
+})
+
+describe('augmentWithEmbeddingEdges — edges carry a similarity kind and monotonic weight', () => {
+  it('tags embedding edges with kind: similarity and a weight derived from cosine', async () => {
+    const graph = buildDeterministicGraph(FIXTURE_DOC)
+    await augmentWithEmbeddingEdges(graph, CONFIG, scriptedEmbed())
+    const embEdges = graph.edges.filter((e) => e.source === 'embedding')
+    expect(embEdges).toHaveLength(1)
+    expect(embEdges[0].kind).toBe('similarity')
+    expect(typeof embEdges[0].weight).toBe('number')
+    expect(embEdges[0].weight).toBeGreaterThanOrEqual(0.5)
+    expect(embEdges[0].weight).toBeLessThanOrEqual(0.95)
   })
 })

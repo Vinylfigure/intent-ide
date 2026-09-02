@@ -61,6 +61,24 @@ export const SOURCE_PRIORITY: Record<DocGraphEdgeSource, number> = {
   graphiti: 3,
 }
 
+/**
+ * What kind of evidence produced an edge, within its source.
+ *
+ * `source` says WHO found the link; `kind` says WHY it holds, which is a
+ * different and more useful question when deciding whether to show a passage
+ * to a human. A `section-number` edge is the author writing "see Section 8.2";
+ * a `section-ordinal` edge is this module GUESSING that "Section 8" means the
+ * eighth heading. Both are deterministic; only one is evidence.
+ */
+export type DocGraphEdgeKind =
+  | 'section-number'
+  | 'section-ordinal'
+  | 'named-ref'
+  | 'defined-term'
+  | 'verbatim'
+  | 'similarity'
+  | 'co-mention'
+
 export interface DocGraphEdge {
   from: string
   to: string
@@ -68,6 +86,15 @@ export interface DocGraphEdge {
   source: DocGraphEdgeSource
   /** Matched term or verified verbatim quote that produced this edge. */
   evidence?: string
+  /** Why this edge holds, within its source. Absent on legacy/hand-built edges. */
+  kind?: DocGraphEdgeKind
+  /**
+   * Confidence in [0,1]. Absent means "use the source default" — see
+   * SOURCE_CONFIDENCE in relevanceScore.ts. Present on every deterministic
+   * edge this module builds, because a defined-term edge's trustworthiness
+   * depends on how many blocks that term links, which only the builder knows.
+   */
+  weight?: number
 }
 
 export interface DocGraph {
@@ -116,6 +143,12 @@ export interface DocGraph {
   edges: DocGraphEdge[]
   /** Undirected index: blockId → edges touching it. */
   adjacency: Map<string, DocGraphEdge[]>
+  /**
+   * Defined terms dropped for linking too much of the document — a
+   * project-wide noun rather than a definition. Recorded rather than silently
+   * discarded so the absence of edges is explicable.
+   */
+  hubTerms?: string[]
 }
 
 const EDGE_TYPES: ReadonlySet<string> = new Set([
@@ -147,6 +180,46 @@ const TERM_STOPWORDS = new Set([
   'will', 'shall', 'must', 'may', 'and', 'for', 'not', 'are', 'was', 'were',
   'section', 'sections', 'document', 'page',
 ])
+
+/**
+ * Words people bold at the START of a paragraph as a label, not as a glossary
+ * entry. Without this, "**Note**: ..." defines a term called "Note" and every
+ * block containing the word "note" links to it.
+ */
+const BOLD_LEAD_STOPWORDS = new Set([
+  'note', 'notes', 'example', 'examples', 'summary', 'warning', 'caution',
+  'important', 'tip', 'tips', 'step', 'steps', 'overview', 'background',
+  'scope', 'purpose', 'objective', 'objectives', 'goal', 'goals', 'status',
+  'owner', 'owners', 'context', 'problem', 'solution', 'input', 'inputs',
+  'output', 'outputs', 'todo', 'next', 'result', 'results', 'why', 'how',
+  'what', 'best use', 'avoid', 'be ready for', 'a strong answer', 'key',
+  'question', 'answer', 'goal', 'risk', 'risks', 'gap', 'gaps',
+])
+
+/**
+ * A bold lead-in must be followed by at least this much text to count as a
+ * definition. "**Aegis**: see below" labels; "**Aegis**: the internal
+ * access-review service that reconciles grants nightly." defines.
+ */
+const MIN_DEFINITION_CHARS = 40
+
+/** Shortest string still plausibly a defined term. */
+const MIN_TERM_CHARS = 4
+
+/**
+ * A defined term linking more blocks than this is a project-wide noun, not a
+ * definition, and its edges are dropped entirely.
+ *
+ * Eight is about the largest set a human still reads as "these specific
+ * passages" rather than "everywhere". The Graphiti pass independently landed
+ * near the same number for the same reason; deterministic edges need to be
+ * stricter because nothing down-ranks them by source priority afterwards.
+ */
+const TERM_MAX_LINKED_BLOCKS = 8
+/** ...or this share of the document, whichever binds first. */
+const TERM_MAX_DF_RATIO = 0.12
+/** Floor for short documents — a six-block fixture must keep its term edges. */
+const TERM_MIN_LINKED_BLOCKS = 4
 
 // --- Content hash -----------------------------------------------------------
 
@@ -199,21 +272,31 @@ function extractDefinedTerms(node: PMNode): string[] {
     const m = text.match(pattern)
     if (m?.[1]) terms.push(m[1].trim())
   }
-  // Leading strong-marked phrase followed by ':' or '—' (glossary style)
+  // Leading strong-marked phrase followed by ':' or '—' (glossary style).
+  //
+  // This branch is why one project noun could hub the whole document: any
+  // bolded lead-in became a "definition", and pass 2b then linked every block
+  // containing that word to it. Four tightenings, all aimed at the difference
+  // between a LABEL and a DEFINITION.
   const first = node.firstChild
-  if (first?.isText && first.text && first.marks.some((mk) => mk.type.name === 'strong')) {
+  // A bold heading is a title, never a glossary entry.
+  if (node.type.name !== 'heading' && first?.isText && first.text && first.marks.some((mk) => mk.type.name === 'strong')) {
     const term = first.text.replace(/[:——-]\s*$/, '').trim()
     const rest = text.slice(first.text.length)
+    const definitionBody = rest.replace(/^\s*[:——-]\s*/, '').trim()
     if (
       (first.text.trim().endsWith(':') || /^\s*[:——]/.test(rest)) &&
-      term.length >= 3 &&
-      term.length <= 40
+      term.length >= MIN_TERM_CHARS &&
+      term.length <= 40 &&
+      !BOLD_LEAD_STOPWORDS.has(term.toLowerCase()) &&
+      // Something long enough to actually be a definition must follow.
+      definitionBody.length >= MIN_DEFINITION_CHARS
     ) {
       terms.push(term)
     }
   }
   return terms.filter(
-    (t) => t.length >= 3 && !TERM_STOPWORDS.has(t.toLowerCase()),
+    (t) => t.length >= MIN_TERM_CHARS && !TERM_STOPWORDS.has(t.toLowerCase()),
   )
 }
 
@@ -238,7 +321,21 @@ function normalizeHeading(text: string): string {
   return text.toLowerCase().replace(/[^\w ]/g, '').replace(/\s+/g, ' ').trim()
 }
 
-const SECTION_NUMBER_RE = /\bsections?\s+(\d+)(?:\.\d+)*/gi
+/**
+ * An explicit pointer to one numbered section.
+ *
+ * SINGULAR only, and ranges/lists excluded. The plural form in prose is
+ * almost always a range or a list — "Study Sections 8–14", "Sections 3, 4 and
+ * 7" — and the old pattern matched those, then resolved "8" as a POSITIONAL
+ * INDEX into the heading list. That produced the reported nonsense: a passage
+ * about study sections linked to whatever heading happened to be eighth, and
+ * the UI showed it as `references ("Sections 8")`. A genuine single pointer is
+ * always singular English.
+ */
+const SECTION_NUMBER_RE = /\bsection\s+(\d+(?:\.\d+)*)\b(?!\s*(?:[–—-]|,|\band\b)\s*\d)/gi
+
+/** A heading that numbers itself: "8. Access Reviews", "8.2 Grant reconciliation". */
+const HEADING_NUMBER_RE = /^\s*(\d+(?:\.\d+)*)[.)]?\s+\S/
 // Quoted form ends at the closing quote; bare form must start capitalized and
 // run to punctuation/EOL (keeps "under the hood"-style prose from matching).
 const NAMED_REF_RE =
@@ -261,6 +358,10 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
   // Pass 1: nodes, heading paths, defined terms, heading indexes
   const headingStack: Array<{ level: number; text: string }> = []
   const headingByNorm = new Map<string, string>()
+  // The author's OWN numbering ("8.2 Grant reconciliation" → "8.2"), which is
+  // what "see Section 8.2" actually refers to. Distinct from position in the
+  // heading list, which is what the old code guessed with.
+  const headingByNumber = new Map<string, string>()
   const headingsInOrder: Array<{ blockId: string; text: string }> = []
   const blockHashes = new Map<string, string>()
 
@@ -275,6 +376,12 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
       }
       headingStack.push({ level, text })
       headingByNorm.set(normalizeHeading(text), b.blockId)
+      const numbered = text.match(HEADING_NUMBER_RE)
+      // First writer wins: a duplicated number is ambiguous, and silently
+      // repointing to the later one would be a guess wearing a fact's clothes.
+      if (numbered && !headingByNumber.has(numbered[1])) {
+        headingByNumber.set(numbered[1], b.blockId)
+      }
       headingsInOrder.push({ blockId: b.blockId, text })
     }
     nodes.set(b.blockId, {
@@ -292,8 +399,29 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
   // Pass 2a: explicit cross-references → `references` edges to headings
   for (const node of nodes.values()) {
     for (const m of node.text.matchAll(SECTION_NUMBER_RE)) {
-      const idx = parseInt(m[1], 10) - 1
-      const target = headingsInOrder[idx]
+      const numbered = headingByNumber.get(m[1])
+      if (numbered) {
+        // The author numbered their headings and this pointer matches one:
+        // the strongest signal in the whole deterministic pass.
+        addEdge({
+          from: node.blockId,
+          to: numbered,
+          type: 'references',
+          source: 'deterministic',
+          evidence: m[0],
+          kind: 'section-number',
+          weight: 0.95,
+        })
+        continue
+      }
+      // Positional fallback, allowed ONLY when the document numbers nothing —
+      // there, ordinal position is the only available reading of "Section 3".
+      // In a document that DOES number its headings, "Section 9" failing to
+      // match means the author meant something this pass cannot see, and
+      // pointing at the ninth block would be a fabrication. Dotted numbers
+      // never fall back: there is no ordinal reading of "8.2".
+      if (headingByNumber.size > 0 || m[1].includes('.')) continue
+      const target = headingsInOrder[parseInt(m[1], 10) - 1]
       if (target) {
         addEdge({
           from: node.blockId,
@@ -301,38 +429,85 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
           type: 'references',
           source: 'deterministic',
           evidence: m[0],
+          kind: 'section-ordinal',
+          // A guess, and scored as one: not self-justifying, so a passage
+          // reached this way must also share vocabulary to be shown.
+          weight: 0.6,
         })
       }
     }
     for (const m of node.text.matchAll(NAMED_REF_RE)) {
       const target = headingByNorm.get(normalizeHeading(m[1] ?? m[2]))
       if (target) {
+        // "see the Data Handling section" — the author wrote the link.
         addEdge({
           from: node.blockId,
           to: target,
           type: 'references',
           source: 'deterministic',
           evidence: m[0],
+          kind: 'named-ref',
+          weight: 0.95,
         })
       }
     }
   }
 
-  // Pass 2b: shared defined terms → `references` edges to the defining block
+  // Pass 2b: shared defined terms → `references` edges to the defining block.
+  //
+  // This pass, unbounded, was the single largest source of irrelevant
+  // "related passages". A term used project-wide ("Aegis") linked EVERY block
+  // containing it to one definer, making the whole document one hop from
+  // itself — so any two passages looked related and the ranking had nothing
+  // left to discriminate with.
+  //
+  // Two bounds now. A term linking more than `cap` blocks is a project-wide
+  // noun rather than a definition and produces NO edges at all; surviving
+  // edges are weighted DOWN by how many blocks they link, so a term used in
+  // five or more places stops being self-justifying and must also corroborate
+  // lexically before a passage reached through it is shown.
+  //
+  // Dropped rather than truncated on purpose: keeping "the first 8 in document
+  // order" still surfaces irrelevant passages, just fewer of them, and
+  // document order is not a relevance signal.
+  const hubTerms: string[] = []
+  const blockCount = nodes.size
+  const termCap = Math.min(
+    TERM_MAX_LINKED_BLOCKS,
+    Math.max(TERM_MIN_LINKED_BLOCKS, Math.floor(blockCount * TERM_MAX_DF_RATIO)),
+  )
+  // Dedupe case-insensitively across definers: two blocks that both "define"
+  // the same word must not each get their own full fan-in.
+  const definerByTerm = new Map<string, { term: string; blockId: string }>()
   for (const definer of nodes.values()) {
     for (const term of definer.definedTerms) {
-      for (const other of nodes.values()) {
-        if (other.blockId === definer.blockId) continue
-        if (containsTerm(other.text, term)) {
-          addEdge({
-            from: other.blockId,
-            to: definer.blockId,
-            type: 'references',
-            source: 'deterministic',
-            evidence: term,
-          })
-        }
-      }
+      const key = term.toLowerCase()
+      if (!definerByTerm.has(key)) definerByTerm.set(key, { term, blockId: definer.blockId })
+    }
+  }
+
+  for (const { term, blockId: definerId } of definerByTerm.values()) {
+    const containing: string[] = []
+    for (const other of nodes.values()) {
+      if (other.blockId === definerId) continue
+      if (containsTerm(other.text, term)) containing.push(other.blockId)
+    }
+    if (containing.length > termCap) {
+      hubTerms.push(term)
+      continue
+    }
+    // df=1 → 0.95, df=4 → 0.71, df=5 → 0.63, df=8 → 0.40.
+    const weight = Math.min(0.95, Math.max(0.4, 0.95 - 0.08 * (containing.length - 1)))
+    for (const from of containing) {
+      addEdge({
+        from,
+        to: definerId,
+        type: 'references',
+        source: 'deterministic',
+        evidence: term,
+        kind: 'defined-term',
+        weight,
+      })
     }
   }
 
@@ -351,6 +526,10 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
           type: 'duplicates',
           source: 'deterministic',
           evidence: raw.trim(),
+          kind: 'verbatim',
+          // A sentence repeated verbatim is the author's own link, not an
+          // inference — the highest-confidence edge the pass can make.
+          weight: 0.95,
         })
       } else if (!owner) {
         sentenceOwner.set(norm, node.blockId)
@@ -371,6 +550,7 @@ export function buildDeterministicGraph(doc: PMNode): DocGraph {
     nodes,
     edges,
     adjacency: buildAdjacency(edges),
+    hubTerms,
   }
 }
 
@@ -686,7 +866,7 @@ export async function augmentWithGraphitiEdges(
     )
 
     const ordered = [...graph.nodes.values()].sort((a, b) => a.pos - b.pos)
-    const edgeKeys = new Set(graph.edges.map((e) => `${e.from} ${e.to} ${e.type}`))
+    const edgeKeys = new Set(graph.edges.map((e) => `${e.from}\u0000${e.to}\u0000${e.type}`))
     let added = false
     let processedEntities = 0
     let addedEdges = 0
@@ -711,8 +891,8 @@ export async function augmentWithGraphitiEdges(
           const to = containing[j].blockId
           // Direction-normalized dedupe: check BOTH orientations so a graphiti
           // pair can never shadow-duplicate a reversed deterministic term edge.
-          const key = `${from} ${to} references`
-          const reverseKey = `${to} ${from} references`
+          const key = `${from}\u0000${to}\u0000references`
+          const reverseKey = `${to}\u0000${from}\u0000references`
           if (edgeKeys.has(key) || edgeKeys.has(reverseKey)) continue
           if (addedEdges >= GRAPHITI_MAX_EDGES_PER_BUILD) {
             edgeCapHit = true
@@ -922,15 +1102,28 @@ let publishSeq = 0
  * Publish build lifecycle to the UI store (StatusBar chip, edge-path
  * affordances). Browser-only via lazy import — node tests and server code
  * never touch the store (same precedent as scheduleDocGraphRebuild's lazy
- * settings-store import). Failures are swallowed: publishing is cosmetic.
+ * settings-store import).
+ *
+ * This used to be cosmetic — the store fed a status chip and the "why this
+ * proposal?" edge paths. It is now load-bearing: the answer envelope's
+ * related-passage layer, the selection popup's offer counts, and the
+ * pre-apply blast-radius preview all read the published graph. A failure
+ * here means the graph is built and reaches nobody, so it stays non-fatal
+ * but is no longer silent.
  */
-function publishDocGraph(seq: number, status: 'building' | 'ready', graph?: DocGraph): void {
+function publishDocGraph(
+  seq: number,
+  status: 'building' | 'ready' | 'enriching',
+  graph?: DocGraph,
+): void {
   if (typeof window === 'undefined') return
   void import('@/stores/docGraphStore')
     .then(({ useDocGraphStore }) => {
       useDocGraphStore.getState().publish(seq, status, graph)
     })
-    .catch(() => {})
+    .catch((err) => {
+      console.warn('[docGraph] could not publish graph to the UI store', err)
+    })
 }
 
 /** User toggle for the embedding pass (settings store, default true). */
@@ -967,8 +1160,17 @@ export async function getDocGraph(
     skipGraphiti?: boolean
     /** Injectable Graphiti MCP client (tests: scripted searchNodes/getSubgraph). */
     graphiti?: GraphitiEdgeDeps
+    /**
+     * Publish the interim (pre-'ready') lifecycle status as 'enriching'
+     * instead of 'building' — used by `scheduleDocGraphEnrichment` so the
+     * StatusBar can distinguish "linking meaning in the background over an
+     * already-usable graph" from an ordinary first build, where nothing is
+     * usable yet. The final published status is always 'ready' either way.
+     */
+    interimStatus?: 'building' | 'enriching'
   } = {},
 ): Promise<DocGraph> {
+  const interimStatus = deps.interimStatus ?? 'building'
   const hash = contentHash(doc)
   // `llmRequested` is the caller's raw intent (not skipped) — it's what gates
   // entering the LLM branch in applyRequestedPasses, matching the ORIGINAL
@@ -1046,7 +1248,7 @@ export async function getDocGraph(
     // finished), so there is no concurrent-mutation race, and a THIRD caller
     // needing even more replaces this entry in `inflight` the same way.
     const seq = ++publishSeq
-    publishDocGraph(seq, 'building')
+    publishDocGraph(seq, interimStatus)
     let entry: InflightEntry
     const built = (async () => {
       const graph = await existing.promise
@@ -1068,7 +1270,7 @@ export async function getDocGraph(
   }
 
   const seq = ++publishSeq
-  publishDocGraph(seq, 'building')
+  publishDocGraph(seq, interimStatus)
   let entry: InflightEntry
   const built = (async () => {
     const graph = cached ?? buildDeterministicGraph(doc)
@@ -1198,6 +1400,78 @@ export function formatEdgePath(path: DocGraphEdge[]): string {
     .join(' → ')
 }
 
+/**
+ * The same path as `formatEdgePath`, in a sentence a reader can act on.
+ *
+ * `formatEdgePath` is machine provenance and stays byte-identical — it is what
+ * the audit record carries and what tests assert on. But it was ALSO what the
+ * UI showed, and `references ("Sections 8") → references ("Aegis")` tells a
+ * human nothing except that something matched. Worse, it presented a two-hop
+ * inference in exactly the same shape as a link the author wrote.
+ *
+ * `fromBlockId` is the passage the reader is looking at, so the sentence can be
+ * written from their point of view ("defines a term used here" vs "uses a term
+ * defined here" are different facts about the same edge).
+ */
+export function describeEdgePath(
+  graph: DocGraph,
+  path: DocGraphEdge[],
+  fromBlockId: string,
+): string {
+  if (!path.length) return 'related'
+
+  const quote = (text: string | undefined): string => {
+    if (!text) return ''
+    const clean = text.trim().replace(/\s+/g, ' ')
+    return clean.length > EDGE_EVIDENCE_MAX_CHARS
+      ? `${clean.slice(0, EDGE_EVIDENCE_MAX_CHARS).trimEnd()}…`
+      : clean
+  }
+
+  /** One edge, described from `origin`'s side of it. */
+  const describe = (edge: DocGraphEdge, origin: string): string => {
+    const term = quote(edge.evidence)
+    if (edge.source === 'graphiti') return term ? `both mention "${term}"` : 'both mention the same entity'
+    if (edge.source === 'embedding') return 'says something closely similar'
+    if (edge.source === 'llm') {
+      return term ? `the model linked these on "${term}"` : 'the model linked these'
+    }
+    switch (edge.kind) {
+      case 'named-ref':
+        return term ? `cross-referenced as "${term}"` : 'cross-referenced here'
+      case 'section-number':
+        return term ? `pointed to by "${term}"` : 'pointed to by a section reference'
+      case 'section-ordinal':
+        // Say out loud that this one is a guess.
+        return term ? `possibly "${term}" — matched by position, not by number` : 'matched by position'
+      case 'defined-term':
+        // The edge runs user → definer, so which sentence is true depends on
+        // which end the reader is standing at.
+        return origin === edge.to
+          ? `uses "${term}", which this passage defines`
+          : `defines "${term}", used here`
+      case 'verbatim':
+        return 'repeats a sentence from this passage'
+      default:
+        return term ? `${edge.type} "${term}"` : edge.type
+    }
+  }
+
+  const last = path[path.length - 1]
+  if (path.length === 1) return describe(last, fromBlockId)
+
+  // Multi-hop. Name what it went through, so a transitive connection is never
+  // mistaken for a direct one.
+  const first = path[0]
+  const viaId = first.from === fromBlockId ? first.to : first.from
+  const via = graph.nodes.get(viaId)
+  const label = via?.headingPath?.length
+    ? via.headingPath[via.headingPath.length - 1]
+    : quote(via?.text.split(/\s+/).slice(0, 6).join(' '))
+  const tail = describe(last, viaId)
+  return label ? `indirectly, via "${label}": ${tail}` : `indirectly: ${tail}`
+}
+
 let rebuildTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
@@ -1220,7 +1494,13 @@ export function scheduleDocGraphRebuild(view: EditorView, delayMs = 2000): void 
         skipEmbeddings: true,
         skipGraphiti: true,
       })
-    })().catch(() => {})
+    })().catch((err) => {
+      // Swallowing this entirely meant a failed build left the graph null
+      // forever with no signal anywhere — every consumer degrading silently
+      // and permanently. Still non-fatal (the editor must not break because
+      // an index failed), but no longer invisible.
+      console.warn('[docGraph] background rebuild failed; section map unavailable', err)
+    })
   }, delayMs)
 }
 
@@ -1232,9 +1512,77 @@ export function cancelScheduledDocGraphRebuild(): void {
   }
 }
 
-/** Test hygiene: clear cache, inflight builds, and any pending rebuild. */
+/** Long idle debounce before the enrichment pass — long enough to fire only once a reader has settled, never mid-typing. */
+const ENRICHMENT_DELAY_MS = 12000
+
+let enrichmentTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Second, LONGER idle timer, separate from `scheduleDocGraphRebuild`: once a
+ * reader settles (no edits for ~12s), runs the embedding pass ONLY
+ * (`skipLlm: true, skipGraphiti: true, skipEmbeddings: false`) over the
+ * already-warm deterministic graph, so meaning-based connections exist for
+ * the read/dig flow — not just when an edit-type annotation resolves.
+ *
+ * Deliberately never enables the LLM edge pass here: whole-document
+ * `link_blocks` on a local model at a few thousand tokens of context can take
+ * minutes and would blow this idle window. The embedding pass is local
+ * (Ollama's native embeddings endpoint), cheap, and — subject to the
+ * `graphEnrichment` privacy gate below — never sends text off-machine unless
+ * the user opted in.
+ *
+ * Gated by `useSettingsStore.getState().graphEnrichment`:
+ * - 'off': never runs.
+ * - 'local-only' (default): runs only when the configured provider is
+ *   'ollama' — vectors never leave the machine.
+ * - 'always': runs regardless of provider (may send block text to a hosted
+ *   embeddings API).
+ *
+ * Same privacy contract as `scheduleDocGraphRebuild` otherwise: document text
+ * must never leave the machine as an UNREQUESTED side effect of reading, so
+ * this checks the gate itself rather than relying on a caller to have
+ * checked it. All failures are swallowed — a failed enrichment pass must
+ * never disturb the editor or the already-usable deterministic graph.
+ */
+export function scheduleDocGraphEnrichment(view: EditorView, delayMs = ENRICHMENT_DELAY_MS): void {
+  if (enrichmentTimer) clearTimeout(enrichmentTimer)
+  enrichmentTimer = setTimeout(() => {
+    enrichmentTimer = null
+    if (view.isDestroyed) return
+    void (async () => {
+      const { useSettingsStore } = await import('@/stores/settingsStore')
+      const { llmConfig, graphEnrichment } = useSettingsStore.getState()
+      const allowed =
+        graphEnrichment === 'always' ||
+        (graphEnrichment === 'local-only' && llmConfig.provider === 'ollama')
+      if (!allowed) return
+      await getDocGraph(view.state.doc, llmConfig, {
+        skipLlm: true,
+        skipGraphiti: true,
+        skipEmbeddings: false,
+        interimStatus: 'enriching',
+      })
+    })().catch((err) => {
+      // Non-fatal: the deterministic graph already published is fully usable
+      // without this pass — a failed enrichment just leaves meaning-based
+      // edges absent for this build, never breaks reading.
+      console.warn('[docGraph] background enrichment failed', err)
+    })
+  }, delayMs)
+}
+
+/** Cancel any pending background enrichment (editor unmount, or a fresh build invalidating the cache). */
+export function cancelScheduledDocGraphEnrichment(): void {
+  if (enrichmentTimer) {
+    clearTimeout(enrichmentTimer)
+    enrichmentTimer = null
+  }
+}
+
+/** Test hygiene: clear cache, inflight builds, and any pending rebuild/enrichment. */
 export function invalidateDocGraphCache(): void {
   graphCache.clear()
   inflight.clear()
   cancelScheduledDocGraphRebuild()
+  cancelScheduledDocGraphEnrichment()
 }

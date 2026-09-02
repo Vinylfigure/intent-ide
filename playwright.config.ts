@@ -10,6 +10,10 @@ const chromiumPath = process.env.PLAYWRIGHT_CHROMIUM_PATH
 
 export default defineConfig({
   testDir: './tests',
+  // `list` for readable logs, `html` so a CI failure leaves a report to
+  // download. Without the html reporter the workflow's upload-artifact step
+  // had nothing to upload — a failure in CI was undiagnosable from here.
+  reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   // First Next.js dev compile of the page can take well over 30s.
   timeout: 120_000,
   retries: 0,

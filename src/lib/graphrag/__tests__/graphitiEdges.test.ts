@@ -206,6 +206,9 @@ describe('augmentWithGraphitiEdges', () => {
         type: 'references',
         source: 'deterministic',
         evidence: 'Pilot Program',
+        kind: 'defined-term',
+        // Sole use of the term: highest defined-term weight.
+        weight: 0.95,
       },
     ])
     await augmentWithGraphitiEdges(graph, scriptedClient([entity('Pilot Program')]))

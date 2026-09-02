@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NextRequest } from 'next/server'
 import {
+  OLLAMA_DEFAULT_NUM_CTX,
   OPENROUTER_BASE_URL,
   buildChatBody,
+  clampContextTokens,
   extractContent,
   extractToolCalls,
   normalizeServerProvider,
@@ -22,7 +24,14 @@ function req(headers: Record<string, string> = {}): Request {
 }
 
 function ctxOf(overrides: Partial<ProviderCtx> = {}): ProviderCtx {
-  return { provider: 'claude', apiKey: 'k', model: 'claude-sonnet-4-6', baseUrl: '', ...overrides }
+  return {
+    provider: 'claude',
+    apiKey: 'k',
+    model: 'claude-sonnet-4-6',
+    baseUrl: '',
+    contextTokens: 0,
+    ...overrides,
+  }
 }
 
 afterEach(() => {
@@ -37,17 +46,24 @@ describe('readProviderCtx — defaults and normalization', () => {
     const result = readProviderCtx(req({ 'x-api-key': 'k' }))
     expect(result).toEqual({
       ok: true,
-      ctx: { provider: 'claude', apiKey: 'k', model: 'claude-sonnet-4-6', baseUrl: '' },
+      ctx: {
+        provider: 'claude',
+        apiKey: 'k',
+        model: 'claude-sonnet-4-6',
+        baseUrl: '',
+        contextTokens: 0,
+      },
     })
   })
 
-  it('reads all four BYOK headers', () => {
+  it('reads all five BYOK headers', () => {
     const result = readProviderCtx(
       req({
         'x-api-key': 'sk-or-1',
         'x-provider': 'openrouter',
         'x-model': 'anthropic/claude-sonnet-4.6',
         'x-base-url': 'https://openrouter.ai/api/v1',
+        'x-context-tokens': '16384',
       }),
     )
     expect(result).toEqual({
@@ -55,6 +71,7 @@ describe('readProviderCtx — defaults and normalization', () => {
       ctx: {
         provider: 'openrouter',
         apiKey: 'sk-or-1',
+        contextTokens: 16384,
         model: 'anthropic/claude-sonnet-4.6',
         baseUrl: 'https://openrouter.ai/api/v1',
       },
@@ -133,12 +150,23 @@ describe('resolveChatUrlAndHeaders', () => {
     })
   })
 
-  it('ollama base composition is unchanged: `${baseUrl}/v1/chat/completions`, no auth without key', () => {
-    const { url, headers } = resolveChatUrlAndHeaders(
-      ctxOf({ provider: 'ollama', apiKey: '', model: 'llama3.2', baseUrl: 'http://localhost:11434/' }),
+  it('ollama uses the NATIVE /api/chat, not the OpenAI-compatible shim', () => {
+    // The shim silently ignores options.num_ctx (measured: /api/ps still
+    // reports 4096 after a request asking for 16384), which truncates long
+    // prompts with no error. /api/chat honours it — hence a separate dialect.
+    const { url, headers, kind } = resolveChatUrlAndHeaders(
+      ctxOf({ provider: 'ollama', apiKey: '', model: 'qwen3:8b', baseUrl: 'http://localhost:11434/' }),
     )
-    expect(url).toBe('http://localhost:11434/v1/chat/completions')
+    expect(url).toBe('http://localhost:11434/api/chat')
     expect(headers).toEqual({ 'Content-Type': 'application/json' })
+    expect(kind).toBe('ollama')
+  })
+
+  it('ollama falls back to the local default base when none is supplied', () => {
+    const { url } = resolveChatUrlAndHeaders(
+      ctxOf({ provider: 'ollama', apiKey: '', model: 'qwen3:8b', baseUrl: '' }),
+    )
+    expect(url).toBe('http://localhost:11434/api/chat')
   })
 
   it('openrouter default base already contains /v1 — composed without doubling it', () => {
@@ -462,5 +490,169 @@ describe('POST /api/embed — provider support matrix', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ vectors: [[1, 2]] })
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://proxy.example.com/v1/embeddings')
+  })
+})
+
+// ── ollama native dialect ─────────────────────────────────────────────────────
+//
+// Ollama is the one provider this app talks to over a non-OpenAI wire format.
+// Every assertion below pins a behaviour that was MEASURED against a live
+// Ollama 0.33.0 running qwen3:8b, because each one is silently wrong on the
+// OpenAI-compatibility endpoint the app used before.
+
+describe('buildChatBody — ollama native', () => {
+  const ollama = (overrides: Partial<ProviderCtx> = {}) =>
+    ctxOf({ provider: 'ollama', apiKey: '', model: 'qwen3:8b', ...overrides })
+
+  it('sends the requested context window as options.num_ctx', () => {
+    // The whole reason for this dialect: /v1/chat/completions accepts and then
+    // ignores num_ctx, leaving qwen3:8b at 4096 of its 40960 and truncating
+    // long prompts with no error.
+    const body = buildChatBody(ollama({ contextTokens: 16384 }), {
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect((body.options as Record<string, unknown>).num_ctx).toBe(16384)
+  })
+
+  it('falls back to Ollama\'s own default when no context size was requested', () => {
+    const body = buildChatBody(ollama({ contextTokens: 0 }), {
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    expect((body.options as Record<string, unknown>).num_ctx).toBe(OLLAMA_DEFAULT_NUM_CTX)
+  })
+
+  it('suppresses chain-of-thought with think: false', () => {
+    // Without this a thinking model spends the token budget on reasoning the
+    // app has no surface for — and over the OpenAI shim that text goes to a
+    // `reasoning` field nothing reads, so `content` comes back empty.
+    const body = buildChatBody(ollama(), { messages: [{ role: 'user', content: 'hi' }] })
+    expect(body.think).toBe(false)
+  })
+
+  it('moves sampling and length into options, not top-level max_tokens', () => {
+    const body = buildChatBody(ollama(), {
+      messages: [{ role: 'user', content: 'hi' }],
+      maxTokens: 512,
+      temperature: 0.3,
+    })
+    expect(body.max_tokens).toBeUndefined()
+    expect(body.options).toMatchObject({ num_predict: 512, temperature: 0.3 })
+  })
+
+  it('prepends an explicit system prompt as a system-role message', () => {
+    const body = buildChatBody(ollama(), {
+      messages: [{ role: 'user', content: 'hi' }],
+      system: 'be terse',
+    })
+    expect(body.messages).toEqual([
+      { role: 'system', content: 'be terse' },
+      { role: 'user', content: 'hi' },
+    ])
+  })
+
+  it('maps neutral tools to the nested function shape without tool_choice', () => {
+    const body = buildChatBody(ollama(), {
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ name: 'link_blocks', description: 'd', input_schema: { type: 'object' } }],
+    })
+    expect(body.tools).toEqual([
+      { type: 'function', function: { name: 'link_blocks', description: 'd', parameters: { type: 'object' } } },
+    ])
+    expect(body.tool_choice).toBeUndefined()
+  })
+
+  it('never asks for logprobs — Ollama exposes none', () => {
+    const body = buildChatBody(ollama(), {
+      messages: [{ role: 'user', content: 'hi' }],
+      logprobs: true,
+    })
+    expect(body.logprobs).toBeUndefined()
+  })
+})
+
+describe('clampContextTokens', () => {
+  it('treats 0, negative and non-finite requests as unset', () => {
+    expect(clampContextTokens(0)).toBe(OLLAMA_DEFAULT_NUM_CTX)
+    expect(clampContextTokens(-1)).toBe(OLLAMA_DEFAULT_NUM_CTX)
+    expect(clampContextTokens(Number.NaN)).toBe(OLLAMA_DEFAULT_NUM_CTX)
+  })
+
+  it('clamps to the guard bounds rather than trusting a malformed header', () => {
+    expect(clampContextTokens(10)).toBe(1024)
+    expect(clampContextTokens(9_999_999)).toBe(131072)
+  })
+
+  it('passes a sane request through untouched', () => {
+    expect(clampContextTokens(16384)).toBe(16384)
+  })
+})
+
+describe('extractContent / extractToolCalls — ollama', () => {
+  it('reads content from message.content', () => {
+    expect(extractContent('ollama', { message: { role: 'assistant', content: 'OK.' } })).toEqual({
+      content: 'OK.',
+      logprobs: null,
+    })
+  })
+
+  it('returns empty content rather than throwing on a malformed response', () => {
+    expect(extractContent('ollama', {})).toEqual({ content: '', logprobs: null })
+  })
+
+  it('reads tool arguments that arrive already parsed as an object', () => {
+    // Measured: Ollama returns `arguments` as an object, unlike OpenAI's
+    // JSON-encoded string. Parsing it again would throw on every call.
+    const calls = extractToolCalls('ollama', {
+      message: {
+        tool_calls: [{ function: { name: 'link_blocks', arguments: { from: 'a', to: 'b' } } }],
+      },
+    })
+    expect(calls).toEqual([{ name: 'link_blocks', input: { from: 'a', to: 'b' } }])
+  })
+
+  it('still absorbs a string-encoded argument, malformed or not', () => {
+    const calls = extractToolCalls('ollama', {
+      message: {
+        tool_calls: [
+          { function: { name: 'ok', arguments: '{"x":1}' } },
+          { function: { name: 'bad', arguments: '{not json' } },
+        ],
+      },
+    })
+    expect(calls).toEqual([
+      { name: 'ok', input: { x: 1 } },
+      { name: 'bad', input: {} },
+    ])
+  })
+
+  it('returns no calls when the response carries none', () => {
+    expect(extractToolCalls('ollama', { message: { content: 'hi' } })).toEqual([])
+  })
+})
+
+describe('parseProviderSseLine — ollama NDJSON', () => {
+  it('reads a bare JSON line with no data: prefix', () => {
+    const line = '{"model":"qwen3:8b","message":{"role":"assistant","content":"It"},"done":false}'
+    expect(parseProviderSseLine('ollama', line)).toEqual({ text: 'It' })
+  })
+
+  it('ignores the terminal done frame, which carries no content', () => {
+    expect(parseProviderSseLine('ollama', '{"done":true,"message":{"content":""}}')).toBeNull()
+  })
+
+  it('drops a thinking delta so a model ignoring think:false cannot leak reasoning', () => {
+    expect(
+      parseProviderSseLine('ollama', '{"message":{"thinking":"Okay, the user"},"done":false}'),
+    ).toBeNull()
+  })
+
+  it('ignores blank lines and malformed JSON', () => {
+    expect(parseProviderSseLine('ollama', '')).toBeNull()
+    expect(parseProviderSseLine('ollama', '   ')).toBeNull()
+    expect(parseProviderSseLine('ollama', '{not json')).toBeNull()
+  })
+
+  it('does not accept an SSE-framed line — that is the other dialects\' format', () => {
+    expect(parseProviderSseLine('ollama', 'data: {"message":{"content":"x"}}')).toBeNull()
   })
 })

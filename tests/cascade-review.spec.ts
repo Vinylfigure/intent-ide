@@ -245,10 +245,19 @@ test.describe('cascade review flow', () => {
     //    change set. (The summary line is asserted as attached rather than
     //    visible — its wrapping button reports a zero-size box to Playwright
     //    even though the text renders.)
+    //
+    //    Matched on the title attribute: the VISIBLE summary was shortened to
+    //    "N annotations · N changes · N audit" to survive truncation, leaving
+    //    the long form ("N applied changes") only in the tooltip. This
+    //    assertion had been failing against the removed wording since that
+    //    change — unnoticed because CI ran no e2e at all. It does now.
     await page.getByRole('button', { name: 'Changes' }).click()
     await expect(page.getByText('Change-set review')).toBeVisible()
-    await expect(page.getByText(/2 applied changes/)).toBeAttached()
-    await expect(page.getByText('approved', { exact: true }).first()).toBeVisible()
+    await expect(page.getByTitle(/2 applied changes/)).toBeAttached()
+    // Matched by role: the status is now the trigger of a per-row status menu,
+    // so its button also contains a chevron and no element's text is exactly
+    // "approved" any more. Another assertion stale since that refactor.
+    await expect(page.getByRole('button', { name: /approved/ }).first()).toBeVisible()
     // (Trimmed: expanding the change set to count per-entry rows — the
     // header button renders zero-height in headless Chromium so the expand
     // click is unreliable; the "2 applied changes" summary plus the mutated

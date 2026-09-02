@@ -16,7 +16,26 @@ export interface LLMConfig {
    * per-provider default.
    */
   embedModel?: string
+  /**
+   * Requested context window in tokens, sent as x-context-tokens and consumed
+   * only by the Ollama dialect as `options.num_ctx`.
+   *
+   * Ollama defaults every model to 4096 regardless of what it can actually
+   * hold (qwen3:8b advertises 40960) and truncates an over-long prompt SILENTLY
+   * — no error, just an answer grounded in half the evidence. Unset means "use
+   * Ollama's default", which is exactly that failure, so local setups should
+   * raise it. Bounded upward because context costs KV-cache memory: 32k on an
+   * 8B model is a few GB, and Ollama itself clamps down to the model's real
+   * limit, so an over-request is safe.
+   */
+  contextTokens?: number
 }
+
+/** Raised over Ollama's 4096 default; still modest enough for an 8B model. */
+export const DEFAULT_OLLAMA_CONTEXT_TOKENS = 16384
+
+/** Offered in the settings UI. Free-text entry is not restricted to these. */
+export const CONTEXT_TOKEN_CHOICES = [4096, 8192, 16384, 32768] as const
 
 export const PROVIDER_MODELS: Record<LLMProvider, { label: string; value: string }[]> = {
   claude: [
@@ -38,6 +57,8 @@ export const PROVIDER_MODELS: Record<LLMProvider, { label: string; value: string
     { label: 'DeepSeek Chat', value: 'deepseek/deepseek-chat' },
   ],
   ollama: [
+    { label: 'qwen3:8b (Recommended)', value: 'qwen3:8b' },
+    { label: 'qwen3', value: 'qwen3' },
     { label: 'llama3.2', value: 'llama3.2' },
     { label: 'llama3.1', value: 'llama3.1' },
     { label: 'mistral', value: 'mistral' },
@@ -51,7 +72,7 @@ export const PROVIDER_DEFAULT_MODEL: Record<LLMProvider, string> = {
   claude: 'claude-sonnet-4-6',
   openai: 'gpt-4o',
   openrouter: 'anthropic/claude-sonnet-4.6',
-  ollama: 'llama3.2',
+  ollama: 'qwen3:8b',
 }
 
 // Providers the current build knows how to talk to. Anything else found in a
@@ -81,6 +102,23 @@ export const PROVIDER_BASE_URLS: Record<LLMProvider, string | undefined> = {
   openrouter: 'https://openrouter.ai/api/v1',
   ollama: 'http://localhost:11434',
 }
+
+/**
+ * Privacy gate for the idle background enrichment pass
+ * (`scheduleDocGraphEnrichment` in docGraph.ts), which embeds block text on a
+ * long idle timer while the user is just reading — no annotation resolved, no
+ * explicit user action.
+ *
+ * - 'off': never enrich.
+ * - 'local-only' (default): enrich only when the configured provider is
+ *   'ollama' — vectors never leave the machine, which is the user's actual
+ *   working setup (nomic-embed-text via /api/embed's Ollama branch).
+ * - 'always': opt in to sending block text to a hosted embeddings API
+ *   (OpenAI) on idle, not just when the user explicitly triggers a cascade.
+ */
+export type GraphEnrichmentSetting = 'off' | 'local-only' | 'always'
+
+const VALID_GRAPH_ENRICHMENT_SETTINGS = new Set<string>(['off', 'local-only', 'always'])
 
 interface SettingsState {
   llmConfig: LLMConfig
@@ -115,13 +153,17 @@ interface SettingsState {
    * never leaves the machine.
    */
   telemetryEnabled: boolean
+  /** See `GraphEnrichmentSetting` above. Default 'local-only'. */
+  graphEnrichment: GraphEnrichmentSetting
   setLLMConfig: (config: Partial<LLMConfig>) => void
+  setContextTokens: (tokens: number) => void
   setWhisperKey: (key: string) => void
   setShowApiKeyModal: (show: boolean) => void
   setEmbeddingsEnabled: (enabled: boolean) => void
   setJudgeEnabled: (enabled: boolean) => void
   setInvariantEntailmentEnabled: (enabled: boolean) => void
   setTelemetryEnabled: (enabled: boolean) => void
+  setGraphEnrichment: (setting: GraphEnrichmentSetting) => void
   hasKeys: () => boolean
 }
 
@@ -133,6 +175,7 @@ export const useSettingsStore = create<SettingsState>()(
         apiKey: '',
         model: 'claude-sonnet-4-6',
         baseUrl: undefined,
+        contextTokens: DEFAULT_OLLAMA_CONTEXT_TOKENS,
       },
       whisperApiKey: '',
       showApiKeyModal: false,
@@ -140,14 +183,18 @@ export const useSettingsStore = create<SettingsState>()(
       judgeEnabled: true,
       invariantEntailmentEnabled: false,
       telemetryEnabled: false,
+      graphEnrichment: 'local-only',
       setLLMConfig: (config) =>
         set((s) => ({ llmConfig: { ...s.llmConfig, ...config } })),
+      setContextTokens: (tokens) =>
+        set((s) => ({ llmConfig: { ...s.llmConfig, contextTokens: tokens } })),
       setWhisperKey: (key) => set({ whisperApiKey: key }),
       setShowApiKeyModal: (show) => set({ showApiKeyModal: show }),
       setEmbeddingsEnabled: (enabled) => set({ embeddingsEnabled: enabled }),
       setJudgeEnabled: (enabled) => set({ judgeEnabled: enabled }),
       setInvariantEntailmentEnabled: (enabled) => set({ invariantEntailmentEnabled: enabled }),
       setTelemetryEnabled: (enabled) => set({ telemetryEnabled: enabled }),
+      setGraphEnrichment: (setting) => set({ graphEnrichment: setting }),
       hasKeys: () => {
         const s = get()
         // Ollama runs locally — no API key needed
@@ -180,6 +227,13 @@ export const useSettingsStore = create<SettingsState>()(
         if (state && typeof (state as { judgeEnabled?: unknown }).judgeEnabled !== 'boolean') {
           state.setJudgeEnabled(true)
         }
+        // Snapshots written before the native-Ollama dialect carry no context
+        // size. Backfilling the raised default (rather than leaving it unset)
+        // is the point of the fix — an existing local user must not stay
+        // silently pinned to Ollama's 4096.
+        if (state && typeof state.llmConfig.contextTokens !== 'number') {
+          state.setContextTokens(DEFAULT_OLLAMA_CONTEXT_TOKENS)
+        }
         // Privacy-sensitive: anything other than an explicit stored `true`
         // resolves to OFF. Same rule for the entailment lane, which is the
         // only doc-CI path that spends money and sends document text.
@@ -192,6 +246,18 @@ export const useSettingsStore = create<SettingsState>()(
             'boolean'
         ) {
           state.setInvariantEntailmentEnabled(false)
+        }
+        // Snapshots written before this field existed (or carrying a retired
+        // value) backfill to the default 'local-only' — never silently
+        // upgraded to 'always' (which would newly opt a snapshot into sending
+        // block text to a hosted API on idle).
+        if (
+          state &&
+          !VALID_GRAPH_ENRICHMENT_SETTINGS.has(
+            (state as { graphEnrichment?: unknown }).graphEnrichment as string,
+          )
+        ) {
+          state.setGraphEnrichment('local-only')
         }
       },
     }

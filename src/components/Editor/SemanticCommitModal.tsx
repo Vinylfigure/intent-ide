@@ -173,7 +173,7 @@ export function SemanticCommitModal({
                         className={`px-2 py-0.5 text-xs font-medium rounded border transition-colors ${
                           !isRejected
                             ? 'border-green-400 bg-green-50 text-green-700'
-                            : 'border-border text-muted hover:text-ink'
+                            : 'border-border text-muted-foreground hover:text-ink'
                         }`}
                       >
                         Accept
@@ -185,7 +185,7 @@ export function SemanticCommitModal({
                         className={`px-2 py-0.5 text-xs font-medium rounded border transition-colors ${
                           isRejected
                             ? 'border-red-400 bg-red-50 text-red-700'
-                            : 'border-border text-muted hover:text-ink'
+                            : 'border-border text-muted-foreground hover:text-ink'
                         }`}
                       >
                         Reject

@@ -167,3 +167,58 @@ describe('onRehydrateStorage — provider migrations', () => {
     expect(useSettingsStore.getState().llmConfig.model).toBe('claude-sonnet-4-6')
   })
 })
+
+// ── graphEnrichment backfill (onRehydrateStorage) ─────────────────────────────
+//
+// Mirrors the embeddingsEnabled/judgeEnabled/telemetryEnabled backfill guards:
+// a snapshot written before this field existed (or carrying a retired value)
+// must land on the safe default, never silently upgrade to a setting that
+// newly sends block text off-machine.
+
+async function loadStoreWithPersistedTop(top: Record<string, unknown>) {
+  const backing = new Map<string, string>([
+    [
+      'intent-ide-settings',
+      JSON.stringify({
+        state: {
+          llmConfig: { provider: 'claude', apiKey: 'k', model: 'claude-sonnet-4-6' },
+          whisperApiKey: '',
+          embeddingsEnabled: true,
+          judgeEnabled: true,
+          telemetryEnabled: false,
+          ...top,
+        },
+        version: 0,
+      }),
+    ],
+  ])
+  vi.stubGlobal('localStorage', {
+    getItem: (k: string) => backing.get(k) ?? null,
+    setItem: (k: string, v: string) => void backing.set(k, v),
+    removeItem: (k: string) => void backing.delete(k),
+  })
+  vi.resetModules()
+  return import('@/stores/settingsStore')
+}
+
+describe('onRehydrateStorage — graphEnrichment backfill', () => {
+  it('a snapshot written before this field existed backfills to the default local-only', async () => {
+    const { useSettingsStore } = await loadStoreWithPersistedTop({})
+    expect(useSettingsStore.getState().graphEnrichment).toBe('local-only')
+  })
+
+  it('a retired/garbage persisted value resets to local-only, never silently to "always"', async () => {
+    const { useSettingsStore } = await loadStoreWithPersistedTop({ graphEnrichment: 'sometimes' })
+    expect(useSettingsStore.getState().graphEnrichment).toBe('local-only')
+  })
+
+  it('a valid persisted value survives rehydrate untouched', async () => {
+    const { useSettingsStore: offStore } = await loadStoreWithPersistedTop({ graphEnrichment: 'off' })
+    expect(offStore.getState().graphEnrichment).toBe('off')
+
+    const { useSettingsStore: alwaysStore } = await loadStoreWithPersistedTop({
+      graphEnrichment: 'always',
+    })
+    expect(alwaysStore.getState().graphEnrichment).toBe('always')
+  })
+})

@@ -26,7 +26,18 @@ RULES:
 4. Treat every thought as a seed to investigate, not a dead note. Surface implications, contradictions, or connections the reviewer may not have noticed.
 5. Flag cross-references. If the selected text relates to content the reviewer has already annotated or corrected, mention it.
 6. Prioritize: factual errors > logical inconsistencies > structural issues > style preferences.
-7. When suggesting edits, provide the exact replacement text.`
+7. When suggesting edits, provide the exact replacement text.
+8. Ground every claim, and separate the two kinds. Say which parts of your
+   answer come from the document in front of you and which come from your own
+   knowledge, and label the second kind as such. A confident answer the
+   document does not support is worse than a short one that says so.
+   (Measured, not assumed: asking a small local model to DECIDE for itself
+   whether a term is defined made it worse — it invented a definition from the
+   surrounding words. So when that fact is known it is stated for you in the
+   CONTEXT block instead of left to your judgement. Obey that line when present.)
+9. Never invent a cross-reference. Cite only sections and passages that appear
+   in the context you were given — if you were told nothing else in the
+   document bears on this, do not gesture at a section that might.`
 
 export const TYPE_PROMPTS: Record<string, string> = {
   ask: `The reviewer has a QUESTION about this text. Answer like a reviewer's margin note — concise definition or clarification. If the answer reveals a problem (contradiction, missing context, incorrect claim), flag it. 1-3 sentences.`,

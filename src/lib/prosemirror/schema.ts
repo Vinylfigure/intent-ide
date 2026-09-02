@@ -1,6 +1,7 @@
 import { Schema, MarkSpec, NodeSpec, DOMOutputSpec, Node as PMNode } from 'prosemirror-model'
 import { nodes as basicNodes, marks as basicMarks } from 'prosemirror-schema-basic'
 import { addListNodes } from 'prosemirror-schema-list'
+import { tableNodes } from 'prosemirror-tables'
 import OrderedMap from 'orderedmap'
 
 /** Block-level node types that carry a persistent `blockId` attr. */
@@ -76,7 +77,32 @@ const nodesMap = basicNodes instanceof OrderedMap
 
 const listNodes = addListNodes(nodesMap, 'paragraph block*', 'block')
 
-let nodesWithBlockIds = listNodes
+// Keep table structure semantic while leaving block identity on the ordinary
+// paragraphs inside cells. That makes each cell addressable by the existing
+// annotation/doc-graph machinery without double-counting table wrappers.
+const tableNodeSpecs = tableNodes({
+  tableGroup: 'block',
+  cellContent: 'block+',
+  cellAttributes: {
+    align: {
+      default: null,
+      getFromDOM(dom) {
+        const value = (dom as HTMLElement).getAttribute('data-align')
+          ?? (dom as HTMLElement).style.textAlign
+          ?? (dom as HTMLElement).getAttribute('align')
+        return value === 'left' || value === 'center' || value === 'right' ? value : null
+      },
+      setDOMAttr(value, attrs) {
+        if (value === 'left' || value === 'center' || value === 'right') {
+          attrs['data-align'] = value
+          attrs.style = `text-align: ${value}`
+        }
+      },
+    },
+  },
+})
+
+let nodesWithBlockIds = listNodes.append(tableNodeSpecs)
 for (const name of BLOCK_ID_NODE_NAMES) {
   const spec = nodesWithBlockIds.get(name)
   if (spec) nodesWithBlockIds = nodesWithBlockIds.update(name, withBlockId(spec))

@@ -81,6 +81,21 @@ export interface Annotation {
   createdAt: number
   resolvedAt: number | null
   verbosity: Verbosity
+  /** For a sub-chat spun off an AI answer: the exact quoted span that produced it. The document `anchor` stays the parent's positions so gutter/map/cascade keep working; this records what the branch is actually about. */
+  sourceQuote?: string
+  /**
+   * View-level "finished, get it out of my way" flag — NOT part of the
+   * status lifecycle (see `lifecycle.ts`). Only ever true for a terminal
+   * status (`applied`/`dismissed`); a `resolved` annotation still has
+   * actions the user hasn't taken and must never be hidden. Set via
+   * `useAnnotationStore.setHidden` (which enforces that guard), filtered
+   * out of `AnnotationPanel`'s list/count, and restorable there via the
+   * "Show N resolved" toggle. `undefined` on any annotation persisted
+   * before this field existed and must behave identically to `false`
+   * everywhere it's read — never migrated/backfilled on rehydrate, or a
+   * user's existing resolved work would vanish on upgrade.
+   */
+  hidden?: boolean
 }
 
 export interface Resolution {

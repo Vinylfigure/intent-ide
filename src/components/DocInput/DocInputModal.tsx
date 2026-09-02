@@ -27,6 +27,9 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
   const [error, setError] = useState<string | null>(null)
   const view = useEditorStore((s) => s.view)
   const llmConfig = useSettingsStore((s) => s.llmConfig)
+  // Ollama runs keyless by design, so an empty apiKey is not "unconfigured".
+  // Ask the store, which knows that (settingsStore.hasKeys).
+  const hasKeys = useSettingsStore((s) => s.hasKeys())
   const collections = useDocumentStore((s) => s.collections)
 
   const loadDoc = (docJson: any, fallbackTitle: string) => {
@@ -54,10 +57,12 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
 
     const doc = schema.nodeFromJSON(docJson)
     const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content)
-    // Loading a document is not an edit: keeping it out of history stops
-    // Cmd-Z from resurrecting the previous document's content and then
-    // autosaving it under the new document's id (mirrors EditorShell's
-    // document-switch guard).
+    // Loading a document is not an edit of the one on screen. Without this,
+    // the replacement enters the undo stack and Cmd-Z resurrects the PREVIOUS
+    // document's content inside the new document, which autosave then persists
+    // under the new document's id — confirmed reproducible, and durable once
+    // saved. EditorShell's document-SWITCH path already carries this exact
+    // guard for the same reason; the creation path was missing it.
     tr.setMeta('addToHistory', false)
     view.dispatch(tr)
 
@@ -93,7 +98,7 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
 
   const handleGenerate = async () => {
     if (!generatePrompt.trim()) return
-    if (!llmConfig.apiKey) {
+    if (!hasKeys) {
       useSettingsStore.getState().setShowApiKeyModal(true)
       return
     }
@@ -134,7 +139,7 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <h2 className="font-serif text-xl">Load Document</h2>
-          <button onClick={onClose} aria-label="Close" title="Close" className="text-muted hover:text-ink text-xl leading-none">&times;</button>
+          <button onClick={onClose} aria-label="Close" title="Close" className="text-muted-foreground hover:text-ink text-xl leading-none">&times;</button>
         </div>
 
         {/* Mode tabs */}
@@ -146,7 +151,7 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
               className={`flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${
                 mode === m
                   ? 'text-accent border-b-2 border-accent'
-                  : 'text-muted hover:text-ink'
+                  : 'text-muted-foreground hover:text-ink'
               }`}
             >
               {m === 'blank' ? 'Blank' : m === 'paste' ? 'Paste' : m === 'generate' ? 'Generate' : 'Import File'}
@@ -158,7 +163,7 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
         <div className="p-6">
           <div className="grid gap-4 md:grid-cols-2 mb-5">
             <label className="space-y-1">
-              <span className="text-xs font-mono uppercase tracking-wider text-muted">Title</span>
+              <span className="text-xs font-mono uppercase tracking-wider text-muted-foreground">Title</span>
               <input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -167,7 +172,7 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs font-mono uppercase tracking-wider text-muted">Collection</span>
+              <span className="text-xs font-mono uppercase tracking-wider text-muted-foreground">Collection</span>
               <select
                 value={collectionId}
                 onChange={(e) => setCollectionId(e.target.value)}
@@ -188,7 +193,7 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
               <div className="h-40 border border-dashed border-border rounded-lg flex items-center justify-center bg-warm/30 text-center px-8">
                 <div>
                   <p className="text-sm text-ink">Create a fresh document.</p>
-                  <p className="text-xs text-muted mt-1">Use a title now and start writing from a clean page.</p>
+                  <p className="text-xs text-muted-foreground mt-1">Use a title now and start writing from a clean page.</p>
                 </div>
               </div>
               <button
@@ -234,8 +239,8 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
               >
                 {isGenerating ? 'Generating...' : 'Generate Document'}
               </button>
-              {!llmConfig.apiKey && (
-                <p className="mt-2 text-xs text-muted">Set an API key first to generate documents.</p>
+              {!hasKeys && (
+                <p className="mt-2 text-xs text-muted-foreground">Set an API key first to generate documents.</p>
               )}
             </div>
           )}
@@ -243,13 +248,13 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
           {mode === 'import' && (
             <div>
               <label className="flex flex-col items-center justify-center h-40 border-2 border-dashed border-border rounded-lg cursor-pointer hover:border-accent/50 hover:bg-warm/50 transition-colors">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted mb-2">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-foreground mb-2">
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                   <polyline points="17 8 12 3 7 8" />
                   <line x1="12" y1="3" x2="12" y2="15" />
                 </svg>
-                <span className="text-sm text-muted">Click to upload or drag a file</span>
-                <span className="text-xs text-muted/60 mt-1">.md, .txt, .html</span>
+                <span className="text-sm text-muted-foreground">Click to upload or drag a file</span>
+                <span className="text-xs text-muted-foreground mt-1">.md, .txt, .html</span>
                 <input
                   type="file"
                   accept=".md,.txt,.markdown,.text,.html,.htm"

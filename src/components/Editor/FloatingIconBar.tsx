@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { useEditorStore } from '@/stores/editorStore'
 import { captureAndResolveInBackground } from '@/lib/voice/pipeline'
 import { AnnotationComposer } from '@/components/Annotations/AnnotationComposer'
+import { peekRelatedCount } from '@/lib/ai/intentContext'
 
 const BAR_HEIGHT = 48
 const GAP = 8
@@ -14,6 +15,7 @@ const GAP = 8
  */
 export function FloatingIconBar() {
   const contextMenu = useEditorStore((s) => s.contextMenu)
+  const view = useEditorStore((s) => s.view)
   const clearContextMenu = useEditorStore((s) => s.clearContextMenu)
   const barRef = useRef<HTMLDivElement>(null)
 
@@ -47,6 +49,12 @@ export function FloatingIconBar() {
 
   if (!contextMenu) return null
 
+  // The selection already knows its own text and shape — the composer was
+  // simply never told. One synchronous graph peek adds "is there anything else
+  // in the document about this", which is the difference between a generic
+  // offer and one worth clicking.
+  const relatedCount = view ? peekRelatedCount(view.state, contextMenu.from) : 0
+
   // Position above selection, clamped to viewport
   const barWidth = 360
   const left = Math.max(8, Math.min(contextMenu.x - barWidth / 2, window.innerWidth - barWidth - 8))
@@ -61,6 +69,13 @@ export function FloatingIconBar() {
       <AnnotationComposer
         mode="selection"
         className="w-[360px]"
+        selectionAnchor={{
+          from: contextMenu.from,
+          to: contextMenu.to,
+          text: contextMenu.text,
+          scope: contextMenu.scope,
+        }}
+        offerContext={{ relatedCount }}
         onSubmit={({ text, suggestedIntent, skipClassify }) => {
           captureAndResolveInBackground(suggestedIntent ?? 'ask', text, contextMenu.from, contextMenu.to, {
             suggestedType: suggestedIntent,

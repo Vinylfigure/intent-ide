@@ -84,7 +84,7 @@ export function FollowUpInput({ annotation, onSend, disabled }: FollowUpInputPro
           handleSend()
         }}
         disabled={!text.trim() || disabled}
-        className="p-2 rounded-lg text-muted hover:text-ink hover:bg-warm transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        className="p-2 rounded-lg text-muted-foreground hover:text-ink hover:bg-warm transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
         aria-label="Send follow-up"
         title="Send"
       >
@@ -103,7 +103,7 @@ export function FollowUpInput({ annotation, onSend, disabled }: FollowUpInputPro
         className={`p-2 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
           isRecording
             ? 'text-red-500 bg-red-50 hover:bg-red-100'
-            : 'text-muted hover:text-ink hover:bg-warm'
+            : 'text-muted-foreground hover:text-ink hover:bg-warm'
         }`}
         aria-label={isRecording ? 'Stop recording' : isTranscribing ? 'Transcribing' : 'Voice input'}
         aria-pressed={isRecording}

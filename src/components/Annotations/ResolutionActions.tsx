@@ -27,6 +27,10 @@ import {
   type ModalDecisionBuffer,
 } from '@/lib/telemetry/modalDecisionBuffer'
 import { showAffectedMode } from '@/lib/annotations/showAffected'
+import { previewBlastRadiusDetail } from '@/lib/annotations/blastRadius'
+import { judgeRelatedPassages, type JudgeSeed, type PassageVerdict } from '@/lib/ai/judgeRelatedPassages'
+import { findBlockById } from '@/lib/prosemirror/blockIds'
+import { pulseBlock, scrollToPos } from '@/lib/prosemirror/scrollToPos'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { refreshAnchorAfterApply, refreshedAnchorForMultiRegionApply } from '@/lib/annotations/anchoring'
 import { createCommit } from '@/lib/history/commits'
@@ -62,6 +66,13 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
   const [showTweakInput, setShowTweakInput] = useState(false)
   const [tweakText, setTweakText] = useState('')
   const [isSimplifying, setIsSimplifying] = useState(false)
+  // Opt-in LLM second opinion on the blast-radius preview (never on the
+  // mouse-up/selection path — only when the reader clicks "Check these").
+  // Keyed by blockId, not array index, so a verdict never gets misattributed
+  // if the underlying passage list changes shape between renders.
+  const [isJudgingPassages, setIsJudgingPassages] = useState(false)
+  const [passageVerdicts, setPassageVerdicts] = useState<Map<string, PassageVerdict> | null>(null)
+  const judgeEnabled = useSettingsStore((s) => s.judgeEnabled)
   // Plugin statuses at modal-open time — cancel restores these so an
   // abandoned review session never leaks its toggles into the inline surfaces.
   const commitSnapshotRef = useRef<CommitStatusSnapshot | null>(null)
@@ -587,6 +598,18 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         // call (below) twice for one user action.
         if (useAnnotationStore.getState().getById(annotation.id)?.status === 'dismissed') break
         updateAnnotation(annotation.id, { status: 'dismissed' })
+        // Dismiss — including "Got it" and "Keep it" — is the reader saying
+        // they are finished with this thread, so the card gets out of the way.
+        // Nothing is destroyed: it stays in the store and in the audit trail,
+        // and "Show N resolved" brings it straight back.
+        //
+        // Applying deliberately does NOT hide. The reader has just changed
+        // their document and wants to see that it registered — the "Applied"
+        // badge, the cascade list, the change entry. Hiding there made the
+        // card vanish mid-action with no acknowledgement, which
+        // cascade-review.spec.ts caught by asserting that badge. They can
+        // collapse or dismiss it afterwards, on their own timing.
+        useAnnotationStore.getState().setHidden(annotation.id, true)
         if (changeSetId) {
           useChangesStore.getState().updateChangeSetStatus(changeSetId, 'rejected')
         }
@@ -715,6 +738,58 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
     }
   }
 
+  // Pre-decision blast-radius preview: what else the doc graph says this
+  // annotation's own anchor touches, shown read-only ABOVE the action
+  // controls so the human sees it before committing rather than after (the
+  // apply handler's `runCascadeCheck` toast below stays the post-apply check
+  // — this doesn't replace it).
+  //
+  // Three outcomes, not two. A cold graph must render NOTHING: "nothing
+  // depends on this" is a claim about the document, and making it on the
+  // strength of an unbuilt index would be false rather than cautious.
+  const blast = view
+    ? previewBlastRadiusDetail(view.state, annotation.anchor.from)
+    : { passages: [], suppressed: 0, graphUnavailable: true }
+  const blastRadius = blast.passages
+
+  /** Send the reader to a related passage and mark where they landed. */
+  const goToPassage = (blockId: string) => {
+    const currentView = useEditorStore.getState().view
+    if (!currentView) return
+    const found = findBlockById(currentView.state.doc, blockId)
+    if (!found) return
+    scrollToPos(currentView, found.pos)
+    pulseBlock(currentView, blockId)
+  }
+
+  // Opt-in second opinion: the heuristic list is the ONLY thing ever shown
+  // until the reader explicitly clicks. On failure (throw, network, zero
+  // verdicts) every passage is left exactly as the heuristic rendered it —
+  // a failed second opinion must never destroy the first one.
+  const checkRelatedPassages = async () => {
+    if (isJudgingPassages || blastRadius.length === 0) return
+    setIsJudgingPassages(true)
+    try {
+      const seed: JudgeSeed = { text: annotation.anchor.text, headingPath: [] }
+      const config = useSettingsStore.getState().llmConfig
+      const verdicts = await judgeRelatedPassages(seed, blastRadius, config)
+      const byBlock = new Map<string, PassageVerdict>()
+      blastRadius.forEach((passage, i) => {
+        const v = verdicts.get(i)
+        if (v) byBlock.set(passage.blockId, v)
+      })
+      setPassageVerdicts(byBlock)
+    } catch (err) {
+      console.error('Related-passage judge failed:', err)
+      useToastStore.getState().addToast(
+        'Checking these passages failed — the original list is unchanged.',
+        'error',
+      )
+    } finally {
+      setIsJudgingPassages(false)
+    }
+  }
+
   return (
     <>
     {showDiffModal && commitChanges.length > 0 && (
@@ -762,6 +837,84 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         isHighRisk={!!annotation.resolution?.usedMADS}
       />
     )}
+    {blastRadius.length > 0 && (
+      <div
+        aria-label={`Blast radius preview (${blastRadius.length})`}
+        className="mt-3 mx-1 p-3 border border-border rounded-xl bg-warm/40"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[10px] font-mono font-medium text-muted-foreground">
+            Touches {blastRadius.length} other passage{blastRadius.length !== 1 ? 's' : ''}
+          </p>
+          {judgeEnabled && (
+            <button
+              type="button"
+              onClick={checkRelatedPassages}
+              disabled={isJudgingPassages}
+              aria-busy={isJudgingPassages}
+              className="shrink-0 px-2 py-1 text-[10px] font-mono font-medium rounded-md border border-border/60 bg-warm/60 text-muted-foreground transition-colors hover:bg-warm hover:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isJudgingPassages ? 'Checking…' : 'Check these'}
+            </button>
+          )}
+        </div>
+        <div className="mt-1.5 flex flex-col gap-1.5">
+          {blastRadius.map((passage) => {
+            const verdict = passageVerdicts?.get(passage.blockId) ?? null
+            // Never removed — struck through / dimmed and labelled with the
+            // judge's reason. The reader asked a question and deserves to
+            // see the answer, not have rows silently vanish.
+            const rejected = verdict !== null && !verdict.related
+            return (
+              <button
+                key={passage.blockId}
+                type="button"
+                onClick={() => goToPassage(passage.blockId)}
+                // The machine provenance stays one hover away — `why` is the
+                // human sentence, `whyPath` is what an auditor checks it against.
+                title={passage.whyPath}
+                aria-label={`Go to related passage${
+                  passage.headingPath.length > 0 ? ` in ${passage.headingPath.join(' › ')}` : ''
+                }: ${passage.text}${verdict ? ` — second opinion: ${verdict.related ? 'related' : 'not related'}, ${verdict.reason}` : ''}`}
+                className={`w-full text-left rounded-lg border border-border/60 bg-warm/60 px-2.5 py-1.5 transition-colors hover:bg-warm hover:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                  rejected ? 'opacity-50' : ''
+                }`}
+              >
+                <p className="text-[10px] font-mono text-muted-foreground">
+                  {passage.why}
+                  {passage.headingPath.length > 0 && ` · ${passage.headingPath.join(' › ')}`}
+                </p>
+                <p className={`text-xs text-muted-foreground leading-snug ${rejected ? 'line-through' : ''}`}>
+                  {passage.text}
+                </p>
+                {verdict && (
+                  <p
+                    className={`mt-1 text-[10px] font-mono ${
+                      verdict.related ? 'text-muted-foreground' : 'text-muted-foreground/80'
+                    }`}
+                  >
+                    {verdict.related ? 'Confirmed related: ' : 'Judge says not related: '}
+                    {verdict.reason}
+                  </p>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    )}
+    {blastRadius.length === 0 && !blast.graphUnavailable && blast.suppressed > 0 && (
+      // Said plainly rather than left blank. A blank card and a card that has
+      // checked are indistinguishable to a reader, and the reader is the one
+      // deciding whether to apply the edit.
+      <p
+        aria-label="Blast radius preview (none)"
+        className="mt-3 mx-1 px-3 py-2 text-[10px] font-mono text-muted-foreground border border-dashed border-border/60 rounded-xl"
+      >
+        Nothing else in this document depends on this passage
+        {` (${blast.suppressed} nearby passage${blast.suppressed === 1 ? '' : 's'} checked).`}
+      </p>
+    )}
     <div className="flex flex-wrap gap-2 mt-3">
       {annotation.resolution.actions.map((action) => {
         const isApplyAction = action.kind === 'apply'
@@ -781,7 +934,7 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
                 : isApplyAction
                 ? 'bg-annotation-correction text-white hover:bg-annotation-correction/80'
                 : action.kind === 'dismiss'
-                ? 'bg-warm text-muted hover:bg-border'
+                ? 'bg-warm text-muted-foreground hover:bg-border'
                 : action.kind === 'deepen'
                 ? 'bg-annotation-question/10 text-annotation-question hover:bg-annotation-question/20'
                 : 'bg-warm text-ink hover:bg-border'
@@ -847,7 +1000,7 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
             }
           }}
           disabled={isSimplifying}
-          className="px-3 py-1.5 text-xs font-medium rounded bg-warm text-muted hover:bg-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-3 py-1.5 text-xs font-medium rounded bg-warm text-muted-foreground hover:bg-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isSimplifying ? 'Simplifying…' : 'Simplify thread'}
         </button>

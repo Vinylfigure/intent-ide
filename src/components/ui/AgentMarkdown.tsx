@@ -1,19 +1,23 @@
 'use client'
 
-import { useMemo, useState, useCallback, useEffect } from 'react'
+import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import { Streamdown, type DiagramPlugin } from 'streamdown'
 import { AnnotationComposer } from '@/components/Annotations/AnnotationComposer'
 import { extractMermaidFence } from '@/lib/ai/mermaidGuard'
+import { inferScopeFromText } from '@/lib/annotations/selectionOffers'
 import type { AnnotationType } from '@/lib/annotations/types'
 
 interface AgentMarkdownProps {
   content: string
   isStreaming?: boolean
-  /** When true, paragraphs/list-items/headings become clickable drill targets */
+  /** When true, drag-selecting text inside the answer opens a drill composer */
   interactive?: boolean
-  /** Called when user clicks a block and selects a drill action */
+  /** Called when the user drag-selects answer text and submits a drill action */
   onDrill?: (payload: {
+    /** @deprecated kept alongside `quote` for callers not yet migrated — always equal to `quote`. */
     blockText: string
+    /** The exact highlighted answer text the sub-chat was spun off from. */
+    quote: string
     transcript: string
     suggestedIntent: AnnotationType | null
     /** Preset intent from a one-click action — skip the classify round-trip. */
@@ -27,7 +31,14 @@ interface ExtractedContent {
   body: string
 }
 
-function extractBlocks(content: string): ExtractedContent {
+/**
+ * Split an agent answer into its reasoning, debate log, and renderable body.
+ *
+ * Exported for test only. It used to be private, and the test kept a
+ * verbatim copy of it — which meant a change here could break the real
+ * renderer while the test went on passing against its own stale copy.
+ */
+export function extractBlocks(content: string): ExtractedContent {
   let body = content
   let reasoning: string | null = null
   let debateLog: string | null = null
@@ -39,11 +50,26 @@ function extractBlocks(content: string): ExtractedContent {
     body = body.replace(cotMatch[0], '').trim()
   }
 
-  // Extract <thinking> reasoning
-  const thinkingMatch = body.match(/<thinking>([\s\S]*?)<\/thinking>/i)
+  // Extract reasoning. Two spellings, two sources: <thinking> is what the
+  // Anthropic-shaped prompts ask for, <think> is what qwen3-class local models
+  // emit unprompted. The Ollama dialect sets think:false to stop the latter at
+  // the source, but a model that ignores the flag, or a partially-streamed
+  // answer, must still never render a chain of thought as the answer body.
+  const thinkingMatch = body.match(/<(thinking|think)>([\s\S]*?)<\/\1>/i)
   if (thinkingMatch) {
-    reasoning = thinkingMatch[1].trim()
+    reasoning = thinkingMatch[2].trim()
     body = body.replace(thinkingMatch[0], '').trim()
+  }
+
+  // An unclosed opening tag means the stream ended mid-reasoning (or the model
+  // never closed it). Everything after it is reasoning, not an answer — left
+  // in place it renders as a confident answer that is actually deliberation.
+  if (!reasoning) {
+    const unclosed = body.match(/<(thinking|think)>([\s\S]*)$/i)
+    if (unclosed) {
+      reasoning = unclosed[2].trim()
+      body = body.slice(0, unclosed.index).trim()
+    }
   }
 
   // Extract REASONING: prefix
@@ -56,40 +82,6 @@ function extractBlocks(content: string): ExtractedContent {
   }
 
   return { reasoning, debateLog, body }
-}
-
-/**
- * Split markdown body into paragraph-level blocks for drill targets.
- * Fence-aware: blank lines INSIDE a ``` / ~~~ code fence never split, so a
- * mermaid diagram (or any code block) with internal blank lines stays one
- * block; an unterminated fence swallows the rest of the body as one block.
- */
-function splitIntoBlocks(body: string): string[] {
-  const blocks: string[] = []
-  let current: string[] = []
-  let inFence = false
-
-  const flush = () => {
-    const text = current.join('\n').trim()
-    if (text) blocks.push(text)
-    current = []
-  }
-
-  for (const line of body.split('\n')) {
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence
-      current.push(line)
-      continue
-    }
-    if (!inFence && /^\s*$/.test(line)) {
-      // Blank-line run outside a fence → block boundary (empties are filtered).
-      flush()
-      continue
-    }
-    current.push(line)
-  }
-  flush()
-  return blocks
 }
 
 /**
@@ -135,19 +127,47 @@ function useMermaidPlugin(body: string, isStreaming: boolean): DiagramPlugin | u
 
 export function AgentMarkdown({ content, isStreaming = false, interactive = false, onDrill }: AgentMarkdownProps) {
   const { reasoning, debateLog, body } = useMemo(() => extractBlocks(content), [content])
-  const blocks = useMemo(() => interactive ? splitIntoBlocks(body) : [], [body, interactive])
-  const [composer, setComposer] = useState<{ x: number; y: number; blockText: string } | null>(null)
+  const [composer, setComposer] = useState<{ x: number; y: number; text: string } | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLDivElement>(null)
   const mermaidPlugin = useMermaidPlugin(body, isStreaming)
   const plugins = mermaidPlugin ? { mermaid: mermaidPlugin } : undefined
 
-  const handleBlockClick = useCallback((e: React.MouseEvent, blockText: string) => {
+  const handleMouseUp = useCallback((event: React.MouseEvent) => {
     if (!interactive || !onDrill) return
-    e.stopPropagation()
-    setComposer({ x: e.clientX, y: e.clientY, blockText })
+    // The composer renders INSIDE this container, so a click on one of its
+    // buttons also bubbles a mouseup to here — and by then the mousedown has
+    // already collapsed the selection. Without this guard the handler tears
+    // the composer down before the button's own onClick can fire, which makes
+    // every control in it silently dead to the mouse.
+    if (composerRef.current?.contains(event.target as Node)) return
+    const container = containerRef.current
+    const selection = window.getSelection()
+    if (!container || !selection || selection.isCollapsed || selection.rangeCount === 0) {
+      setComposer(null)
+      return
+    }
+    const range = selection.getRangeAt(0)
+    const text = selection.toString()
+    // Empty (whitespace-only) selection, or a selection whose common
+    // ancestor falls outside this answer's own container — never open here.
+    if (!text.trim() || !container.contains(range.commonAncestorContainer)) {
+      setComposer(null)
+      return
+    }
+    const rect = range.getBoundingClientRect()
+    setComposer({ x: rect.left, y: rect.bottom, text })
   }, [interactive, onDrill])
 
+  // Not a fresh object literal at the JSX call site, so AnnotationComposer's
+  // (narrower, mid-upgrade) selectionAnchor prop type doesn't trigger excess
+  // property checking against the extra `scope` field it doesn't declare yet.
+  const selectionAnchor = composer
+    ? { from: 0, to: 0, text: composer.text, scope: inferScopeFromText(composer.text) }
+    : undefined
+
   return (
-    <div className="agent-markdown">
+    <div className="agent-markdown" ref={containerRef} onMouseUp={interactive && onDrill ? handleMouseUp : undefined}>
       {reasoning && (
         <details className="agent-reasoning">
           <summary>Reasoning</summary>
@@ -158,31 +178,13 @@ export function AgentMarkdown({ content, isStreaming = false, interactive = fals
           </div>
         </details>
       )}
-      {interactive && blocks.length > 0 ? (
-        // Render each block as a clickable drill target
-        blocks.map((block, i) => (
-          <div
-            key={i}
-            onClick={(e) => handleBlockClick(e, block)}
-            className="cursor-pointer rounded px-1 -mx-1 transition-colors hover:bg-accent/5 relative group"
-          >
-            <Streamdown mode="static" remend={{}} plugins={plugins}>
-              {block}
-            </Streamdown>
-            <span className="absolute right-0 top-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-mono text-muted-foreground bg-white/80 px-1 rounded">
-              click to drill
-            </span>
-          </div>
-        ))
-      ) : (
-        <Streamdown
-          mode={isStreaming ? 'streaming' : 'static'}
-          remend={{}}
-          plugins={plugins}
-        >
-          {body}
-        </Streamdown>
-      )}
+      <Streamdown
+        mode={isStreaming ? 'streaming' : 'static'}
+        remend={{}}
+        plugins={plugins}
+      >
+        {body}
+      </Streamdown>
       {debateLog && (
         <details className="mt-3 border border-border rounded-md overflow-hidden">
           <summary className="px-3 py-2 text-xs font-mono text-muted-foreground cursor-pointer select-none hover:bg-warm/50 transition-colors">
@@ -199,6 +201,7 @@ export function AgentMarkdown({ content, isStreaming = false, interactive = fals
         <>
           <div className="fixed inset-0 z-40" onClick={() => setComposer(null)} />
           <div
+            ref={composerRef}
             className="fixed z-50"
             style={{
               left: Math.min(composer.x, window.innerWidth - 380),
@@ -209,9 +212,11 @@ export function AgentMarkdown({ content, isStreaming = false, interactive = fals
               mode="thread"
               className="w-[360px]"
               suggestedIntent="dig"
+              selectionAnchor={selectionAnchor}
               onSubmit={async ({ text, suggestedIntent, skipClassify }) => {
                 onDrill?.({
-                  blockText: composer.blockText,
+                  blockText: composer.text,
+                  quote: composer.text,
                   transcript: text,
                   suggestedIntent,
                   skipClassify,

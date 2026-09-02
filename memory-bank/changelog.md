@@ -5,6 +5,120 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-09-02] Meaning-based edges while reading, an opt-in judge, and e2e in CI — branch `feat/reading-quality` → PR #146
+
+Closes out the reading-quality branch (6th commit, `6ecad36`). Three strands: the background rebuild is deliberately deterministic-only (document text must never leave the machine as a side effect of typing), and the LLM/embedding passes only ever ran from `proposeCascadeEdits` — i.e. only when an `edit`-type annotation resolved — so a reader never saw a semantic connection while just reading.
+
+### Added
+- `scheduleDocGraphEnrichment`: a second, 12-second idle timer running the embedding pass only, gated by a new `graphEnrichment` setting defaulting to `local-only` (enriches only when the provider is Ollama, so vectors never leave the machine). StatusBar gains `graph: linking meaning…` / `graph: rules + meaning`.
+- `judgeRelatedPassages`: an opt-in second opinion reusing `relevanceJudge.ts`'s batched verdict-tool shape and trust boundary verbatim (zero valid verdicts throws rather than reading as an all-deny). Wired to an explicit "Check these" button, never the mouse-up path. Rejected passages are struck through and labelled with the judge's reason, not removed.
+- `tests/local-model.spec.ts` (LIVE_LOCAL=1, self-skipping): drives real Ollama, covering context-window arrival (`/api/ps` reads 16384, not 4096), no reasoning leakage streamed or non-streamed, tool calls surviving Ollama's object-valued `arguments`, and the computed "does not define" fact. All 5 pass against qwen3:8b.
+- CI now runs e2e in its own job — it had been running none, which is why two `cascade-review.spec.ts` assertions had been failing against long-removed UI wording without anyone knowing.
+
+### Fixed
+- Per-model default + self-calibrating in-document floor (mean + 1.5σ, above 200 pairs) for `embedEdges`'s `SIMILARITY_THRESHOLD`, previously one constant documented in-file as uncalibrated for `nomic-embed-text` (no task prefixes, different cosine range than `text-embedding-3-small`). Embedding edges now carry `kind: 'similarity'` and a cosine-derived weight.
+- The scroll-to-passage highlight never appeared: ProseMirror re-renders the `[data-block-id]` node view on the read-line plugin's own scroll transactions and stripped an added class within a frame (confirmed via MutationObserver — applied once, immediately removed). Now an overlay in the scroll container, outside `.ProseMirror`.
+- Two of this branch's own new e2e assertions were wrong in a way that would have passed for the wrong reason: `/review item/i` also matches "0 review items"; the blast-radius card's first button is "Check these", not a passage. Both re-addressed by role/exact text.
+
+### Verification
+typecheck, lint, 1412 unit tests, build, 12 e2e, and 5 live-model tests against a real qwen3:8b — all green.
+
+## [2026-09-02] Score related passages, and say when nothing is related — branch `feat/reading-quality`
+
+Reported symptom: a passage about "Jira + Splunk access-grant reconciliation" surfaced two unrelated passages, labelled `references ("Sections 8")` and `references ("Sections 8") → references ("Aegis")`. Four independent causes, all measured against the real document with `scripts/calibrate-relevance.ts`.
+
+### Fixed
+1. No relevance threshold — `collectRelated` returned the top N neighbours because they were the only N. `collectRelatedDetail` now scores every candidate and reports what it rejected.
+2. `/\bsections?\s+(\d+)/` matched the plural range in "Study Sections 8–14" (a reading instruction) and resolved "8" as a positional index into the heading list. Now singular-only, ranges/lists excluded, resolved against the headings' own numbering.
+3. Any bolded lead-in (`**Best use**:`, `**Note**:`) counted as a definition. Now requires a real definition to follow, rejects document furniture, skips headings.
+4. A project-wide term ("Aegis") linked every containing block to one definer, making the whole document one hop from itself. Terms linking more than `clamp(12% of blocks, 4, 8)` now produce NO edges and are recorded in `graph.hubTerms` — dropped, not truncated.
+
+### Added
+- Score is `structural × corroboration` (IDF-weighted vocabulary overlap, gates every multi-hop path unconditionally). The 0.45 cut-off is derived: the arithmetic separating the weakest reject (0.372) from the weakest accept (0.630) is written out at the constant.
+- An empty result now distinguishes three meanings — cold graph, no candidates, or candidates checked and rejected — the third states itself ("NOTHING ELSE IN THIS DOCUMENT BEARS ON THIS SPAN … Do not invent a cross-reference") so an unexplained silence doesn't get filled with an invented reference.
+- `describeEdgePath` renders human-readable provenance; `formatEdgePath` stays byte-identical as the audit surface, one hover away.
+- Related passages are clickable and scroll to the block via one shared `scrollToPos` (deduped two pre-existing copies of the same scroll code).
+- Thread hide/collapse: a collapse chevron per card, dismissal hides the card and drops it from the "N review items" count, and "Show N resolved" brings everything back. `hidden` is a view flag only — `remove()` remains whole-document-deletion only, and applying does NOT hide.
+
+### Notes
+Measured on `Sierra_Onsite_Deep_Study_Guide.md` (512 blocks): the `Sections 8` edge no longer exists, "Aegis" is dropped as a hub term (with Authorization, Integrity, Evidence), and 192 of 320 candidates are now cut. Two pre-existing `cascade-review.spec.ts` assertions (broken before this work, verified at the merge commit) were realigned to the live UI — the Changes-panel summary was shortened to fit truncation, and the change-set status became a dropdown with a chevron.
+
+### Verification
+typecheck, lint, 1379 unit tests, 7 e2e green.
+
+## [2026-09-02] State what the document does not define, don't ask the model — branch `feat/reading-quality`
+
+Two defects behind the wrong "what is Atlantis?" answer.
+
+### Fixed
+- `getSectionText` called `textBetween` with no block separator, so a heading ran straight into its paragraph (`...Atlantis "sniff test"The stated process was IaC...`) — a grounding failure wearing a formatting disguise. Both `getSectionText` and the resolver now separate blocks.
+- Nothing told the model the document never explains the term. Asking it to work that out for itself was tried and MEASURED on qwen3:8b — it made things worse, glossing "Atlantis" from the words beside it (the reported bug in a new costume). An 8B model follows a stated fact far more reliably than it evaluates a conditional.
+
+### Added
+- The fact is now computed instead of asked: `buildIntentContext` checks the selected term against the same deterministic `definedTerms` the doc graph already extracts, and `formatIntentContext` states the result last, nearest the generation. Conservative by design: silent on a cold graph, silent for over-long selections, and a partial/case-insensitive match against a longer defined term counts as defined.
+- First tests for `helpers.ts`, which had none despite deciding how much document the resolver sees.
+
+### Notes
+Measured on the real question through the running app against qwen3:8b: "This document does not define \"Atlantis\"." followed by a labelled "From outside the document:" section. Honest limit: the structure is now reliable, but qwen3:8b's outside-knowledge accuracy is bounded by the model — it answered Plato, then "a staging environment," both wrong (the real answer is Terraform pull-request automation). Explicit labelling is what makes that survivable.
+
+### Verification
+typecheck, lint, 1279 unit tests green.
+
+## [2026-09-02] Recover tables from documents imported before tables existed — branch `feat/reading-quality`
+
+Native tables landed in the parser, but nothing re-parsed a document already stored: `documentStore` persists only `docJson`, never the markdown it came from. A document imported under the old parser (which rendered tables as a `code_block`) keeps those forever, styled light-on-near-black with a horizontal scrollbar — an unreadable dark slab for a 40-row grid of prose.
+
+### Fixed
+- `migrateTableBlocks` converts stored `code_block`s to real tables on read. Recovery is exact: the code_block's text round-trips through the same `parseMarkdownTable` the live import path uses — no second table grammar to drift. Conservative: a code_block converts only when it parses as exactly ONE table consuming the whole block (a real code sample with a pipe, a table-plus-prose block, or a ragged header/delimiter mismatch are all left untouched).
+- Hooked into `loadDocumentJson` (the single choke point both editor mount and document-switch read through) and persisted immediately, since an unsaved migration would redo on every load. The table's `blockId` is carried over so existing annotations/doc-graph/audit records still resolve.
+
+### Added
+- `tests/reading-quality.spec.ts`, the deterministic e2e suite: real table nodes, single-cell Google-Docs callout tables, light computed background (the bug was light-on-#2d2a26), legacy conversion across a reload, and (when the file is present) the real 41-table `Sierra_Onsite_Deep_Study_Guide.md` rendering with no pipe left in any `<pre>`.
+
+### Verification
+15 migration unit tests, 6 store-boundary tests, 5 e2e tests green.
+
+## [2026-09-02] Talk to Ollama natively so context size and reasoning behave — branch `feat/reading-quality`
+
+Measured against a live Ollama 0.33.0 running qwen3:8b, the OpenAI-compat endpoint the app used gets two things silently wrong: (1) `options.num_ctx` is accepted and ignored — `GET /api/ps` still reports 4096 after a request asking for 16384, while qwen3:8b advertises 40960, so an over-long prompt truncates with no error; (2) a thinking model's tokens go to a `reasoning` field nothing reads, so `message.content` can come back empty or truncated while the token budget was spent on deliberation.
+
+### Changed
+- `ollama` becomes its own dialect, posting to the native `/api/chat`: `options.num_ctx` from a new `x-context-tokens` header (default 16384, backfilled into existing persisted settings); `think: false`; sampling/length moved into `options`; native NDJSON streaming (no `data:` prefix, no `[DONE]`); tool `arguments` arrive already parsed as an object. `redirect: 'manual'` now guards every non-Anthropic dialect, not just the OpenAI one.
+- `AgentMarkdown` also extracts qwen3's `<think>` tag (not just Anthropic's `<thinking>`), including an unclosed tag, as a second line of defence in the renderer.
+- qwen3:8b added to the Ollama presets and made its default model.
+
+### Fixed
+- `agentMarkdown.pure.test.ts` kept a "verbatim" copy of `extractBlocks` that could drift and keep passing while the real renderer broke. It now imports the real function — which immediately caught the unclosed-tag behaviour change. (Its `splitIntoBlocks` copy is left in place but now mirrors a function the source has since deleted; noted in-file.)
+
+### Verification
+Verified live through the running app: non-streaming and streaming `/api/resolve` and tool-calling `/api/structured` all return clean content with no reasoning leakage, and `/api/ps` reports ctx=16384. 1234 unit tests green.
+
+## [2026-09-02] Merge `origin/main` into `feat/reading-quality`
+
+Local `main` was 40 commits behind. Conflicts resolved keeping both sides:
+
+- StatusBar: local `hasKeys()` selector (Ollama needs no API key) + upstream's active-document scoping of the annotation count.
+- ApiKeyModal: upstream's separate transcription-spend line (#113, which makes the local "excludes transcription" wording stale) rendered with the local `text-muted-foreground` readability class.
+- DocInputModal: comment wording only; kept the longer local version.
+- blastRadius test fixture: upstream made `graphitiEpisodeGen` a required `DocGraph` field (#139); the hand-built graph literal now sets it to -1.
+
+### Verification
+typecheck, lint, 1211 unit tests, build — all green.
+
+## [2026-09-02] Native tables, intent-context envelope, selection offers — branch `feat/reading-quality` opened
+
+Snapshot of substantial uncommitted local work so it is preserved before syncing with `origin/main` (local `main` was 40 commits behind). ~47 files.
+
+### Added
+- Native ProseMirror tables: schema (`tableNodes` + block-id-bearing cells), GFM pipe-table parsing in `docInput/parser.ts` replacing the old "render tables as a readable code block" fallback, `tableEditing`/`columnResizing` plugins, and table CSS.
+- `lib/ai/intentContext.ts`: budgeted context envelope handed to the resolver (local block, section, heading path, defined terms, graph neighbours, author invariants, branch chain).
+- `lib/annotations/selectionOffers.ts`: one-click selection offers.
+- `lib/annotations/blastRadius.ts`: pre-apply "touches N other passages".
+- Assorted UI and store changes across annotations, changes, history.
+
+### Removed
+- Dropped the inert duplicate `src/app/api/transcribe/route 2.ts`.
+
 ## [2026-08-30] PR #135 brought current with `main` after PRs #130/#131/#132 merged; PR #136 folded in by the operator
 
 Housekeeping, not a feature entry. `main` advanced past PR #135's stacked base (PR #132's branch) once the operator merged PRs #130, #131, and #132 to `main`; GitHub retargeted #135's base to `main`, exposing a real `mergeable_state: dirty` — three `memory-bank/*.md` append-at-top conflicts only (same class PR #130 resolved for #125/#123), no source-code conflicts. Separately, the operator merged **PR #136** (closes #134) directly into PR #135's branch rather than into `main`, so #135's diff now also carries #134's fix.

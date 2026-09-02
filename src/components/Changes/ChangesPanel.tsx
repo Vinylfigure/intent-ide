@@ -62,13 +62,13 @@ export function ChangesPanel() {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-center px-6">
         <div className="w-12 h-12 rounded-full bg-warm flex items-center justify-center mb-3">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-foreground">
             <path d="M12 20h9" />
             <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
           </svg>
         </div>
-        <p className="text-sm text-muted">No review changes yet</p>
-        <p className="text-xs text-muted/60 mt-1">Grouped AI change sets and direct edits will appear here</p>
+        <p className="text-sm text-muted-foreground">No review changes yet</p>
+        <p className="text-xs text-muted-foreground mt-1">Grouped AI change sets and direct edits will appear here</p>
       </div>
     )
   }
