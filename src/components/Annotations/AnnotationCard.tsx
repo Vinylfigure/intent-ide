@@ -26,6 +26,7 @@ import { generateId } from '@/lib/utils/id'
 import type { Annotation, AnnotationType, ConversationMessage } from '@/lib/annotations/types'
 import { ANNOTATION_COLORS, ANNOTATION_LABELS, ANNOTATION_DESCRIPTIONS, getDefaultVerbosity } from '@/lib/annotations/types'
 import { AgentMarkdown } from '@/components/ui/AgentMarkdown'
+import { drillFromAnswer } from '@/lib/annotations/drill'
 import { ResolutionProgress } from './ResolutionProgress'
 
 const ALL_TYPES: AnnotationType[] = ['ask', 'edit', 'dig', 'flag']
@@ -52,6 +53,14 @@ interface AnnotationCardProps {
    * so a click inside it must not collapse the thread out from under the user.
    */
   lockActive?: boolean
+  /**
+   * Render collapsed unless the reader has explicitly expanded this card.
+   * Set for deep threads (depth >= 3), where opening every nested card by
+   * default is what made a sub-of-a-sub unreadable. The explicit expansions
+   * are tracked separately from ordinary collapses so the collapsed list does
+   * not have to be pre-filled with every deep id in the document.
+   */
+  defaultCollapsed?: boolean
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -77,6 +86,7 @@ export function AnnotationCard({
   isActive,
   detailElsewhere = false,
   lockActive = false,
+  defaultCollapsed = false,
 }: AnnotationCardProps) {
   // The expanded body — and everything that only makes sense alongside it —
   // belongs to whichever card is actually rendering the detail.
@@ -89,8 +99,14 @@ export function AnnotationCard({
 
   // Per-card collapse: a view preference persisted in layoutStore, NOT
   // annotation state (see layoutStore's doc comment on collapsedAnnotationIds).
-  const collapsed = useLayoutStore((s) => s.collapsedAnnotationIds.includes(annotation.id))
-  const toggleAnnotationCollapsed = useLayoutStore((s) => s.toggleAnnotationCollapsed)
+  // A deep card inverts the question — it is collapsed unless explicitly
+  // expanded — so that the default state of a deep thread costs no storage.
+  const explicitlyCollapsed = useLayoutStore((s) => s.collapsedAnnotationIds.includes(annotation.id))
+  const explicitlyExpanded = useLayoutStore((s) => s.expandedAnnotationIds.includes(annotation.id))
+  const collapsed = defaultCollapsed ? !explicitlyExpanded : explicitlyCollapsed
+  const toggleCollapsed = useLayoutStore((s) =>
+    defaultCollapsed ? s.toggleAnnotationExpanded : s.toggleAnnotationCollapsed,
+  )
 
   // Flow-state answer buffering: while this card's answer is held, keep
   // presenting it as "Thinking..." and hide the conversation/resolution body.
@@ -384,7 +400,7 @@ export function AnnotationCard({
           <button
             onClick={(e) => {
               e.stopPropagation()
-              toggleAnnotationCollapsed(annotation.id)
+              toggleCollapsed(annotation.id)
             }}
             aria-expanded={!collapsed}
             aria-label={collapsed ? 'Expand annotation' : 'Collapse annotation'}
@@ -601,7 +617,16 @@ export function AnnotationCard({
       {showDetail && !held && annotation.resolution && (!annotation.conversation || annotation.conversation.length === 0) && (
         <div className="mt-3 pt-3 border-t border-border/70" onClick={(e) => e.stopPropagation()}>
           <div className="text-sm text-ink leading-relaxed">
-            <AgentMarkdown content={annotation.resolution.content} />
+            {/* Highlight-to-ask must work here too. This path (a resolution
+                with an empty conversation) used to render a bare AgentMarkdown
+                with no interactive/onDrill, so dragging a selection across one
+                of these answers silently did nothing — which is what made the
+                affordance read as "click Spin off annotation first". */}
+            <AgentMarkdown
+              content={annotation.resolution.content}
+              interactive={annotation.status !== 'resolving'}
+              onDrill={(payload) => drillFromAnswer(annotation.id, payload)}
+            />
           </div>
 
           {annotation.resolution.suggestedEdit && (

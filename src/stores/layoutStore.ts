@@ -63,6 +63,21 @@ interface LayoutState {
    * is persisted so a reload doesn't silently re-expand every thread.
    */
   collapsedAnnotationIds: string[]
+  /**
+   * Deep threads (depth >= 3) render COLLAPSED by default — indentation stopped
+   * carrying depth and a wall of open nested cards is what made a sub-of-a-sub
+   * unreadable. Their explicit expansions are recorded here rather than
+   * pre-filling `collapsedAnnotationIds` with every deep id the reader never
+   * touched, which would grow that list without bound.
+   */
+  expandedAnnotationIds: string[]
+  /**
+   * The subtree the panel is focused on, or null for the whole list. Past
+   * depth 5 a thread stops rendering inline and is entered like a folder, with
+   * a breadcrumb back out — you navigate by crumb, never by scrolling back up
+   * through levels.
+   */
+  focusedSubtreeId: string | null
   setAnswerPlacement: (placement: AnswerPlacement) => void
   setSidebarWidth: (width: number) => void
   toggleAnswerPlacement: () => void
@@ -70,6 +85,8 @@ interface LayoutState {
   resetFloatingOffset: () => void
   toggleAnnotationCollapsed: (id: string) => void
   setAnnotationCollapsed: (id: string, collapsed: boolean) => void
+  toggleAnnotationExpanded: (id: string) => void
+  setFocusedSubtree: (id: string | null) => void
 }
 
 export const ZERO_OFFSET = { dx: 0, dy: 0 }
@@ -81,6 +98,8 @@ export const useLayoutStore = create<LayoutState>()(
       sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
       floatingOffset: ZERO_OFFSET,
       collapsedAnnotationIds: [],
+      expandedAnnotationIds: [],
+      focusedSubtreeId: null,
       // Changing placement always re-parks the panel: the offset was chosen
       // against the old layout and means nothing in the new one.
       setAnswerPlacement: (placement) =>
@@ -99,6 +118,13 @@ export const useLayoutStore = create<LayoutState>()(
             ? s.collapsedAnnotationIds.filter((x) => x !== id)
             : [...s.collapsedAnnotationIds, id],
         })),
+      toggleAnnotationExpanded: (id) =>
+        set((s) => ({
+          expandedAnnotationIds: s.expandedAnnotationIds.includes(id)
+            ? s.expandedAnnotationIds.filter((x) => x !== id)
+            : [...s.expandedAnnotationIds, id],
+        })),
+      setFocusedSubtree: (id) => set({ focusedSubtreeId: id }),
       setAnnotationCollapsed: (id, collapsed) =>
         set((s) => ({
           collapsedAnnotationIds: collapsed
@@ -114,6 +140,10 @@ export const useLayoutStore = create<LayoutState>()(
         answerPlacement: s.answerPlacement,
         sidebarWidth: s.sidebarWidth,
         collapsedAnnotationIds: s.collapsedAnnotationIds,
+        expandedAnnotationIds: s.expandedAnnotationIds,
+        // focusedSubtreeId is deliberately NOT persisted: it is navigation
+        // state, and a reload should land back on the whole list rather than
+        // inside a subtree the reader has no memory of entering.
       }),
       onRehydrateStorage: () => (state) => {
         // A snapshot from an older build may carry a placement this one has
@@ -123,6 +153,8 @@ export const useLayoutStore = create<LayoutState>()(
           state.sidebarWidth = clampSidebarWidth(state.sidebarWidth)
           state.floatingOffset = ZERO_OFFSET
           state.collapsedAnnotationIds = normalizeCollapsedAnnotationIds(state.collapsedAnnotationIds)
+          state.expandedAnnotationIds = normalizeCollapsedAnnotationIds(state.expandedAnnotationIds)
+          state.focusedSubtreeId = null
         }
       },
     },

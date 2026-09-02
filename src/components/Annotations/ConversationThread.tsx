@@ -8,6 +8,7 @@ import { generateId } from '@/lib/utils/id'
 import { applySingleEdit } from '@/lib/prosemirror/applyProposedEdits'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { refreshAnchorAfterApply } from '@/lib/annotations/anchoring'
+import { drillFromAnswer } from '@/lib/annotations/drill'
 import { captureAndResolveInBackground } from '@/lib/voice/pipeline'
 import type { ConversationMessage, SuggestedEdit } from '@/lib/annotations/types'
 import { AgentMarkdown } from '@/components/ui/AgentMarkdown'
@@ -82,7 +83,10 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
 
   return (
     <div className="flex flex-col gap-2 mb-3">
-      {messages.map((message) => (
+      {messages.map((message) => {
+        const isThisMessageStreaming =
+          isStreaming && message.id === messages[messages.length - 1]?.id
+        return (
         <div key={message.id}>
           {message.role === 'user' ? (
             <div className="bg-warm rounded px-3 py-2">
@@ -98,26 +102,14 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
               <div className="text-sm text-ink leading-relaxed">
                 <AgentMarkdown
                   content={message.content}
-                  isStreaming={isStreaming && message.role === 'agent' && message.id === messages[messages.length - 1]?.id}
-                  interactive={!!annotationId && !isStreaming}
-                  onDrill={({ transcript, suggestedIntent, skipClassify, quote }) => {
+                  isStreaming={isThisMessageStreaming}
+                  // Only the message actually streaming is inert. Gating on the
+                  // thread-wide `isStreaming` killed highlight-to-ask on every
+                  // finished answer in the thread while any one of them streamed.
+                  interactive={!!annotationId && !isThisMessageStreaming}
+                  onDrill={(payload) => {
                     if (!annotationId) return
-                    // Deliberate split: the DOCUMENT position comes from the
-                    // parent's anchor (there is no document position for
-                    // text that only exists inside the AI's answer), while
-                    // the SUBJECT MATTER comes from `quote` — the exact
-                    // answer text the user highlighted. Do not "fix" this to
-                    // derive both from the same source.
-                    const parentAnn = useAnnotationStore.getState().getById(annotationId)
-                    const from = parentAnn?.anchor.from ?? 0
-                    const to = parentAnn?.anchor.to ?? 0
-                    captureAndResolveInBackground(suggestedIntent ?? 'dig', transcript, from, to, {
-                      parentId: annotationId,
-                      suggestedType: suggestedIntent,
-                      skipClassify,
-                      quote,
-                    })
-                    useToastStore.getState().addToast('Sub-annotation created', 'success')
+                    drillFromAnswer(annotationId, payload)
                   }}
                 />
               </div>
@@ -183,7 +175,7 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
                       }}
                       className="text-[10px] font-medium text-muted-foreground hover:text-accent transition-colors"
                     >
-                      Spin off annotation
+                      Ask about the document instead
                     </button>
                   )}
                 </div>
@@ -191,7 +183,8 @@ export function ConversationThread({ messages, annotationId, isStreaming = false
             </div>
           )}
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
