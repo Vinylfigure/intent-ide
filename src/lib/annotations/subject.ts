@@ -44,3 +44,25 @@ export function annotationSubject(annotation: Annotation): string {
 
   return annotation.anchor.text
 }
+
+/** Longest a breadcrumb crumb or a collapsed one-line preview may run. */
+const LABEL_CHARS = 40
+
+/**
+ * A short human label for an annotation — what a breadcrumb crumb or a
+ * collapsed deep-thread preview shows.
+ *
+ * Nothing derived one before, because depth was communicated purely by
+ * indentation and a card was never reduced to a single line. Prefers the
+ * reader's own words (the transcript) over the quote, because in a breadcrumb
+ * "is the token a hash value?" locates you in the thread and the quoted span
+ * does not.
+ */
+export function annotationLabel(annotation: Annotation): string {
+  const raw =
+    annotation.transcript.trim() ||
+    annotation.sourceQuote?.trim() ||
+    annotation.anchor.text.trim()
+  const clean = raw.replace(/\s+/g, ' ')
+  return clean.length <= LABEL_CHARS ? clean : `${clean.slice(0, LABEL_CHARS - 1)}…`
+}

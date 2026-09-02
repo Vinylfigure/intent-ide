@@ -7,6 +7,7 @@ import { useDocumentStore } from '@/stores/documentStore'
 import { AnnotationCard } from './AnnotationCard'
 import { AnnotationMap } from './AnnotationMap'
 import type { Annotation } from '@/lib/annotations/types'
+import { annotationLabel } from '@/lib/annotations/subject'
 
 type ViewMode = 'list' | 'map'
 
@@ -86,12 +87,82 @@ function computeDepth(id: string, byId: Map<string, Annotation>): number {
   return depth
 }
 
+
+/**
+ * Depth is no longer drawn as indentation.
+ *
+ * The panel is a ~400px rail. Readable prose runs 45-75 characters, and below
+ * about 45 the line breaks so often that reading itself degrades — so the old
+ * `marginLeft: min(depth,5)rem` did not merely look cramped, it pushed the text
+ * column under the legibility floor. Every team that has publicly reasoned
+ * about deep threading reached the same place: Slack capped replies at one
+ * level and called it "an instant success on all fronts"; Discourse rejected
+ * nesting outright, its third stated objection being that indentation eats
+ * horizontal space as depth grows; NN/g finds more than two disclosure levels
+ * loses users between the levels.
+ *
+ * So: one fixed indent step, ever. Depth is carried by a left rail, a badge,
+ * and — past MAX_INLINE_DEPTH — by leaving the list entirely for a focused
+ * view you return from by breadcrumb rather than by scrolling back up.
+ */
+const INDENT_PX = 14
+/** From this depth a card renders collapsed until the reader opens it. */
+const DEEP_COLLAPSE_DEPTH = 3
+/** Past this depth a thread stops rendering inline and is entered instead. */
+const MAX_INLINE_DEPTH = 5
+
+/** Rail weight/colour by depth — the replacement for a growing left margin. */
+function railClass(depth: number): string {
+  if (depth <= 0) return ''
+  if (depth === 1) return 'border-l-2 border-accent/40'
+  if (depth === 2) return 'border-l-2 border-accent/60'
+  return 'border-l-[3px] border-accent/80'
+}
+
+type PanelRow =
+  | { kind: 'card'; annotation: Annotation; depth: number }
+  | { kind: 'fold'; anchorId: string; count: number }
+
+/**
+ * Turn a group's DFS-flattened thread list into render rows, folding away
+ * everything deeper than MAX_INLINE_DEPTH into one "N replies deep" row.
+ * Descendants of a folded node follow it contiguously in DFS order, so a
+ * single pass suffices.
+ */
+export function buildPanelRows(annotations: Annotation[], depths: Map<string, number>): PanelRow[] {
+  const rows: PanelRow[] = []
+  let folding: { anchorId: string; index: number } | null = null
+
+  for (const annotation of annotations) {
+    const depth = depths.get(annotation.id) ?? 0
+    if (depth > MAX_INLINE_DEPTH) {
+      if (folding) {
+        const row = rows[folding.index]
+        if (row.kind === 'fold') row.count += 1
+      } else {
+        // Anchor the fold on the deepest still-inline ancestor, which is what
+        // entering the focused view should re-root on.
+        const anchorId = annotation.parentId ?? annotation.id
+        folding = { anchorId, index: rows.length }
+        rows.push({ kind: 'fold', anchorId, count: 1 })
+      }
+      continue
+    }
+    folding = null
+    rows.push({ kind: 'card', annotation, depth })
+  }
+
+  return rows
+}
+
 export function AnnotationPanel() {
   const annotations = useAnnotationStore((s) => s.annotations)
   const activeId = useAnnotationStore((s) => s.activeAnnotationId)
   const activeDocumentId = useDocumentStore((s) => s.activeDocumentId)
   const placement = useLayoutStore((s) => s.answerPlacement)
   const setPlacement = useLayoutStore((s) => s.setAnswerPlacement)
+  const focusedSubtreeId = useLayoutStore((s) => s.focusedSubtreeId)
+  const setFocusedSubtree = useLayoutStore((s) => s.setFocusedSubtree)
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   // "Show N resolved" toggle: local view state (not persisted, not
   // annotation state) — reveals hidden annotations and hides them again.
@@ -173,7 +244,68 @@ export function AnnotationPanel() {
       .sort((a, b) => a.anchor - b.anchor)
   }, [documentAnnotations, showResolved])
 
-  const annotationCount = groupedAnnotations.reduce((sum, group) => sum + group.annotations.length, 0)
+  /**
+   * The subtree the reader has entered, plus the ancestor crumbs that lead back
+   * out. Breadcrumbs rather than scroll position: NN/g's finding is that
+   * breadcrumbs "never cause problems in user testing", and in a narrow rail
+   * they are the only way back that does not require retracing every level.
+   */
+  const focusView = useMemo(() => {
+    if (!focusedSubtreeId) return null
+    const byId = new Map(documentAnnotations.map((a) => [a.id, a]))
+    const focused = byId.get(focusedSubtreeId)
+    if (!focused) return null
+
+    const crumbs: Annotation[] = []
+    const seen = new Set<string>([focused.id])
+    let cursor = focused.parentId ? byId.get(focused.parentId) : undefined
+    while (cursor && !seen.has(cursor.id)) {
+      seen.add(cursor.id)
+      crumbs.unshift(cursor)
+      cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined
+    }
+
+    const byParent = new Map<string, Annotation[]>()
+    for (const a of documentAnnotations) {
+      if (!a.parentId) continue
+      byParent.set(a.parentId, [...(byParent.get(a.parentId) ?? []), a])
+    }
+    const ids = new Set<string>()
+    const stack = [focused.id]
+    while (stack.length) {
+      const id = stack.pop() as string
+      if (ids.has(id)) continue
+      ids.add(id)
+      for (const child of byParent.get(id) ?? []) stack.push(child.id)
+    }
+
+    return { focused, crumbs, ids }
+  }, [focusedSubtreeId, documentAnnotations])
+
+  // A focus that no longer resolves (the thread was dismissed, or the document
+  // switched) must not strand the panel showing nothing.
+  useEffect(() => {
+    if (focusedSubtreeId && !focusView) setFocusedSubtree(null)
+  }, [focusedSubtreeId, focusView, setFocusedSubtree])
+
+  const displayGroups = useMemo(() => {
+    if (!focusView) return groupedAnnotations
+    const base = focusView.crumbs.length
+    return groupedAnnotations
+      .map((group) => {
+        const annotations = group.annotations.filter((a) => focusView.ids.has(a.id))
+        if (annotations.length === 0) return null
+        // Re-root the depths so the entered thread reads from zero rather than
+        // inheriting the indentation of wherever it happened to sit.
+        const depths = new Map(
+          [...group.depths].map(([id, depth]) => [id, Math.max(0, depth - base)] as const),
+        )
+        return { ...group, annotations, depths }
+      })
+      .filter((group): group is NonNullable<typeof group> => group !== null)
+  }, [groupedAnnotations, focusView])
+
+  const annotationCount = displayGroups.reduce((sum, group) => sum + group.annotations.length, 0)
 
   if (!activeDocumentId || documentAnnotations.length === 0) {
     return (
@@ -259,9 +391,37 @@ export function AnnotationPanel() {
         </div>
       </div>
 
+      {focusView && (
+        <nav
+          aria-label="Thread breadcrumb"
+          className="flex flex-wrap items-center gap-1 px-4 py-2 border-b border-border/70 bg-warm/30 text-[11px]"
+        >
+          <button
+            onClick={() => setFocusedSubtree(null)}
+            className="text-muted-foreground hover:text-accent transition-colors"
+          >
+            All threads
+          </button>
+          {focusView.crumbs.map((crumb) => (
+            <span key={crumb.id} className="flex items-center gap-1">
+              <span aria-hidden="true" className="text-muted-foreground/60">›</span>
+              <button
+                onClick={() => setFocusedSubtree(crumb.id)}
+                className="text-muted-foreground hover:text-accent transition-colors truncate max-w-[10rem]"
+              >
+                {annotationLabel(crumb)}
+              </button>
+            </span>
+          ))}
+          <span aria-hidden="true" className="text-muted-foreground/60">›</span>
+          <span className="font-medium text-ink truncate max-w-[12rem]">
+            {annotationLabel(focusView.focused)}
+          </span>
+        </nav>
+      )}
       <div ref={listRef} className="flex-1 overflow-y-auto">
         {viewMode === 'list' ? (
-          groupedAnnotations.length === 0 ? (
+          displayGroups.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 text-center px-6">
               <p className="text-sm text-muted-foreground">All caught up</p>
               <p className="text-xs text-muted-foreground mt-1">
@@ -270,7 +430,7 @@ export function AnnotationPanel() {
             </div>
           ) : (
           <div className="space-y-3 p-4">
-            {groupedAnnotations.map((group) => (
+            {displayGroups.map((group) => (
               <section key={group.key} className="rounded-[22px] border border-border/70 bg-white/78 overflow-hidden shadow-sm">
                 <div className="px-4 py-3 border-b border-border/70 bg-gradient-to-r from-warm/50 to-white/70">
                   <div className="flex items-center justify-between gap-3">
@@ -286,18 +446,36 @@ export function AnnotationPanel() {
                   </p>
                 </div>
                 <div className="divide-y divide-border/70">
-                  {group.annotations.map((annotation) => {
-                    const depth = group.depths.get(annotation.id) ?? 0
-                    // Cap the visual indent — a level-9 sub-chat still reads
-                    // as "deeply nested," it just doesn't shove the card off
-                    // the edge of a narrow rail.
-                    const indent = Math.min(depth, 5)
+                  {buildPanelRows(group.annotations, group.depths).map((row) => {
+                    if (row.kind === 'fold') {
+                      return (
+                        <button
+                          key={`fold-${row.anchorId}`}
+                          onClick={() => setFocusedSubtree(row.anchorId)}
+                          style={{ marginLeft: `${INDENT_PX}px` }}
+                          className="w-full text-left px-2.5 py-2 border-l-[3px] border-accent/80 bg-warm/10 text-[11px] text-muted-foreground hover:text-accent transition-colors"
+                        >
+                          {row.count} {row.count === 1 ? 'reply' : 'replies'} deeper · view thread
+                        </button>
+                      )
+                    }
+                    const { annotation, depth } = row
                     return (
                       <div
                         key={annotation.id}
-                        className={depth > 0 ? 'border-l border-border/60 bg-warm/10' : ''}
-                        style={depth > 0 ? { marginLeft: `${indent}rem` } : undefined}
+                        data-depth={depth}
+                        className={`${railClass(depth)} ${depth > 0 ? 'bg-warm/10' : ''}`}
+                        // One indent step at any depth. See INDENT_PX.
+                        style={depth > 0 ? { marginLeft: `${INDENT_PX}px` } : undefined}
                       >
+                        {depth >= DEEP_COLLAPSE_DEPTH && (
+                          <span
+                            aria-label={`Depth ${depth}`}
+                            className="ml-2.5 mt-1.5 inline-block rounded bg-accent/10 px-1.5 py-px text-[10px] font-mono text-accent"
+                          >
+                            ↳{depth}
+                          </span>
+                        )}
                         {annotation.sourceQuote && (
                           <p className="px-2.5 pt-1.5 text-[10px] font-mono text-muted-foreground truncate">
                             “{annotation.sourceQuote}”
@@ -307,6 +485,7 @@ export function AnnotationPanel() {
                           annotation={annotation}
                           isActive={annotation.id === activeId}
                           detailElsewhere={placement === 'floating'}
+                          defaultCollapsed={depth >= DEEP_COLLAPSE_DEPTH}
                         />
                       </div>
                     )
