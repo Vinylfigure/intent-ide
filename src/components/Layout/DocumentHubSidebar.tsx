@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react'
 import { useDocumentStore, type CollectionMeta, type DocumentMeta } from '@/stores/documentStore'
 import { useAnnotationStore } from '@/stores/annotationStore'
+import { useChangesStore } from '@/stores/changesStore'
+import { Confirmation } from '@/components/ui/Confirmation'
 
 function sortDocsByRecent(docs: DocumentMeta[]): DocumentMeta[] {
   return [...docs].sort((a, b) => b.updatedAt - a.updatedAt)
@@ -25,10 +27,50 @@ export function DocumentHubSidebar() {
   // Deleting a document must also purge its annotations (and, via remove()'s
   // own purge, any held answers) — otherwise they're orphaned forever, still
   // occupying the persisted annotations array but permanently unrenderable
-  // since every list/map view filters by documentId (#107).
+  // since every list/map view filters by documentId (#107) — and, since
+  // #134, its changesStore entries/changeSets too, which had the identical
+  // orphaning gap until changesStore gained its own removeByDocumentId (#133).
   const handleDeleteDocument = (documentId: string) => {
     useAnnotationStore.getState().removeByDocumentId(documentId)
+    useChangesStore.getState().removeByDocumentId(documentId)
     deleteDocument(documentId)
+  }
+
+  // Both delete entry points route through this confirmation gate rather
+  // than deleting on click (#110) — deletion is irreversible and, since
+  // #107/#109, now also silently destroys every annotation for the document
+  // in the same click.
+  const [deleteTarget, setDeleteTarget] = useState<DocumentMeta | null>(null)
+  // Selected as a derived primitive (not a subscription to the whole
+  // `annotations` array) so this component doesn't re-render on every
+  // annotation mutation elsewhere in the app (e.g. every streamed token of
+  // an unrelated AI resolution) — only when the count for the *targeted*
+  // document actually changes, which is only possible while the modal is
+  // open.
+  const deleteTargetAnnotationCount = useAnnotationStore((s) =>
+    deleteTarget ? s.annotations.filter((a) => a.documentId === deleteTarget.id).length : 0
+  )
+  const confirmDelete = () => {
+    if (!deleteTarget) return
+    handleDeleteDocument(deleteTarget.id)
+    setDeleteTarget(null)
+  }
+
+  // Second delete entry point gated the same way as document delete (#115) —
+  // deleteCollection never cascade-deletes member documents (only strips
+  // their collectionIds), but losing the collection's name/identity and
+  // every document's membership in it is still a one-click, irreversible
+  // loss the HITL principle requires a confirmation step for.
+  const [deleteCollectionTarget, setDeleteCollectionTarget] = useState<CollectionMeta | null>(null)
+  const deleteCollectionTargetDocCount = useDocumentStore((s) =>
+    deleteCollectionTarget
+      ? s.documents.filter((doc) => (doc.collectionIds ?? []).includes(deleteCollectionTarget.id)).length
+      : 0
+  )
+  const confirmDeleteCollection = () => {
+    if (!deleteCollectionTarget) return
+    deleteCollection(deleteCollectionTarget.id)
+    setDeleteCollectionTarget(null)
   }
 
   const [expandedCollections, setExpandedCollections] = useState<Set<string>>(new Set())
@@ -163,7 +205,7 @@ export function DocumentHubSidebar() {
               onActivate={() => setActiveDocument(doc.id)}
               onStartRename={() => startRenameDocument(doc)}
               onDuplicate={() => duplicateDocument(doc.id)}
-              onDelete={() => handleDeleteDocument(doc.id)}
+              onDelete={() => setDeleteTarget(doc)}
               onAssignToCollection={(collectionId) => assignDocumentToCollection(doc.id, collectionId)}
               onRemoveFromCollection={(collectionId) => removeDocumentFromCollection(doc.id, collectionId)}
             />
@@ -232,7 +274,7 @@ export function DocumentHubSidebar() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
-                      deleteCollection(collection.id)
+                      setDeleteCollectionTarget(collection)
                     }}
                     aria-label="Delete collection"
                     className="p-0.5 text-xs text-red-400 hover:text-red-600"
@@ -259,7 +301,7 @@ export function DocumentHubSidebar() {
                       onActivate={() => setActiveDocument(doc.id)}
                       onStartRename={() => startRenameDocument(doc)}
                       onDuplicate={() => duplicateDocument(doc.id)}
-                      onDelete={() => handleDeleteDocument(doc.id)}
+                      onDelete={() => setDeleteTarget(doc)}
                       onAssignToCollection={(collectionId) => assignDocumentToCollection(doc.id, collectionId)}
                       onRemoveFromCollection={(collectionId) => removeDocumentFromCollection(doc.id, collectionId)}
                       compact
@@ -295,6 +337,50 @@ export function DocumentHubSidebar() {
           </div>
         )}
       </section>
+
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-6">
+            <Confirmation
+              title="Delete this document?"
+              description={
+                deleteTargetAnnotationCount > 0
+                  ? `"${deleteTarget.title}" and its ${deleteTargetAnnotationCount} annotation${
+                      deleteTargetAnnotationCount === 1 ? '' : 's'
+                    } will be permanently deleted. This cannot be undone.`
+                  : `"${deleteTarget.title}" will be permanently deleted. This cannot be undone.`
+              }
+              confirmLabel="Delete"
+              cancelLabel="Cancel"
+              variant="destructive"
+              onConfirm={confirmDelete}
+              onCancel={() => setDeleteTarget(null)}
+            />
+          </div>
+        </div>
+      )}
+
+      {deleteCollectionTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-6">
+            <Confirmation
+              title="Delete this collection?"
+              description={
+                deleteCollectionTargetDocCount > 0
+                  ? `"${deleteCollectionTarget.name}" will be permanently deleted. Its ${deleteCollectionTargetDocCount} document${
+                      deleteCollectionTargetDocCount === 1 ? '' : 's'
+                    } will be un-assigned from it but not deleted. This cannot be undone.`
+                  : `"${deleteCollectionTarget.name}" will be permanently deleted. This cannot be undone.`
+              }
+              confirmLabel="Delete"
+              cancelLabel="Cancel"
+              variant="destructive"
+              onConfirm={confirmDeleteCollection}
+              onCancel={() => setDeleteCollectionTarget(null)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

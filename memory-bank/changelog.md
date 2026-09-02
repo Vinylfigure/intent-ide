@@ -5,6 +5,236 @@ All notable changes to the Intent IDE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-08-30] PR #135 brought current with `main` after PRs #130/#131/#132 merged; PR #136 folded in by the operator
+
+Housekeeping, not a feature entry. `main` advanced past PR #135's stacked base (PR #132's branch) once the operator merged PRs #130, #131, and #132 to `main`; GitHub retargeted #135's base to `main`, exposing a real `mergeable_state: dirty` — three `memory-bank/*.md` append-at-top conflicts only (same class PR #130 resolved for #125/#123), no source-code conflicts. Separately, the operator merged **PR #136** (closes #134) directly into PR #135's branch rather than into `main`, so #135's diff now also carries #134's fix.
+
+- Merged `origin/main` into `claude/legacy-data-ui` with a merge commit (never a rebase — the branch already carries the operator's own merge commit from landing #136, so history was not rewritten).
+- Resolved all three memory-bank conflicts by concatenating both sides' entries in true chronological order, dropping nothing from either parallel firing.
+- Re-ran `npm run typecheck` / `npm run lint` / `npm run test` on the merged tree before pushing.
+- Updated PR #135's body to also say "Closes #134", since #136's commits are now part of its diff.
+
+## [2026-08-29] `changesStore` wiring for document delete — fix delivered, PR #136 MERGED into PR #135's branch (not `main`) by the operator, 2026-08-29 → 2026-08-30
+
+Closes issue #134 (task: label, filed 2026-08-28, `discovered-from: work-loop adversarial review of the PR for #133, 2026-08-28`). `DocumentHubSidebar.tsx`'s `handleDeleteDocument` called `useAnnotationStore.getState().removeByDocumentId(documentId)` (fixed for annotations by #107/PR #106) but never called the `changesStore` equivalent, because until PR #135 `changesStore.ts` had no `removeByDocumentId` action at all. #135 added that action (for #133); #134's scope was purely wiring it into the document-delete handler. **PR #136's base branch is `claude/legacy-data-ui` (PR #135's branch), not `main`** — the `removeByDocumentId` action it depends on doesn't exist on `main` yet.
+
+### Fixed
+- **`src/components/Layout/DocumentHubSidebar.tsx`:** added `import { useChangesStore } from '@/stores/changesStore'`; `handleDeleteDocument` now also calls `useChangesStore.getState().removeByDocumentId(documentId)`, right after the existing `useAnnotationStore` call and before `deleteDocument(documentId)`.
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**, no blocking findings. Independently reproduced typecheck/lint/test and the mutation test (stashed the fix, confirmed the new test fails with the `e-1` entry surviving deletion; restored, confirmed green). Independently re-verified that `deleteCollection` (`documentStore.ts`) has no analogous gap — it never cascade-deletes member documents, only strips `collectionIds` — by reading the function directly. Grepped repo-wide for `deleteDocument(` — `DocumentHubSidebar.tsx` is the only call site; both its `onDelete` entry points (all-documents row, expanded-collection row) funnel through the same `handleDeleteDocument`, so one test covers both.
+- **One LOW, disclosed, not fixed, pre-existing from #135 (not this diff):** `changesStore.removeByDocumentId` doesn't touch `snapshots` (`VersionSnapshot` has no `documentId` field) — mitigated since snapshots are never persisted (`onRehydrateStorage` always resets to `[]`), so it's an in-memory-only, session-bounded gap, not a storage leak. Not filed as a new issue.
+- New test file `src/components/Layout/__tests__/documentHubSidebar.deleteClearsChanges.test.tsx` (2 tests): deleting a document via the UI confirmation flow removes only that document's `changesStore` entries/changeSets, others untouched; cancelling leaves `changesStore` untouched.
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — **1139 passing + 10 skipped** (up from 1137 on PR #135's branch; +2 new tests).
+
+**PR #136 (branch `claude/changesstore-delete-wiring`, https://github.com/Vinylfigure/intent-ide/pull/136, base `claude/legacy-data-ui`) MERGED** — confirmed via the GitHub API: `merged: true`, `merged_by: Vinylfigure`, merge commit `f2196d7`. Merged into PR #135's branch rather than `main` directly, so #134's fix reaches `main` only once #135 itself merges (see the entry above).
+
+Closes #134 (reaches `main` once #135 merges).
+
+**Also for continuity, not actioned this firing:** as of this firing's ready-sweep, four other open PRs exist, all green CI, all `mergeable_state: clean` except one: PR #135 (closes #133, stacked on #132), PR #132 (closes #128, base `main`), PR #131 (closes #127, base `main`), PR #130 (closes #122, base `main`, supersedes and should replace #125 which is now `mergeable_state: dirty` — #130's own body says close #125 without merging once #130 lands). None had red checks, so per the work-loop skill's priority rule they didn't outrank starting new work on #134.
+
+## [2026-08-28] Legacy-data view/manage/purge UI for the `LEGACY_DOCUMENT_ID` bucket — fix delivered, PR #135 open (base retargeted to `main` 2026-08-30 after PR #132 merged)
+
+Closes issue #133 ("no UI path to view/manage/purge the LEGACY_DOCUMENT_ID migration bucket"), filed as a follow-up from PR #132's own adversarial review. **PR #135's base branch is `claude/legacy-documentid-migration-fallback` (PR #132's branch), not `main`** — #133's fix depends on `src/lib/documents/legacyDocumentId.ts`, which PR #132 introduces and which does not exist on `main` yet.
+
+### Added
+- **`changesStore.ts` gains `removeByDocumentId(documentId)`** (filters `entries` + `changeSets`), mirroring `annotationStore.ts`'s existing action of the same name — `changesStore` had no equivalent before this PR.
+- **New "Legacy data" section in `ApiKeyModal.tsx`'s API Configuration modal**, shown only when non-empty: counts of `LEGACY_DOCUMENT_ID`-scoped annotations/change-sets/changes, and a "Clear legacy data" button wired to both stores' `removeByDocumentId(LEGACY_DOCUMENT_ID)`.
+
+### Decided against
+- **Did not make `LEGACY_DOCUMENT_ID` selectable as `activeDocumentId`** — the issue's other suggested approach. Verified via `EditorShell.tsx` that new annotations/changes are stamped `documentId: activeDocumentId` at creation time, so making the placeholder "active" would let new records leak into the bucket — a new contamination vector into the exact thing PR #132 just closed off. A dedicated settings-panel view/clear affordance was used instead.
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**, no blocking findings.
+- **MEDIUM, disclosed not fixed:** "Clear legacy data" has no confirmation gate and is irreversible, foreclosing a hypothetical future content-matching un-merge recovery path `legacyDocumentId.ts`'s own doc comment describes as "left undone" (not abandoned). Judged acceptable — CLAUDE.md's HITL mandate is scoped to "global document changes"; this is orphaned metadata attached to no real, visible document, unlike `DocumentHubSidebar`'s Confirmation-gated document/collection delete. Precedent: this same modal already has an unguarded irreversible "Reset" button for calibration stats.
+- **LOW, moot:** `removeByDocumentId` doesn't touch `snapshots` (no `documentId` field) — confirmed `createSnapshot()` has zero production call sites anywhere in `src/`, dead code today.
+- **LOW, pre-existing, confirmed, NOT fixed here, filed as follow-up issue #134:** `DocumentHubSidebar.tsx`'s real document-delete handler only calls `useAnnotationStore.getState().removeByDocumentId`, never a `useChangesStore` equivalent (which didn't exist until this PR added it) — so deleting a real document has always silently orphaned that document's changesStore entries/changeSets, independent of this PR (`discovered-from: work-loop adversarial review of the PR for #133, 2026-08-28`).
+- **LOW, cosmetic, not blocking:** since the section renders on the sum of three counts, an individual count can read "0" in the rendered sentence.
+- New test files: `src/stores/__tests__/changesStore.removeByDocumentId.test.ts` (2 tests), `src/components/Settings/__tests__/apiKeyModal.legacyData.test.tsx` (3 tests) — both mutation-tested (fail against reverted production code).
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — **1137 passing + 10 skipped** on the PR branch (up from 1132 on PR #132's branch, the merge base).
+
+**PR #135 (branch `claude/legacy-data-ui`) is OPEN.** PR #132 merged to `main` 2026-08-30; GitHub retargeted #135's base to `main`, exposing a memory-bank-only merge conflict resolved in the entry at the top of this file. #135 now also carries PR #136's fix (closes #134), merged into its branch by the operator — see above.
+
+Closes #133, #134 (on merge).
+
+**Also for continuity, not actioned this session:** as of this sweep, three PRs besides #135 are open, all green CI / clean `mergeable_state`, all awaiting operator review/merge: PR #130 (closes #122, supersedes and should replace #125 which went dirty), PR #131 (closes #127, docGraph inflight capability keying), PR #132 (closes #128, legacy documentId migration fallback — PR #135 above stacks on it). PR #125 is superseded by #130 and should be closed (not merged) once #130 lands — operator's call, not actioned by this firing. Issue #134 (filed above) is not yet consumed.
+
+## [2026-08-28] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 MERGED (2026-08-30, confirmed via the merge-conflict resolution entry at the top of this file)
+
+## [2026-08-30] `getDocGraph` Graphiti fast-cache-hit staleness — fix delivered, PR #139 open (not yet merged)
+
+Closes issue #137.
+
+### Fixed
+- **`getDocGraph`'s fast cache-hit path** in `src/lib/graphrag/docGraph.ts` never checked `cached.graphitiApplied` — once a document's graph had `llmApplied`+`embeddingsApplied` satisfied, every later `getDocGraph` call for the SAME unchanged content hash skipped the Graphiti entity pass forever, even though `episodeIngestion.ts`'s `ingestAnnotationEpisode`/`ingestEditEpisode` keep feeding new episodes into Graphiti on every resolved annotation (including ask/dig/flag types that never touch document text). New entities became permanently invisible to an already-built graph.
+- New module-level generation counter in `episodeIngestion.ts` (`getEpisodeGeneration()`/`resetEpisodeGeneration()`, bumped only on a successful `addEpisode`); new `DocGraph.graphitiEpisodeGen` field (-1 = never attempted) recording the generation as of the graph's last Graphiti attempt (success or failure). `augmentWithGraphitiEdges`'s guard moved from `graphitiApplied` to `graphitiEpisodeGen === currentGen`; `getDocGraph`'s fast-path condition gained a third clause so a stale-generation warm cache falls through to a real retry (background/`skipGraphiti` calls unaffected).
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**. Findings addressed before push: (1) added an end-to-end test exercising the REAL production wiring with no DI override (`episodeGeneration.test.ts`'s "real wiring" test — the other 3 new tests in `docGraph.test.ts` all inject `episodeGeneration` directly, which the reviewer flagged as a gap); (2) documented the under-recording-during-contention edge case (currentGen snapshotted before the ~1.5s MCP round trip — self-correcting, not a bug) in `augmentWithGraphitiEdges`'s doc comment; (3) hardened `graphitiEdges.test.ts`'s `beforeEach` to reset the episode-generation counter, since some of its tests implicitly depend on the real counter never having moved.
+- Filed follow-up **issue #138** (NOT fixed here, deliberately descoped): a new invariant break the fix introduces — a cached `DocGraph` can now be mutated-and-republished under the SAME object reference by a retry-in-place, and `docGraphStore`'s Zustand `Object.is` bail-out means an already-mounted "why this proposal?" explainer (`ProposedEditControl.tsx`) could show stale evidence until some unrelated re-render. Confirmed this does NOT affect actual cascade discovery — `orchestrator.ts`'s `proposeCascadeEdits` always awaits a fresh `getDocGraph` return value directly, never the store.
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1150 passing + 10 skipped on the merged tree (after both fixes above). New test file `src/lib/graphrag/__tests__/episodeGeneration.test.ts` (6 tests); 4 new tests in `docGraph.test.ts` (3 "getDocGraph — Graphiti episode-generation retry" + 1 for the fast-cache-hit `llmRequested` fix), all mutation-tested — reverting only the relevant one-line fix in each case reproduces the exact bug and fails the corresponding test. `graphitiEdges.test.ts` and `entailmentCheck.test.ts` updated for the new required `graphitiEpisodeGen` field / test-isolation hardening.
+- **Merge-conflict note (this branch's own merge with `main`, not a new PR):** `main` had meanwhile merged PR #131 (#127's inflight-capability-set fix), which refactored `getDocGraph`'s pass-application into a shared `applyRequestedPasses` helper touching the same lines this fix touches. Reconciling: `applyRequestedPasses`'s Graphiti branch gated on `wanted.graphiti && !graph.graphitiApplied` — combined with this fix's `augmentWithGraphitiEdges` never resetting `graphitiApplied` back to `false`, that gate would have silently reintroduced #137's exact bug one layer down (a graph that ever succeeded once would never be reconsidered). Fixed by dropping the `!graph.graphitiApplied` clause — `augmentWithGraphitiEdges` already self-guards via `graphitiEpisodeGen`.
+- **Pre-push adversarial review found a third, pre-existing occurrence of #127's `llmWanted`-vs-`llmRequested` bug shape** (on `main` since PR #131, untouched by the merge above) in `getDocGraph`'s fast cache-hit condition — `(cached.llmApplied || !llmWanted)` let an unavailable-but-requesting caller silently accept a stale, background-cached graph missing LLM carry-forward, permanently (not self-healing when availability returns). Fixed to `!llmRequested`, mirroring the two call sites PR #131 already fixed. New mutation-tested regression test in `docGraph.test.ts`.
+
+**PR #139 (branch `claude/docgraph-graphiti-generation-refresh`, https://github.com/Vinylfigure/intent-ide/pull/139, body "Closes #137") is OPEN, not yet merged to `main` — awaiting operator review.**
+
+Closes #137 (on merge). Files #138.
+
+## [2026-08-30] GitHub Actions CI broken repo-wide at the infrastructure level — diagnosed, not fixed (no code shipped, no PR opened)
+
+This firing found and reported a blocker rather than shipping a feature/bugfix; recorded here so the next firing doesn't have to re-diagnose it from scratch.
+
+### Found
+- **Three PRs open at firing start, all with RED `verify`/`gate-integrity` checks:** PR #135 ("Add a way to view and clear the LEGACY_DOCUMENT_ID migration bucket", closes #133/#134), PR #139 ("Retry Graphiti entity edges when a new episode lands...", closes #137, files #138), and PR #140 ("docs: memory-bank catch-up for PRs #130, #131, #132", documentation-only, from a prior firing — itself still open/unmerged, which is why this session's memory-bank read at start didn't yet contain #130/#131/#132's own write-up even though all three had already merged to `main`).
+- **`main`'s own push-triggered `CI` workflow has been failing since the #130/#131/#132 merges** — all three merge commits landed 2026-08-30 between 06:47 and 06:49 UTC; the prior push to `main` (merging #129, 2026-08-28 06:02 UTC) was green. The break is bounded to that window.
+- **Not a code regression:** every failed `verify` job attempt (4 total across the run's history, including one `rerun_failed_jobs` triggered this session specifically to rule out a one-off flake) completed in 0-5 seconds with 0ms billable runner time (`get_workflow_run_usage`) and a 404 on log download — the job never started executing a step. One attempt sat queued ~5.5 hours before failing this way. Likely operator-side: a GitHub Actions spending-limit/included-minutes exhaustion, a repo-visibility change (private repos lose the unlimited free Actions minutes public repos get on standard runners), or Actions disabled at the repo/org level — none of which an unattended firing can see or fix, and `.github/workflows/**` is off-limits to a headless firing to edit regardless of what's suspected.
+
+### Action taken
+- Posted a detailed diagnostic comment on the Status dashboard issue (#25) and a short pointer comment on each of #135, #139, #140 noting their red checks are not caused by their own diffs. No code was written or pushed; no new PR was opened; no new task issue was filed (this is a blocker report, not a proposal).
+
+### Process
+- This firing's "arm": blocked on operator (CI infrastructure) — the mid-sweep equivalent of the work-loop's operator-only preflight block, found against the existing PR queue rather than a specific issue's done-means.
+- **Next firing:** check whether `main`'s most recent push-triggered `CI` run is green before doing anything else. If still red with the same 0ms-billable-runtime signature, it's the same operator-side block — comment again only if something material has changed; otherwise treat hosted CI as unusable for now and consider proceeding with local `typecheck`/`lint`/`test` (per the `test` skill) rather than re-running the same diagnostic report every 4 hours.
+
+### Resolved
+- **2026-09-01 (fleet merge sweep):** the outage was account-level GitHub Actions capacity, not this repo — the identical `runner_id: 0` / empty `runner_name` / logs-404 signature hit `Vinylfigure/aegis-sentinel` and `Vinylfigure/job-search` over the same window. It cleared on its own (aegis-sentinel ran clean at 2026-09-01T00:50Z); `rerun_failed_jobs` on this repo's four stuck runs then returned **green with real durations** on the same unchanged head SHAs, proving the red was never the diffs. No code change was needed or made.
+
+## [2026-08-28] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 open (not yet merged)
+
+## [2026-08-28 → merged 2026-08-30] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 MERGED
+
+Closes issue #127, filed 2026-08-27 as a work-loop idle-evaluation proposal and named as a known pre-existing debt in the Cascade v2 roadmap close-out (`raw_reflection_log.md`/`progress.md` "Inflight-dedupe race" carry-forward line) but never fixed until now.
+
+### Fixed
+- **`getDocGraph`'s inflight dedupe could hand a concurrent caller a lower-capability graph than it asked for.** `src/lib/graphrag/docGraph.ts` deduped concurrent builds for the same document content-hash via an `inflight` map keyed only on the hash. `scheduleDocGraphRebuild` calls it on every debounced edit with `skipLlm`/`skipEmbeddings`/`skipGraphiti` all true (deliberate deterministic-only background build — document text must never leave the machine as a side effect of typing). If a user-initiated cascade wanting the fuller LLM/embeddings/graphiti-augmented graph called `getDocGraph` for the same hash while that background build was still in-flight, it silently got handed the SAME promise — resolving to the deterministic-only graph, with no error or signal it was missing the augmentation it explicitly asked for.
+- **Fix (option (b) from #127's own stated acceptable approaches):** `inflight` entries now carry the capability set (`{llm, embeddings, graphiti}`) they'll deliver. A caller whose wanted capabilities aren't covered by an in-flight entry chains a "continuation": it awaits the same `DocGraph` object, then runs only the still-missing passes against it (`applyRequestedPasses`, extracted from the old build body) before re-caching/re-publishing, using the SAME shared mutable graph object (no duplicate-object cache-clobber race). A third caller wanting even more chains onto that continuation. Concurrent callers requesting the same (or a subset of) capabilities still dedupe to one build, unchanged.
+
+### Process
+- Two rounds of pre-push adversarial (troublemaker) review, both NO-MERGE with a blocking, empirically-reproduced finding, both fixed with regression tests before the PR was opened. **Round 1:** the first fix folded `llmAvailable(config)` into the single flag driving both cache/inflight bookkeeping AND whether `applyRequestedPasses` entered the LLM branch — but that branch also carries forward previously-cached LLM edges for UNCHANGED blocks (`findBestPriorGraph`/`carryForwardLlmEdges`), which the ORIGINAL pre-#127 code ran whenever the caller didn't pass `skipLlm`, independent of live-call availability. Folding availability in meant a dropped/invalid API key would silently ERASE previously-found LLM edges for content the triggering edit never touched — reproduced concretely (valid-key build finds an edge; key goes invalid; unrelated-block edit; edge vanishes on the broken version, survives on origin/main). Fixed by splitting `llmRequested = !deps.skipLlm` (raw caller intent, gates the carry-forward branch) from `llmWanted = llmRequested && llmAvailable(config)` (availability-aware, used only for the cache-hit check). **Round 2:** round 1's split only applied at the single-call `wanted` object — the multi-caller `covers` check and `InflightEntry` bookkeeping still compared availability-gated `llmWanted` on both sides, so two concurrently-unavailable callers with different RAW intent (one skips llm, one doesn't) could still silently inherit each other's result — the same bug shape as #127 itself, one layer down. Confirmed dormant in production today only because every current call site happens to couple `skipLlm` with `skipGraphiti`/`skipEmbeddings` (an unenforced, undocumented cross-file invariant across `scheduleDocGraphRebuild`, `directEditTrigger.ts`, `entailmentCheck.ts`; `proposeCascadeEdits` never skips either, which happens to force the covers-check false against every background caller anyway). Fixed by using `llmRequested` consistently through `InflightEntry.llm`, the `covers` comparison, and both entry-construction sites. Both findings were mutation-tested directly (temporarily reverted the specific fix, confirmed the exact predicted regression test failure, restored the fix) — not merely argued from reading the diff.
+- A third, self-identified (not reviewer-flagged) gap was also closed before push: round 2's own summary claimed a test covered "orthogonal capability requests serializing rather than parallelizing" (a disclosed, accepted, non-blocking design trade-off — one of #127's own stated acceptable approaches, not a regression) — that claim was inaccurate; the cited test only exercised a SUBSET scenario (dedupe short-circuit), never two genuinely DISJOINT requests (e.g. llm-only vs embeddings-only). A new test closes the gap, proving chained continuations still deliver BOTH requested capabilities.
+- 6 new tests in `src/lib/graphrag/__tests__/docGraph.test.ts`: (1) the original race repro (background deterministic-only build in-flight, concurrent cascade wanting LLM gets `llmApplied: true` and its edge, not silently dropped); (2) a subset caller dedupes onto an in-flight fuller build with no redundant model call; (3) the exact production call shapes of `scheduleDocGraphRebuild` and `proposeCascadeEdits` (which hit the un-stubbed `embeddingsEnabledFromStore()` await before either call reaches the inflight check); (4) round 1's regression (LLM edges carry forward across an untouched block even when the provider becomes unavailable on a later build); (5) round 2's regression (a concurrent caller wanting LLM carry-forward is never satisfied by an in-flight build that skipped it, even when both callers are currently unavailable); (6) disjoint capabilities (llm-only vs embeddings-only) both end up delivered via chaining, not lost.
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1126 passing + 10 skipped (up from 1120 on `main` at merge base `2f388a9`; +6 new tests, nothing else regressed).
+- No new follow-up issues filed — the one disclosed known limitation (chained continuations serialize rather than parallelize disjoint capability requests) was closed with a regression test rather than deferred, and is explicitly within #127's own stated scope, not a descoped remainder.
+
+**PR #131 (branch `claude/docgraph-inflight-capability`, https://github.com/Vinylfigure/intent-ide/pull/131, body "Closes #127") MERGED to `main`** — confirmed via the merge-conflict resolution entry at the top of this file (2026-08-30).
+
+**PR #131 (branch `claude/docgraph-inflight-capability`, https://github.com/Vinylfigure/intent-ide/pull/131, body "Closes #127") MERGED to `main`** — confirmed merged as of the memory-bank catch-up session (2026-08-30).
+
+Closes #127.
+
+**Also for continuity, not actioned this session:** at the start of this session, **PR #123** (closes #117) and **PR #124** (closes #121) — both logged below as "open" — had since **merged**; issue #122 (the `loadDoc()` outgoing-autosave-flush data-loss bug PR #123 disclosed but didn't fix) gained an open **PR #125**, which went stale (`mergeable_state: dirty`) after #123/#124 merged and was superseded by **PR #130** ("Rebase #125 onto main after #123 merged", also closes #122, `mergeable_state: clean`, CI green) — both #125 and #130 are still open, untouched this session (their own CI is green). **PR #129** (closes #126, `changesStore` documentId migration mirroring `annotationStore`'s) merged before this session started. New issue **#128** was filed by the repo owner (not this session) about a migration-fallback data-integrity gap in `migrateAnnotations`/`migrateChanges`, discovered from PR #129's own adversarial review — still open, not evaluated this session since #127 was chosen first as the older ready task.
+
+## [2026-08-30] Documentation catch-up — PRs #130 and #132 merged without memory-bank updates
+
+Two PRs merged to `main` since the last memory-bank update (the PR #131 session, 2026-08-28) with no `memory-bank/` changes in their diffs — pure code+test PRs, violating this repo's own CLAUDE.md convention of bundling memory-bank updates into the PR that does the work: **PR #130** (rebase of #125, closes #122) and **PR #132** (closes #128, files #133). PR #131 itself already carried its own entry above when it merged — only its header/status line needed correcting here, not a new entry. Documented here retroactively, as its own small documentation-only PR (`claude/memory-bank-catchup-130-131-132`); `main` was at `f322e4c` at the time of this catch-up and already includes all three PRs' code. No `src/` files were touched by this session.
+
+## [2026-08-30] Legacy `documentId` migration fallback hardened (PR #132, documented retroactively)
+
+`migrateAnnotations` (`annotationStore.ts`) and `migrateChanges` (`changesStore.ts`) both backfilled a missing/undefined `documentId` on pre-multi-document (pre-Phase-8, 2026-03-16) persisted records using whatever `activeDocumentId` happened to be active at the moment of the first post-upgrade rehydration — a user who'd used the app across multiple distinct pre-Phase-8 documents could have all that history silently merged onto whichever document happened to be open, contaminating its `AnnotationPanel`/`ChangesPanel`/`StatusBar` views.
+
+### Fixed
+- Both migrations now always fall back to one fixed `LEGACY_DOCUMENT_ID = 'legacy'` placeholder, shared via new file `src/lib/documents/legacyDocumentId.ts`, never `activeDocumentId`.
+
+### Investigated, deliberately not pursued
+- Whether a stable per-document identifier survives in the persisted data to properly un-merge distinct legacy documents: no stored foreign key exists, but `anchor.text`/`beforeSlice`/`afterSlice` do carry quoted document text that could in principle content-match against the legacy document bodies `documentStore.ts`'s `runLegacyProjectMigration` already recovers under real ids. Not pursued — reasoning recorded in `legacyDocumentId.ts`'s doc comment: no rehydration-order guarantee across three independent Zustand `persist` stores; duplicate/near-duplicate phrasing is exactly what a text match would collide on; likely small affected population.
+
+### Process
+- One round of pre-push adversarial (troublemaker) review, **NO-MERGE with 1 HIGH + 2 MEDIUM**, all fixed before the PR was opened.
+- (MEDIUM) the doc comment's first draft overstated the investigation, falsely claiming no field survives at all — corrected to state the real reasoning above.
+- **(HIGH, disclosed rather than silently shipped)** the fix trades silent cross-document contamination for a new cost: since no real document is ever created with `LEGACY_DOCUMENT_ID`, a migrated record becomes permanently invisible to every `documentId === activeDocumentId` filtered view (`AnnotationPanel`/`ChangesPanel`/`StatusBar`/`AnnotationMap`/`FloatingAnswer`), with no UI path to view/manage/delete it. Explicitly documented as an accepted trade-off, bounded by each store's existing FIFO persistence caps (orphaned records eventually age out rather than growing unbounded), and covered by a regression test per store asserting the invisibility holds against every possible active document. Giving users an actual UI path to reach this bucket was ruled out of scope for #128 and filed as follow-up **issue #133**.
+- (MEDIUM) `annotationStore.migration.test.ts` had re-implemented `migrateAnnotations` by hand with a comment claiming it "is not exported" — false as of this PR since it's now exported (mirroring `migrateChanges`, exported since #129) — switched to import and test the real function instead of a hand-rolled duplicate that could silently drift from it.
+- `npm run test` — 1132 passing + 10 skipped at merge (up from 1120 baseline). 2 new/updated test files.
+
+**PR #132 (branch `claude/legacy-documentid-migration-fallback`, body "Closes #128") MERGED to `main`.**
+
+Closes #128. Files #133.
+
+## [2026-08-30] `loadDoc()` flush-before-switch fix rebased onto `main` — PR #130 MERGED, supersedes PR #125 (documented retroactively)
+
+Consumes issue #122 (filed by PR #123/#117's own adversarial review, 2026-08-27 — see the PR #123 entry below): `DocInputModal`'s `loadDoc()` never flushed the outgoing document's dirty autosave before switching documents, causing silent data loss (full repro chain recorded in the PR #123 entry below).
+
+### Fixed
+- **`loadDoc()` now flushes the outgoing document's dirty state** via `saveDocument`/`recordCommit` before replacing editor content, mirroring `EditorShell.tsx`'s existing flush-before-switch guard.
+
+### Process
+- **PR #130 (branch `claude/rebase-125`)** rebased PR #125's fix onto `main` after PR #123 (`loadDoc-undo-history-guard`, closes #117) had already merged and created a conflict.
+- PR #125 itself is also now marked merged by GitHub (its commits landed via #130's rebase) — treated as superseded/subsumed by #130 rather than a separate delivery, per #130's own PR body ("Supersedes #125 — close it rather than merging once this lands").
+- `npm run test` — 1122 passed, 10 skipped, at merge.
+
+**PR #130 (branch `claude/rebase-125`, body "Rebase #125 (loadDoc flush) onto main after #123 merged") MERGED to `main`.**
+
+Closes #122.
+
+## [2026-08-27 → merged 2026-08-28] StatusBar "N thinking…" chip scoped to active document — fix delivered, PR #124 MERGED
+
+Closes issue #121, filed as a follow-up from PR #120's own adversarial review (`discovered-from: work-loop adversarial review of PR #120 for #116, 2026-08-27`).
+
+### Fixed
+- **`StatusBar.tsx`'s `inFlightCount` selector (the "N thinking…" chip)** now filters on `a.documentId === activeDocumentId`, matching the other three chips in the same component (`annotationCount`, `changeSetCount`, `changeCount`) that PR #120/#116 already scoped. Previously counted in-flight (`pending`/`classified`/`resolving`) annotations across every document, so it could show "N thinking…" for unrelated background work on a document other than the one the user was viewing.
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**. Confirmed by repo-wide grep that no other place duplicates the `pending|classified|resolving` in-flight filter: `annotationStore.ts`'s `finalizeInterruptedAnnotations` uses the same status trio but for rehydration repair, not a display count (correctly out of scope); `DocumentHubSidebar.tsx`'s delete-confirmation count is an unrelated, intentionally different per-target-document filter. Every new test assertion was traced against the pre-fix filter and confirmed to fail on revert (not vacuous).
+- One minor, non-blocking coverage-parity nit raised and closed before push: the sibling #116 test file (`statusBar.activeDocumentScope.test.tsx`) has an explicit `activeDocumentId === null` case this file initially lacked; `documentId` is typed non-nullable `string` and `annotationStore.ts`'s `migrateAnnotations` unconditionally backfills a nullish `documentId` on hydration, so this was a coverage gap rather than an exploitable bug — the null-active-document test case was added before push.
+- `npm run test` — 1111 passing + 10 skipped on the PR branch (1110 on `main` at merge base `dcfbee4`, the commit that merged PR #120). `npm run typecheck` / `npm run lint` clean. New test file `src/components/Layout/__tests__/statusBar.inFlightScope.test.tsx` (4 tests).
+- No new follow-up issues filed — the fix was fully scoped to #121's done-means with no descoped remainder.
+
+**PR #124 (branch `claude/statusbar-inflight-scope`, https://github.com/Vinylfigure/intent-ide/pull/124, body "Closes #121") MERGED to `main` — confirmed merged as of the PR #131 session (2026-08-28).**
+
+Closes #121.
+
+**Also for continuity, not actioned this session:** between the last memory-bank update (below) and this session, PR #119 (closes #115, "Gate collection delete behind a confirmation step") and PR #120 (closes #116) both **merged**; issue #117 gained an open PR #123 (not yet merged — `mergeable_state` shows a merge conflict against `main` but CI checks are green, left for its own review/resolution); issue #122 was filed (discovered-from PR #123/#117's adversarial review), not yet consumed.
+
+## [2026-08-27] StatusBar chip counts scoped to active document — fix delivered, PR #120 MERGED
+
+## [2026-08-27] loadDoc() flushes outgoing dirty edit before document switch — fix delivered, PR #125 open (not yet merged)
+
+Discovered as a by-product of adversarial review on PR #123 (fix for #117); filed as its own issue (#122) with its own done-means rather than folded in or left as a TODO.
+
+### Fixed
+- **`DocInputModal.tsx`'s `loadDoc()`** (shared by Blank/Paste/Generate/Import) now flushes the outgoing document's pending unsaved edit before replacing editor content and switching `activeDocumentId` — previously it did neither, unlike `EditorShell.tsx`'s own document-switch effect, which already guards against exactly this. Concretely: typing into Document A within the 5s autosave window, then creating/pasting/generating/importing a new document before the timer fires, silently dropped Doc A's edit (never written to localStorage, never recorded via `recordCommit`) — `loadDoc()`'s content-replace transaction re-armed the autosave debounce around the new document's content, destroying the timer that would have flushed Doc A, and `createDocument()` reset `isDirty: false` before `EditorShell`'s switch-effect guard could see it.
+- **Fix:** `loadDoc()` reads `useDocumentStore.getState()` before dispatching the replace transaction; if the active document is dirty, it captures the current (pre-replace) editor content via `view.state.doc.toJSON()` and flushes it with `saveDocument()` + `recordCommit()` (kind: 'direct', actor: 'human') — mirroring `EditorShell.tsx`'s existing guard exactly. All four call sites funnel through this one fix.
+
+### Process
+- Adversarial (troublemaker agent) review verdict: **MERGE**. Confirmed the flush ordering has no stale-closure risk (`view.state.doc` is read before the replace transaction; `useDocumentStore.getState()` is read fresh at call time), and that the flush cannot recursively retrigger `EditorShell`'s autosave since it dispatches no transaction of its own. Confirmed `EditorShell`'s own switch effect does not double-flush (its guard correctly no-ops once `createDocument()` has already reset `isDirty`) and that its pre-existing redundant reload of the new document's content is not a regression introduced here.
+- One real finding on the original test 2 (mutation-tested by the reviewer): it only asserted `loadDoc()` didn't throw when `isDirty` was false, which would pass identically even with a broken (`||` instead of `&&`) guard. Fixed before push by spying on `saveDocument` directly; self-mutation-tested afterward — weakened the guard to `||`, confirmed the tightened test now fails, restored the fix, confirmed it passes again.
+- **Adjacent bug surfaced, not a new discovery:** the review independently found `loadDoc()`'s content-replace transaction is missing `tr.setMeta('addToHistory', false)`, risking an immediate Cmd-Z after a document switch resurrecting the outgoing document's content into a view still bound to the new document's id. This is exactly the bug already fixed on open PR #123 (`claude/loadDoc-undo-history-guard`, closes #117), which predates this branch — verified by diffing PR #123's branch directly rather than assumed. No new issue filed; the PR body notes this explicitly so nothing is silently dropped between the two open PRs.
+- `npm run test` — 1109 passing + 10 skipped on the PR branch (1107 baseline on `main` at `dcfbee4`). `npm run typecheck` / `npm run lint` clean. New test file `src/components/DocInput/__tests__/docInputModal.flushOutgoingDirty.test.tsx`.
+
+**PR #125 (branch `claude/loadDoc-flush-outgoing-dirty`, https://github.com/Vinylfigure/intent-ide/pull/125, base `main` at `dcfbee4`) is OPEN, not yet merged to `main` — awaiting operator review.**
+
+Closes #122 (on merge).
+
+## [2026-08-27] StatusBar chip counts scoped to active document — fix delivered, PR #120 open (not yet merged)
+
+### Fixed
+- **`StatusBar.tsx`'s annotation/change-set/change count chips** now filter by `documentId === activeDocumentId`, matching every other consumer of `annotationStore`/`changesStore` (`AnnotationPanel.tsx`, `ChangesPanel.tsx`). Previously read raw, unfiltered totals across all documents. Fixed by adding `activeDocumentId` from `useDocumentStore` and filtering all three chip counts by it.
+
+### Process
+- Adversarial (troublemaker) review verdict: **MERGE**. Mutation-tested — reverting only `StatusBar.tsx` makes all 3 new tests fail, confirming they aren't vacuous.
+- Two findings surfaced, both non-blocking: **(1) medium** — `inFlightCount` (the "N thinking…" chip) remains unscoped across all documents, since `documentStore.setActiveDocument` has no side effects to pause background classification/resolution on document switch; deliberately out of #116's stated scope, filed as follow-up **issue #121**. **(2) low, pre-existing, not introduced by this PR** — `changesStore.ts` has no legacy-data migration for `entries`/`changeSets` analogous to `annotationStore.ts`'s `migrateAnnotations`, so a pre-multi-document persisted change record with a missing `documentId` silently vanishes from `ChangesPanel.tsx`'s and now `StatusBar.tsx`'s filtered views; predates this PR (same filter already existed in `ChangesPanel.tsx`), not filed as a separate GitHub issue.
+- `npm run test` — 1103 passing + 10 skipped on the PR branch (1100 before this branch). `npm run typecheck` / `npm run lint` clean. New test file `src/components/Layout/__tests__/statusBar.activeDocumentScope.test.tsx`.
+
+**PR #120 (branch `claude/statusbar-active-doc-scope`, https://github.com/Vinylfigure/intent-ide/pull/120, body "Closes #116") MERGED to `main` — confirmed merged as of the PR #124 session above (2026-08-27); PR #124 cites the merge commit `dcfbee4` as its merge base.**
+
+Closes #116. Files #121 — fixed by PR #124 above.
+
+## [2026-08-27 → merged 2026-08-28] `loadDoc()` undo-history guard — fix delivered, PR #123 MERGED
+
+Consumes issue #117: `DocInputModal.tsx`'s `loadDoc()` (shared by Blank/Paste/Generate/Import) replaced the editor's full content via `replaceWith` without `tr.setMeta('addToHistory', false)`, unlike `EditorShell.tsx`'s already-guarded document-switch path — Cmd-Z after creating/loading a document could resurrect the prior document's content and, via the existing autosave debounce, get it written to localStorage under the new document's id (the same class of bug the v8.4 doc-switch fix closed for `EditorShell.tsx` on 2026-07-09, just at a second unguarded call site).
+
+### Fixed
+- **`loadDoc()`** now dispatches its content-replace transaction with `tr.setMeta('addToHistory', false)`, matching `EditorShell.tsx`'s guard. All four load paths (Blank/Paste/Generate/Import) funnel through this one function, so one fix closes all four.
+
+### Process
+- New regression test `src/components/DocInput/__tests__/docInputModal.loadDocHistoryGuard.test.tsx` mounts a real `EditorView` with the `history` plugin, drives the Paste flow, then calls `undo()` and asserts content is unchanged and `undo()` returns `false`. Mutation-tested: reverting only the fix reproduces the exact resurrection bug and fails the test.
+- Adversarial (troublemaker) review confirmed the fix correct and complete for #117's stated scope, and grepped the codebase to confirm no other unguarded full-document-replace site exists anywhere — the only three full-document-replace sites are `EditorShell.tsx` (pre-existing, guarded), `src/lib/history/commits.ts` (pre-existing, guarded), and this one (now guarded). Also confirmed the new test is not vacuous — it distinguishes a truthy-but-not-`false` `addToHistory` value from a real fix, per prosemirror-history's own `!== false` check.
+- **Separate pre-existing bug found and reproduced (not fixed here, deliberately descoped):** the same review independently reproduced, via a scripted repro with fake timers (not shipped), that `loadDoc()` never flushes the *outgoing* document's dirty autosave before replacing content and switching `activeDocumentId` — unlike `EditorShell.tsx`'s own switch effect, which flushes first. Failure chain: edit Doc A inside the 5s autosave debounce window → open `DocInputModal` and load Doc B → the load's `docChanged` transaction re-triggers `debouncedSave`, clearing Doc A's pending flush and rescheduling around the now-replaced Doc B content → `createDocument()` sets `activeDocumentId` to Doc B and resets `isDirty: false` → `EditorShell`'s flush-before-switch guard re-reads `isDirty` fresh, finds it already false, and no-ops → Doc A's edit is silently lost, never written to localStorage, never recorded via `recordCommit`. This is a silent DATA-LOSS bug (not corruption), independent of the addToHistory fix. Filed as its own issue, **#122**, with a stated done-means and repro chain (`discovered-from: work-loop adversarial review of the PR for #117, 2026-08-27`).
+- `npm run typecheck` clean, `npm run lint` clean, `npm run test` — 1101 passing + 10 skipped (up from 1100 on `main`).
+
+**PR #123 (branch `claude/loadDoc-undo-history-guard`, https://github.com/Vinylfigure/intent-ide/pull/123) MERGED to `main` — confirmed merged as of the PR #131 session (2026-08-28). PR body said "Closes #117" and honestly disclosed issue #122 as a known, separate, unfixed bug rather than folding it in or omitting it.**
+
+Closes #117. Files #122 (still open — superseded by PR #130, see the PR #131 entry above).
+
 ## [2026-08-25] `heldAnswers` leak on annotation removal — fix delivered, PR #106 open (not yet merged)
 
 Continues a `heldAnswers` leak-fix chain this changelog has no prior entries for (issue #95 → PR #102 → issue #103 → PR #106 → issue #107); #95/#102 predate this entry and are not detailed here.

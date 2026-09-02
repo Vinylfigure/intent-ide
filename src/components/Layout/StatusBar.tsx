@@ -4,6 +4,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { useAnnotationStore } from '@/stores/annotationStore'
 import { useChangesStore } from '@/stores/changesStore'
 import { useDocGraphStore } from '@/stores/docGraphStore'
+import { useDocumentStore } from '@/stores/documentStore'
 
 /** Chip state for annotations still being classified/resolved in the background. */
 function inFlightChip(count: number): { label: string; title: string } | null {
@@ -56,15 +57,24 @@ export function StatusBar() {
   const provider = useSettingsStore((s) => s.llmConfig.provider)
   const model = useSettingsStore((s) => s.llmConfig.model)
   const hasKeys = useSettingsStore((s) => s.hasKeys())
-  const annotationCount = useAnnotationStore((s) => s.annotations.length)
+  const activeDocumentId = useDocumentStore((s) => s.activeDocumentId)
+  const annotationCount = useAnnotationStore(
+    (s) => s.annotations.filter((a) => a.documentId === activeDocumentId).length,
+  )
   const inFlightCount = useAnnotationStore(
     (s) =>
       s.annotations.filter(
-        (a) => a.status === 'pending' || a.status === 'classified' || a.status === 'resolving',
+        (a) =>
+          a.documentId === activeDocumentId &&
+          (a.status === 'pending' || a.status === 'classified' || a.status === 'resolving'),
       ).length,
   )
-  const changeSetCount = useChangesStore((s) => s.changeSets.length)
-  const changeCount = useChangesStore((s) => s.entries.filter((e) => !e.undone).length)
+  const changeSetCount = useChangesStore(
+    (s) => s.changeSets.filter((cs) => cs.documentId === activeDocumentId).length,
+  )
+  const changeCount = useChangesStore(
+    (s) => s.entries.filter((e) => !e.undone && e.documentId === activeDocumentId).length,
+  )
   const graphStatus = useDocGraphStore((s) => s.status)
   const graph = useDocGraphStore((s) => s.graph)
   const chip = graphChip(graphStatus, graph)

@@ -9,8 +9,11 @@ import {
   PROVIDER_BASE_URLS,
 } from '@/stores/settingsStore'
 import { modelRejectsSampling, providerCapabilities } from '@/lib/ai/modelCapabilities'
-import { getSessionEstimate } from '@/lib/ai/spendEstimate'
+import { getSessionEstimate, getTranscriptionEstimate } from '@/lib/ai/spendEstimate'
 import { useCascadeCalibrationStore } from '@/stores/cascadeCalibrationStore'
+import { useAnnotationStore } from '@/stores/annotationStore'
+import { useChangesStore } from '@/stores/changesStore'
+import { LEGACY_DOCUMENT_ID } from '@/lib/documents/legacyDocumentId'
 
 export function ApiKeyModal() {
   const llmConfig = useSettingsStore((s) => s.llmConfig)
@@ -28,6 +31,24 @@ export function ApiKeyModal() {
   const setTelemetryEnabled = useSettingsStore((s) => s.setTelemetryEnabled)
   const calibrationCounts = useCascadeCalibrationStore((s) => s.counts)
   const resetCalibration = useCascadeCalibrationStore((s) => s.reset)
+  // Records the pre-Phase-8 migration fallback stamped onto legacy
+  // annotations/changes (see legacyDocumentId.ts) — permanently invisible to
+  // every documentId===activeDocumentId filtered view since no real document
+  // is ever created with this id. Surfaced here so it's reachable at all (#133).
+  const legacyAnnotationCount = useAnnotationStore(
+    (s) => s.annotations.filter((a) => a.documentId === LEGACY_DOCUMENT_ID).length,
+  )
+  const legacyEntryCount = useChangesStore(
+    (s) => s.entries.filter((e) => e.documentId === LEGACY_DOCUMENT_ID).length,
+  )
+  const legacyChangeSetCount = useChangesStore(
+    (s) => s.changeSets.filter((cs) => cs.documentId === LEGACY_DOCUMENT_ID).length,
+  )
+  const hasLegacyData = legacyAnnotationCount > 0 || legacyEntryCount > 0 || legacyChangeSetCount > 0
+  const clearLegacyData = () => {
+    useAnnotationStore.getState().removeByDocumentId(LEGACY_DOCUMENT_ID)
+    useChangesStore.getState().removeByDocumentId(LEGACY_DOCUMENT_ID)
+  }
 
   // Local calibration readout: explicit review decisions only (accepted vs
   // accepted + rejected) — 'applied' is a downstream consequence, not a
@@ -52,8 +73,12 @@ export function ApiKeyModal() {
   // Spend estimate is module state, not reactive — poll it while the modal is
   // open so long-lived sessions see the line move without reopening.
   const [sessionTokens, setSessionTokens] = useState(() => getSessionEstimate())
+  const [transcriptionBytes, setTranscriptionBytes] = useState(() => getTranscriptionEstimate())
   useEffect(() => {
-    const timer = setInterval(() => setSessionTokens(getSessionEstimate()), 2000)
+    const timer = setInterval(() => {
+      setSessionTokens(getSessionEstimate())
+      setTranscriptionBytes(getTranscriptionEstimate())
+    }, 2000)
     return () => clearInterval(timer)
   }, [])
 
@@ -339,13 +364,38 @@ export function ApiKeyModal() {
             <p className="text-xs text-muted-foreground leading-relaxed">
               Document text leaves this machine only when you act: on annotation resolution,
               cascade analysis, citation verification, and semantic-similarity indexing — never
-              while typing. All calls go only to your configured provider.
+              while typing. Voice transcription sends recorded audio (not document text) to
+              Whisper when you record. All calls go only to your configured provider.
             </p>
 
             <p className="text-xs font-mono text-muted-foreground">
-              This session: ~{sessionTokens.toLocaleString()} tokens sent (rough estimate; excludes transcription)
+              This session: ~{sessionTokens.toLocaleString()} tokens sent (rough estimate)
+            </p>
+            <p className="text-xs font-mono text-muted-foreground">
+              Transcription: ~{(transcriptionBytes / 1024).toFixed(1)} KB of audio sent (rough
+              estimate, not billing-accurate)
             </p>
           </div>
+
+          {/* Legacy data — only shown if the pre-Phase-8 migration bucket is non-empty */}
+          {hasLegacyData && (
+            <div className="pt-4 border-t border-border space-y-2">
+              <h3 className="text-xs font-mono uppercase tracking-wider text-muted">Legacy data</h3>
+              <p className="text-xs text-muted leading-relaxed">
+                {legacyAnnotationCount} annotation{legacyAnnotationCount === 1 ? '' : 's'},{' '}
+                {legacyChangeSetCount} change set{legacyChangeSetCount === 1 ? '' : 's'}, and{' '}
+                {legacyEntryCount} change{legacyEntryCount === 1 ? '' : 's'} from before this app
+                supported multiple documents (2026-03-16) — not attached to any document you can
+                open, so they never appear elsewhere.
+              </p>
+              <button
+                onClick={clearLegacyData}
+                className="text-xs text-annotation-correction hover:underline underline-offset-2"
+              >
+                Clear legacy data
+              </button>
+            </div>
+          )}
 
           <button
             onClick={handleSave}

@@ -4,16 +4,21 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Annotation, ConversationMessage, Resolution } from '@/lib/annotations/types'
 import { mapLegacyType, normalizeProposedEdit } from '@/lib/annotations/types'
-import { useDocumentStore } from '@/stores/documentStore'
+import { LEGACY_DOCUMENT_ID } from '@/lib/documents/legacyDocumentId'
 import { useFlowStore } from '@/stores/flowStore'
 
-/** Migrate annotations from the old 6-type system to the new 4-type system on hydration */
-function migrateAnnotations(annotations: Annotation[]): Annotation[] {
-  const activeDocumentId = useDocumentStore.getState().activeDocumentId ?? 'legacy'
+/**
+ * Migrate annotations from the old 6-type system to the new 4-type system on
+ * hydration, and backfill a missing/undefined `documentId` on records that
+ * predate multi-document support. The backfill always uses the fixed
+ * `LEGACY_DOCUMENT_ID` placeholder, never the currently-active document — see
+ * `legacyDocumentId.ts` for why.
+ */
+export function migrateAnnotations(annotations: Annotation[]): Annotation[] {
   return annotations.map((a) => ({
     ...a,
-    documentId: a.documentId ?? activeDocumentId,
-    locationGroupKey: a.locationGroupKey ?? `${a.documentId ?? activeDocumentId}:${a.anchor.from}:${a.anchor.to}`,
+    documentId: a.documentId ?? LEGACY_DOCUMENT_ID,
+    locationGroupKey: a.locationGroupKey ?? `${a.documentId ?? LEGACY_DOCUMENT_ID}:${a.anchor.from}:${a.anchor.to}`,
     type: mapLegacyType(a.type),
     resolution: a.resolution
       ? {
@@ -86,8 +91,8 @@ interface AnnotationState {
    * Removes every annotation belonging to a deleted document, routed through
    * `remove()` per-id so each also gets its `heldAnswers` purge for free
    * (#107). Lives here rather than in `documentStore.ts`'s `deleteDocument`
-   * because `annotationStore.ts` already imports `useDocumentStore` — the
-   * reverse import would be circular.
+   * so the deletion caller (`DocumentHubSidebar.tsx`) can invoke it directly
+   * instead of `documentStore.ts` reaching into `annotationStore.ts`.
    */
   removeByDocumentId: (documentId: string) => void
   setActive: (id: string | null) => void

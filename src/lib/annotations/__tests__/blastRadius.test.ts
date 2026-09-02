@@ -49,6 +49,7 @@ function chainGraph(): DocGraph {
     embeddingsApplied: false,
     embeddingsPartial: false,
     graphitiApplied: false,
+    graphitiEpisodeGen: -1,
     blockHashes: new Map(),
     nodes,
     edges: [ab, bc],

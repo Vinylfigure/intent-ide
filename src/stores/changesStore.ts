@@ -5,6 +5,27 @@ import { persist } from 'zustand/middleware'
 import type { Annotation } from '@/lib/annotations/types'
 import type { ChangeEntry, ChangeSet, ChangeSetStatus, VersionSnapshot } from '@/lib/changes/changeLog'
 import { generateId } from '@/lib/utils/id'
+import { LEGACY_DOCUMENT_ID } from '@/lib/documents/legacyDocumentId'
+
+/**
+ * Backfill a missing/undefined `documentId` on persisted entries/changeSets
+ * written before multi-document support existed (Phase 8, 2026-03-16) —
+ * mirrors annotationStore.ts's migrateAnnotations, including the fixed
+ * `LEGACY_DOCUMENT_ID` fallback (see `legacyDocumentId.ts` for why it must
+ * not be the currently-active document). Without this backfill, such a
+ * record can never match any real activeDocumentId in a `documentId ===
+ * activeDocumentId` filter (ChangesPanel.tsx, StatusBar.tsx) and silently
+ * disappears from every view.
+ */
+export function migrateChanges(
+  entries: ChangeEntry[],
+  changeSets: ChangeSet[]
+): { entries: ChangeEntry[]; changeSets: ChangeSet[] } {
+  return {
+    entries: entries.map((e) => ({ ...e, documentId: e.documentId ?? LEGACY_DOCUMENT_ID })),
+    changeSets: changeSets.map((cs) => ({ ...cs, documentId: cs.documentId ?? LEGACY_DOCUMENT_ID })),
+  }
+}
 
 const MAX_PERSISTED_ENTRIES = 500
 const MAX_PERSISTED_CHANGE_SETS = 100
@@ -24,6 +45,13 @@ interface ChangesState {
   updateChangeSetStatus: (id: string, status: ChangeSetStatus) => void
   setChangeSetCommitHash: (id: string, commitHash: string) => void
   getChangeSetByAnnotationId: (annotationId: string) => ChangeSet | undefined
+  /**
+   * Removes every entry and change set belonging to a given document —
+   * mirrors annotationStore.ts's `removeByDocumentId`. Used both for real
+   * document deletion and, via `LEGACY_DOCUMENT_ID`, to let a user clear the
+   * invisible pre-Phase-8 migration bucket (#133).
+   */
+  removeByDocumentId: (documentId: string) => void
   clear: () => void
 }
 
@@ -197,6 +225,12 @@ export const useChangesStore = create<ChangesState>()(
       getChangeSetByAnnotationId: (annotationId) =>
         get().changeSets.find((changeSet) => changeSet.annotationIds.includes(annotationId)),
 
+      removeByDocumentId: (documentId) =>
+        set((s) => ({
+          entries: s.entries.filter((e) => e.documentId !== documentId),
+          changeSets: s.changeSets.filter((cs) => cs.documentId !== documentId),
+        })),
+
       clear: () => set({ entries: [], changeSets: [], snapshots: [] }),
     }),
     {
@@ -234,7 +268,12 @@ export const useChangesStore = create<ChangesState>()(
         },
         removeItem: (name: string) => localStorage.removeItem(name),
       },
-      onRehydrateStorage: () => () => {
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          const migrated = migrateChanges(state.entries, state.changeSets)
+          state.entries = migrated.entries
+          state.changeSets = migrated.changeSets
+        }
         // Snapshots are not persisted — ensure empty array on rehydration
         const current = useChangesStore.getState()
         if (!current.snapshots || current.snapshots.length === 0) {

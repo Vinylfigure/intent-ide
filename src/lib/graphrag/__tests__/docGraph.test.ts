@@ -14,7 +14,9 @@ import {
   invalidateDocGraphCache,
   SOURCE_PRIORITY,
   type DocGraphEdge,
+  type GraphitiEdgeDeps,
 } from '../docGraph'
+import type { GraphNode, SubgraphResult } from '@/lib/mcp/graphitiClient'
 
 const CONFIG: LLMConfig = { provider: 'claude', apiKey: 'test-key', model: 'test-model' }
 
@@ -561,6 +563,121 @@ describe('getDocGraph — incremental per-block updates', () => {
     // Nothing carried forward from a graph that isn't the same document.
     expect(g.edges.some((e) => e.source === 'llm')).toBe(false)
   })
+
+  it('carries forward previously-found LLM edges even when the provider becomes unavailable on a later build', async () => {
+    // Regression: the #127 fix must not fold llmAvailable(config) into the
+    // gate that decides whether to run carryForwardLlmEdges — that gate is
+    // caller-side bookkeeping independent of whether a live model call can
+    // happen this time, and it ran unconditionally (as long as the caller
+    // didn't pass skipLlm) before #127. A dropped API key must not silently
+    // erase edges the LLM already found on an earlier, untouched block pair.
+    const propose = {
+      name: 'link_blocks',
+      input: { from_block_id: 'b10', to_block_id: 'b11', edge_type: 'depends-on' },
+    }
+    const doc1 = bigDoc('b', 30)
+    const g1 = await getDocGraph(doc1, CONFIG, { callStructured: scripted([propose]) })
+    expect(g1.edges.some((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11')).toBe(true)
+
+    // The provider becomes unavailable (key removed). Edit an UNRELATED
+    // block (b20) — b10/b11 are untouched — via the normal production call
+    // shape (no skipLlm, no skipEmbeddings).
+    const doc2 = bigDoc('b', 30, { 20: 'Rewritten twentieth paragraph content.' })
+    const unavailableConfig: LLMConfig = { ...CONFIG, apiKey: '' }
+    let called = false
+    const g2 = await getDocGraph(doc2, unavailableConfig, {
+      callStructured: async () => {
+        called = true
+        return { toolCalls: [] }
+      },
+    })
+
+    expect(called).toBe(false) // never actually calls an unreachable provider
+    expect(g2.edges.some((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11')).toBe(true)
+  })
+
+  it('a concurrent caller wanting llm carry-forward is never satisfied by an in-flight build that skipped it, even when both callers are currently unavailable', async () => {
+    // Regression, round 2: the single-call fix above (llmRequested vs
+    // llmWanted) isn't enough on its own — the inflight `covers` check and
+    // `InflightEntry` bookkeeping must ALSO compare raw intent, not
+    // availability. Otherwise two concurrent callers who are BOTH currently
+    // unavailable (so their own llmWanted is false either way) can still
+    // differ in llmRequested (one skipped llm, one didn't), and the
+    // requesting one would silently inherit the skipping one's in-flight
+    // result — reintroducing #127's exact bug shape one layer down.
+    const propose = {
+      name: 'link_blocks',
+      input: { from_block_id: 'b10', to_block_id: 'b11', edge_type: 'depends-on' },
+    }
+    const doc1 = bigDoc('b', 30)
+    await getDocGraph(doc1, CONFIG, { callStructured: scripted([propose]) })
+
+    const doc2 = bigDoc('b', 30, { 20: 'Rewritten twentieth paragraph content.' })
+    const unavailableConfig: LLMConfig = { ...CONFIG, apiKey: '' }
+
+    // Background-shaped caller (skips llm entirely) reaches the inflight map
+    // first — both calls are constructed synchronously, back to back, so the
+    // second sees the first as in-flight (see the earlier
+    // "REAL production call shapes" test's comment for why this ordering is
+    // deterministic without fake timers).
+    const background = getDocGraph(doc2, unavailableConfig, {
+      skipLlm: true,
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+    // Wants llm carry-forward — does NOT set skipLlm — but is ALSO
+    // unavailable, so its own llmWanted is false too. Only llmRequested
+    // distinguishes it from `background`.
+    const wantsCarryForward = getDocGraph(doc2, unavailableConfig, {
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+
+    const [, result] = await Promise.all([background, wantsCarryForward])
+    expect(result.edges.some((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11')).toBe(true)
+  })
+
+  it('the fast cache-hit path does not treat provider-unavailability as license to skip carry-forward for a hash a background build already cached', async () => {
+    // Regression, one layer further than round 1/round 2 above (found while
+    // reconciling this file's merge with PR #131 for PR #139/#137): both
+    // `wanted` (single-call) and the inflight `covers` check were fixed to
+    // compare `llmRequested` rather than `llmWanted`, but the FAST cache-hit
+    // condition at the top of getDocGraph still compared `!llmWanted` — so a
+    // hash already cached by a completed background (skipLlm) build, with
+    // the provider now unavailable, was treated as a cache HIT by a later,
+    // separate caller who DOES want carry-forward — never even reaching
+    // applyRequestedPasses/carryForwardLlmEdges. Unlike the round-2 test
+    // above, the background build here is awaited to completion FIRST so
+    // the second call goes through the cache-hit branch, not the inflight
+    // map.
+    const propose = {
+      name: 'link_blocks',
+      input: { from_block_id: 'b10', to_block_id: 'b11', edge_type: 'depends-on' },
+    }
+    const doc1 = bigDoc('b', 30)
+    await getDocGraph(doc1, CONFIG, { callStructured: scripted([propose]) })
+
+    const doc2 = bigDoc('b', 30, { 20: 'Rewritten twentieth paragraph content.' })
+    const unavailableConfig: LLMConfig = { ...CONFIG, apiKey: '' }
+
+    // A background (skipLlm) build for doc2's hash completes first and warms
+    // the cache with llmApplied: false.
+    await getDocGraph(doc2, unavailableConfig, {
+      skipLlm: true,
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+
+    // A later, separate call for the SAME hash wants carry-forward but is
+    // also currently unavailable — only llmRequested distinguishes it from
+    // the background call above.
+    const g2 = await getDocGraph(doc2, unavailableConfig, {
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+
+    expect(g2.edges.some((e) => e.source === 'llm' && e.from === 'b10' && e.to === 'b11')).toBe(true)
+  })
 })
 
 describe('getDocGraph cache', () => {
@@ -612,6 +729,271 @@ describe('getDocGraph cache', () => {
     expect(called).toBe(false)
     expect(g.llmApplied).toBe(false)
     expect(g.nodes.has('b1')).toBe(true)
+  })
+
+  it("a higher-capability caller arriving while a lower-capability build is in-flight gets the capability it asked for, not the in-flight build's result (issue #127)", async () => {
+    const doc = docOf(p('b1', 'The budget is $50,000.'), p('b2', 'We spend half the budget on hosting.'))
+
+    // scheduleDocGraphRebuild's background call: deterministic-only, exactly
+    // as it's invoked in production (skipLlm/skipEmbeddings/skipGraphiti all
+    // true). With no explicit embeddingsEnabled override this still resolves
+    // synchronously up to the inflight check (skipEmbeddings short-circuits
+    // the embeddingsWanted `&&` chain before it ever awaits the store read).
+    const background = getDocGraph(doc, CONFIG, {
+      skipLlm: true,
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+
+    // A user-initiated cascade for the SAME content hash arrives before the
+    // background build has finished — it wants the LLM pass. Passing
+    // embeddingsEnabled explicitly keeps this call's own embeddingsWanted
+    // computation synchronous too, so both calls reach the inflight-dedupe
+    // logic in the same tick and the race is deterministic (no fake timers
+    // needed).
+    const cascade = getDocGraph(doc, CONFIG, {
+      skipEmbeddings: true,
+      embeddingsEnabled: false,
+      skipGraphiti: true,
+      callStructured: scripted([
+        {
+          name: 'link_blocks',
+          input: {
+            from_block_id: 'b2',
+            to_block_id: 'b1',
+            edge_type: 'depends-on',
+            quoted_text: 'half the budget',
+          },
+        },
+      ]),
+    })
+
+    const [backgroundResult, cascadeResult] = await Promise.all([background, cascade])
+
+    // The bug: the cascade caller silently inherited the background build's
+    // deterministic-only promise and never ran the LLM pass it asked for.
+    expect(cascadeResult.llmApplied).toBe(true)
+    expect(cascadeResult.edges.find((e) => e.source === 'llm')).toMatchObject({
+      from: 'b2',
+      to: 'b1',
+      type: 'depends-on',
+    })
+
+    // Both callers end up looking at the same, now-upgraded graph object —
+    // the background caller isn't harmed by the chain, it just also sees the
+    // richer result once the continuation finishes.
+    expect(backgroundResult).toBe(cascadeResult)
+
+    // A later same-hash call with no skip flags at all is satisfied straight
+    // from cache — the upgrade was actually published, not just returned to
+    // the one caller that triggered it.
+    let calledAgain = false
+    const g3 = await getDocGraph(doc, CONFIG, {
+      skipGraphiti: true,
+      callStructured: async () => {
+        calledAgain = true
+        return { toolCalls: [] }
+      },
+    })
+    expect(calledAgain).toBe(false)
+    expect(g3.llmApplied).toBe(true)
+  })
+
+  it('the capability fix still holds under the REAL production call shapes (no skip/embeddingsEnabled overrides on the cascade side)', async () => {
+    // scheduleDocGraphRebuild and proposeCascadeEdits (orchestrator.ts) are
+    // called with different shapes than the earlier tests in this block used
+    // — neither passes embeddingsEnabled, so embeddingsWanted's computation
+    // hits the real `await embeddingsEnabledFromStore()` dynamic import
+    // before EITHER call reaches the inflight-dedupe check, unlike the
+    // synchronous-up-to-inflight-check tests above. This reproduces the exact
+    // interleaving the shipped fix has to survive in production, not just a
+    // deliberately simplified one.
+    const doc = docOf(p('b1', 'The budget is $50,000.'), p('b2', 'We spend half the budget on hosting.'))
+
+    // scheduleDocGraphRebuild's exact call shape.
+    const background = getDocGraph(doc, CONFIG, { skipLlm: true, skipEmbeddings: true, skipGraphiti: true })
+
+    // proposeCascadeEdits' exact call shape (orchestrator.ts:416) — only
+    // callStructured, nothing else.
+    const cascade = getDocGraph(doc, CONFIG, {
+      callStructured: scripted([
+        {
+          name: 'link_blocks',
+          input: {
+            from_block_id: 'b2',
+            to_block_id: 'b1',
+            edge_type: 'depends-on',
+            quoted_text: 'half the budget',
+          },
+        },
+      ]),
+    })
+
+    const [, cascadeResult] = await Promise.all([background, cascade])
+    expect(cascadeResult.llmApplied).toBe(true)
+    expect(cascadeResult.edges.find((e) => e.source === 'llm')).toMatchObject({
+      from: 'b2',
+      to: 'b1',
+      type: 'depends-on',
+    })
+  })
+
+  it('a caller wanting a subset of an in-flight fuller build just awaits it — no redundant model call', async () => {
+    const doc = docOf(p('b1', 'one'), p('b2', 'two'))
+    let calls = 0
+    const slowLlm: CallStructuredFn = async () => {
+      calls++
+      await new Promise((r) => setTimeout(r, 5))
+      return { toolCalls: [] }
+    }
+
+    // The fuller build starts first this time.
+    const full = getDocGraph(doc, CONFIG, {
+      skipEmbeddings: true,
+      embeddingsEnabled: false,
+      skipGraphiti: true,
+      callStructured: slowLlm,
+    })
+    // A deterministic-only caller arrives while it's in flight.
+    const background = getDocGraph(doc, CONFIG, {
+      skipLlm: true,
+      skipEmbeddings: true,
+      skipGraphiti: true,
+    })
+
+    const [fullResult, backgroundResult] = await Promise.all([full, background])
+    expect(calls).toBe(1)
+    expect(fullResult).toBe(backgroundResult)
+    expect(backgroundResult.llmApplied).toBe(true)
+  })
+
+  it('two callers wanting genuinely DISJOINT capabilities (neither a subset of the other) both end up with what they asked for — chained, not lost', async () => {
+    // Neither "dedupe" (same/subset capabilities) nor the earlier "one caller
+    // wants strictly more" tests exercise this: caller X wants llm only,
+    // caller Y wants embeddings only. Y's continuation chains onto X's
+    // in-flight promise (serialized, not parallelized — a known, accepted
+    // trade-off of the "await then run only what's missing" design chosen
+    // for #127, not itself a bug), but the correctness property that matters
+    // is that NEITHER caller's requested capability is silently dropped.
+    const doc = docOf(p('b1', 'one'), p('b2', 'two'))
+
+    const llmOnly = getDocGraph(doc, CONFIG, {
+      skipEmbeddings: true,
+      skipGraphiti: true,
+      callStructured: scripted([]),
+    })
+    const embeddingsOnly = getDocGraph(doc, CONFIG, {
+      skipLlm: true,
+      skipGraphiti: true,
+      embeddingsEnabled: true,
+      embed: async () => null, // permanent no-op contract — still flips embeddingsApplied
+    })
+
+    const [llmResult, embeddingsResult] = await Promise.all([llmOnly, embeddingsOnly])
+    expect(llmResult).toBe(embeddingsResult) // chained onto the same graph object
+    expect(llmResult.llmApplied).toBe(true)
+    expect(llmResult.embeddingsApplied).toBe(true)
+  })
+})
+
+describe('getDocGraph — Graphiti episode-generation retry', () => {
+  function entity(name: string, uuid = `uuid-${name}`): GraphNode {
+    return { uuid, name, summary: '' }
+  }
+
+  /** Scripted MCP client: fixed searchNodes hits, no subgraph expansion. */
+  function scriptedGraphiti(hits: GraphNode[]): Required<Pick<GraphitiEdgeDeps, 'searchNodes' | 'getSubgraph'>> {
+    return {
+      searchNodes: vi.fn(async () => hits),
+      getSubgraph: vi.fn(async (): Promise<SubgraphResult> => ({ nodes: [], edges: [] })),
+    }
+  }
+
+  it('does not re-attempt Graphiti on a warm cache when no new episode has landed since the last attempt', async () => {
+    const doc = docOf(p('b1', 'Alpha Term here.'), p('b2', 'Alpha Term there.'))
+    const client = scriptedGraphiti([entity('Alpha Term')])
+    const deps = { skipLlm: true, embeddingsEnabled: false, graphiti: { ...client, episodeGeneration: 5 } }
+
+    const g1 = await getDocGraph(doc, CONFIG, deps)
+    expect(client.searchNodes).toHaveBeenCalledTimes(1)
+    expect(g1.graphitiEpisodeGen).toBe(5)
+
+    const g2 = await getDocGraph(doc, CONFIG, deps) // same content hash, same generation
+    expect(client.searchNodes).toHaveBeenCalledTimes(1) // no redundant MCP call
+    expect(g2).toBe(g1) // fast cache-hit path returned the same object
+  })
+
+  it('retries Graphiti once a new episode lands for the SAME unchanged content hash, and merges the new entity edge', async () => {
+    const doc = docOf(
+      p('b1', 'Alpha Term here.'),
+      p('b2', 'Alpha Term there.'),
+      p('b3', 'Beta Term here.'),
+      p('b4', 'Beta Term there.'),
+    )
+    const client1 = scriptedGraphiti([entity('Alpha Term')])
+    const g1 = await getDocGraph(doc, CONFIG, {
+      skipLlm: true,
+      embeddingsEnabled: false,
+      graphiti: { ...client1, episodeGeneration: 1 },
+    })
+    expect(g1.edges.filter((e) => e.source === 'graphiti')).toHaveLength(1)
+
+    // Beta Term only becomes findable because a new episode was ingested —
+    // content hash is unchanged, only the generation advanced.
+    const client2 = scriptedGraphiti([entity('Alpha Term'), entity('Beta Term')])
+    const g2 = await getDocGraph(doc, CONFIG, {
+      skipLlm: true,
+      embeddingsEnabled: false,
+      graphiti: { ...client2, episodeGeneration: 2 },
+    })
+    expect(client2.searchNodes).toHaveBeenCalledTimes(1) // re-attempted, not skipped
+    const graphitiEdges = g2.edges.filter((e) => e.source === 'graphiti')
+    expect(graphitiEdges).toHaveLength(2) // Alpha carried, Beta newly merged
+    expect(graphitiEdges.some((e) => e.evidence === 'Beta Term')).toBe(true)
+    expect(g2.graphitiEpisodeGen).toBe(2)
+  })
+
+  it('retries a transient Graphiti failure once a new episode lands, even though llm/embeddings are already satisfied', async () => {
+    const doc = docOf(p('b1', 'Alpha Term here.'), p('b2', 'Alpha Term there.'))
+    const llmCalls: StructuredRequest[] = []
+    const failingClient: Required<Pick<GraphitiEdgeDeps, 'searchNodes' | 'getSubgraph'>> = {
+      searchNodes: vi.fn(async () => {
+        throw new Error('ECONNREFUSED')
+      }),
+      getSubgraph: vi.fn(async (): Promise<SubgraphResult> => ({ nodes: [], edges: [] })),
+    }
+
+    const g1 = await getDocGraph(doc, CONFIG, {
+      callStructured: scripted([], llmCalls),
+      embeddingsEnabled: false,
+      graphiti: { ...failingClient, episodeGeneration: 1 },
+    })
+    expect(llmCalls).toHaveLength(1)
+    expect(g1.llmApplied).toBe(true)
+    expect(failingClient.searchNodes).toHaveBeenCalledTimes(1)
+    expect(g1.graphitiApplied).toBe(false) // failure — retryable
+
+    // Same generation: the failed attempt is NOT retried on every cascade.
+    await getDocGraph(doc, CONFIG, {
+      callStructured: scripted([], llmCalls),
+      embeddingsEnabled: false,
+      graphiti: { ...failingClient, episodeGeneration: 1 },
+    })
+    expect(failingClient.searchNodes).toHaveBeenCalledTimes(1)
+    expect(llmCalls).toHaveLength(1) // llm stayed satisfied too
+
+    // A new episode lands (generation bumps) — retried, and now succeeds.
+    // llm/embeddings were already satisfied and must NOT be redundantly re-run.
+    const succeedingClient = scriptedGraphiti([entity('Alpha Term')])
+    const g2 = await getDocGraph(doc, CONFIG, {
+      callStructured: scripted([], llmCalls),
+      embeddingsEnabled: false,
+      graphiti: { ...succeedingClient, episodeGeneration: 2 },
+    })
+    expect(llmCalls).toHaveLength(1) // still no redundant LLM call
+    expect(succeedingClient.searchNodes).toHaveBeenCalledTimes(1)
+    expect(g2.graphitiApplied).toBe(true)
+    expect(g2.edges.filter((e) => e.source === 'graphiti')).toHaveLength(1)
   })
 })
 

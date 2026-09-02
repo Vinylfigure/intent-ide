@@ -4,13 +4,12 @@ import { useState } from 'react'
 import { schema } from '@/lib/prosemirror/schema'
 import { useEditorStore } from '@/stores/editorStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { useAnnotationStore } from '@/stores/annotationStore'
-import { useChangesStore } from '@/stores/changesStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { useToastStore } from '@/stores/toastStore'
 import { parseTextToDoc, parseFileToDoc } from '@/lib/docInput/parser'
 import { generateDocument } from '@/lib/docInput/generator'
+import { recordCommit } from '@/lib/history/commits'
 
 interface DocInputModalProps {
   onClose: () => void
@@ -35,6 +34,27 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
 
   const loadDoc = (docJson: any, fallbackTitle: string) => {
     if (!view) return
+
+    // Flush the outgoing document's pending edit BEFORE replacing editor
+    // content and switching activeDocumentId — mirrors EditorShell.tsx's own
+    // doc-switch flush. Without this, the replace transaction below fires the
+    // autosave debounce again (clearing the timer already armed to flush the
+    // OUTGOING document) and createDocument() resets isDirty to false before
+    // EditorShell's own switch-effect guard ever sees it — silently dropping
+    // an edit made within the 5s autosave window (#122).
+    const outgoingStore = useDocumentStore.getState()
+    if (outgoingStore.activeDocumentId && outgoingStore.isDirty) {
+      const outgoingJson = view.state.doc.toJSON()
+      outgoingStore.saveDocument(outgoingStore.activeDocumentId, outgoingJson)
+      recordCommit({
+        docJson: outgoingJson,
+        documentId: outgoingStore.activeDocumentId,
+        kind: 'direct',
+        message: 'Edited document',
+        actor: 'human',
+      })
+    }
+
     const doc = schema.nodeFromJSON(docJson)
     const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content)
     // Loading a document is not an edit of the one on screen. Without this,
@@ -52,9 +72,12 @@ export function DocInputModal({ onClose }: DocInputModalProps) {
       collectionIds: collectionId ? [collectionId] : [],
     })
 
-    // Reset session state for new document
-    useAnnotationStore.getState().clear()
-    useChangesStore.getState().clear()
+    // Reset session-level (non-document-scoped) state for the new document.
+    // annotationStore/changesStore are NOT cleared here: their entries are
+    // already scoped by documentId and filtered per-document by every review
+    // surface (AnnotationPanel, ChangesPanel), so the new (empty) document
+    // shows nothing on its own. A global clear() would instead silently wipe
+    // every OTHER existing document's annotations and change history (#114).
     useSessionStore.getState().reset()
 
     onClose()

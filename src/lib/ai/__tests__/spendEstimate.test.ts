@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { addEstimate, getSessionEstimate, resetSessionEstimate } from '../spendEstimate'
+import {
+  addEstimate,
+  getSessionEstimate,
+  addTranscriptionEstimate,
+  getTranscriptionEstimate,
+  resetSessionEstimate,
+} from '../spendEstimate'
 
 beforeEach(() => {
   resetSessionEstimate()
@@ -35,5 +41,35 @@ describe('spendEstimate', () => {
     expect(getSessionEstimate()).toBe(1000)
     resetSessionEstimate()
     expect(getSessionEstimate()).toBe(0)
+  })
+})
+
+describe('transcription estimate', () => {
+  it('starts at zero', () => {
+    expect(getTranscriptionEstimate()).toBe(0)
+  })
+
+  it('accumulates bytes, tracked separately from the token estimate', () => {
+    addTranscriptionEstimate(1000)
+    expect(getTranscriptionEstimate()).toBe(1000)
+    addTranscriptionEstimate(500)
+    expect(getTranscriptionEstimate()).toBe(1500)
+    expect(getSessionEstimate()).toBe(0)
+  })
+
+  it('ignores junk input (negative, zero, NaN, Infinity)', () => {
+    addTranscriptionEstimate(-100)
+    addTranscriptionEstimate(0)
+    addTranscriptionEstimate(NaN)
+    addTranscriptionEstimate(Infinity)
+    expect(getTranscriptionEstimate()).toBe(0)
+  })
+
+  it('resets to zero along with the token estimate', () => {
+    addEstimate(400)
+    addTranscriptionEstimate(2000)
+    resetSessionEstimate()
+    expect(getSessionEstimate()).toBe(0)
+    expect(getTranscriptionEstimate()).toBe(0)
   })
 })
