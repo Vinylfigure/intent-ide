@@ -49,6 +49,20 @@ export interface IntentContext {
   /** Facts the author declared that touch this span or its neighbours. */
   invariants: string[]
   /**
+   * The selected term, when the document demonstrably does NOT define it —
+   * it appears in the text but no block defines it, per the graph's
+   * deterministic extractor. Null when the document does define it, when the
+   * selection is too long to be a term, or when the graph is cold and the
+   * question cannot be answered either way.
+   *
+   * Stated as a FACT rather than left to the model. Measured on qwen3:8b:
+   * asked to judge for itself whether a term was defined, it invented a
+   * definition out of the surrounding words — the exact failure this is here
+   * to stop. A small model follows a stated fact far more reliably than it
+   * evaluates a conditional instruction.
+   */
+  undefinedTerm: string | null
+  /**
    * True when the graph was cold or the span's block was unknown to it, so
    * `related` / `headingPath` / `definedTerms` are empty for a structural
    * reason rather than because nothing relates. Callers that explain their
@@ -88,6 +102,36 @@ const BUDGET: Record<Scope, { passages: number; chars: number; hops: number; inv
 
 /** Section text cap, unchanged from the resolver's previous inline slice. */
 const SECTION_CHARS = 1000
+
+/**
+ * Longest selection still treated as a "term" for the undefined-term check.
+ * Beyond this the reviewer selected a passage, not a name, and "the document
+ * does not define this" stops being a meaningful thing to say.
+ */
+const MAX_TERM_CHARS = 60
+
+/**
+ * Whether the graph says any block defines `term`.
+ *
+ * Compares against the SAME deterministic `definedTerms` the doc graph
+ * extracts, so this can never disagree with what the graph believes. Matching
+ * is case-insensitive and either-direction-containment, so selecting
+ * "Retention" against a defined "Retention Period" counts as defined — a false
+ * "not defined" is the costlier error, since it would have the model announce
+ * an absence the reader can see is wrong.
+ */
+function documentDefines(graph: DocGraph, term: string): boolean {
+  const needle = term.trim().toLowerCase()
+  if (!needle) return true
+  for (const node of graph.nodes.values()) {
+    for (const defined of node.definedTerms) {
+      const hay = defined.trim().toLowerCase()
+      if (!hay) continue
+      if (hay === needle || hay.includes(needle) || needle.includes(hay)) return true
+    }
+  }
+  return false
+}
 
 function truncate(text: string, max: number): string {
   const clean = text.trim().replace(/\s+/g, ' ')
@@ -181,6 +225,7 @@ export async function buildIntentContext(
   pos: number,
   scope: Scope,
   quoteScope?: Scope,
+  selectedText?: string,
 ): Promise<IntentContext> {
   const budget = BUDGET[quoteScope ?? scope] ?? BUDGET.paragraph
 
@@ -191,6 +236,7 @@ export async function buildIntentContext(
     definedTerms: [],
     related: [],
     invariants: [],
+    undefinedTerm: null,
     graphUnavailable: true,
   }
 
@@ -205,6 +251,15 @@ export async function buildIntentContext(
     ctx.definedTerms = seed.definedTerms
   }
   ctx.related = collectRelated(graph, blockId, budget)
+
+  // Deterministic answer to "does this document explain this word?", computed
+  // rather than asked of the model. Skipped for a long selection (a passage,
+  // not a name) and impossible on a cold graph, where `graphUnavailable`
+  // already tells callers not to read silence as an answer.
+  const term = selectedText?.trim() ?? ''
+  if (term && term.length <= MAX_TERM_CHARS && !documentDefines(graph, term)) {
+    ctx.undefinedTerm = term
+  }
 
   const documentId = useDocumentStore.getState().activeDocumentId
   if (documentId) {
@@ -337,6 +392,24 @@ export function formatIntentContext(ctx: IntentContext): string {
     }
     lines.push(
       '  Consider whether your answer is consistent with the passages above; cite one when it bears on the question.',
+    )
+  }
+
+  // Last, because on a small model the nearest instruction wins: burying this
+  // among the system rules let the type prompt ("2-3 key insights, bullets")
+  // override it, and the model answered "what is Atlantis?" by inventing a
+  // definition out of the neighbouring words.
+  if (ctx.undefinedTerm) {
+    lines.push(
+      '',
+      `THIS DOCUMENT DOES NOT DEFINE "${ctx.undefinedTerm}". It names the term without explaining it.`,
+      `Begin your answer with: This document does not define "${ctx.undefinedTerm}".`,
+      'Then, under a line reading "From outside the document:", explain what it is from your own',
+      'knowledge. Do NOT construct a definition out of the surrounding sentences — the words next to',
+      'a term are not its meaning.',
+      'If the name has several meanings, pick the one that fits the subject matter above and say',
+      'which sense you mean. If you are not confident the term means something specific in this',
+      'field, say that outright instead of guessing — an admitted gap is useful, a wrong gloss is not.',
     )
   }
 

@@ -193,6 +193,9 @@ export async function resolveAnnotation(
     annotation.anchor.from,
     annotation.anchor.scope,
     annotation.sourceQuote ? inferScopeFromText(annotation.sourceQuote) : undefined,
+    // A sub-chat quotes out of an AI answer, so the term under discussion is
+    // the quote, not the parent's document anchor.
+    annotation.sourceQuote || annotation.anchor.text,
   )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
@@ -378,6 +381,9 @@ export async function streamResolveAnnotation(
     annotation.anchor.from,
     annotation.anchor.scope,
     annotation.sourceQuote ? inferScopeFromText(annotation.sourceQuote) : undefined,
+    // A sub-chat quotes out of an AI answer, so the term under discussion is
+    // the quote, not the parent's document anchor.
+    annotation.sourceQuote || annotation.anchor.text,
   )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
@@ -608,6 +614,9 @@ export async function continueThread(
     annotation.anchor.from,
     annotation.anchor.scope,
     annotation.sourceQuote ? inferScopeFromText(annotation.sourceQuote) : undefined,
+    // A sub-chat quotes out of an AI answer, so the term under discussion is
+    // the quote, not the parent's document anchor.
+    annotation.sourceQuote || annotation.anchor.text,
   )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
