@@ -1,32 +1,31 @@
 import type { LLMConfig } from './client'
 import { providerHeaders } from './providerHeaders'
+import { parseClassification, type Classification } from './classification'
 import type { AnnotationType } from '@/lib/annotations/types'
 
-const VALID_TYPES: AnnotationType[] = ['ask', 'edit', 'dig', 'flag']
-
-const CLASSIFICATION_PROMPT_4TYPE = `You are an annotation classifier for a document review tool. Given the user's input and the text they selected, classify their intent into exactly one of these types:
-
-- ASK: Seeking clarification ("What does this mean?", "Is this right?", "Why is this here?")
-- EDIT: Directing a change ("Change this to X", "Make it shorter", "Fix this", "Restructure", "This is wrong, it should be Y")
-- DIG: Investigating deeper ("Tell me more", "What are the implications?", "Research this", "What evidence supports this?")
-- FLAG: Marking something problematic ("This seems off", "Something's wrong here", "Come back to this", "Not sure about this")
-
-Respond with ONLY the type name in uppercase: ASK, EDIT, DIG, or FLAG.
-
-User said: "{{transcript}}"
-Selected text: "{{anchoredText}}"
-
-Type:`
-
+/**
+ * Classify an annotation: what the reader wants done, and whether the
+ * highlighted span is the subject of what they said or only where the thought
+ * struck them.
+ *
+ * Both judgements come out of ONE round-trip — the one that already existed.
+ * `/api/classify` has always received the transcript and the anchored text
+ * together, so the relation costs no extra call and adds no second point of
+ * failure.
+ *
+ * This file previously carried its own copy of the classification prompt,
+ * built into a local `prompt` variable that was never sent anywhere: the
+ * request body has always been `{transcript, anchoredText, suggestedType}` and
+ * the route builds the prompt itself. That dead copy is gone, so there is now
+ * exactly one classification prompt, in prompts.ts.
+ */
 export async function classifyAnnotation(
   transcript: string,
   anchoredText: string,
   config: LLMConfig,
   suggestedType?: AnnotationType | null,
-): Promise<AnnotationType> {
-  const prompt = CLASSIFICATION_PROMPT_4TYPE
-    .replace('{{transcript}}', transcript)
-    .replace('{{anchoredText}}', anchoredText)
+): Promise<Classification> {
+  const fallback: Classification = { type: suggestedType ?? 'flag', relation: 'about' }
 
   try {
     const response = await fetch('/api/classify', {
@@ -40,19 +39,18 @@ export async function classifyAnnotation(
 
     if (!response.ok) {
       console.error('Classification failed, defaulting to flag')
-      return suggestedType ?? 'flag'
+      return fallback
     }
 
     const data = await response.json()
-    const type = data.type?.trim().toLowerCase() as AnnotationType
-
-    if (VALID_TYPES.includes(type)) {
-      return type
-    }
-
-    return suggestedType ?? 'flag'
+    // The route parses already; re-reading its answer through the same parser
+    // keeps this correct if a provider or an older route ever hands back a
+    // bare word instead of the pair.
+    return parseClassification(JSON.stringify(data ?? {}), suggestedType ?? null)
   } catch (err) {
     console.error('Classification error:', err)
-    return suggestedType ?? 'flag'
+    return fallback
   }
 }
+
+export type { Classification, AnnotationType }

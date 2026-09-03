@@ -306,3 +306,30 @@ describe('normalizeProposedEdit — legacy multi-region edits', () => {
     expect(edit.targetText).toBe('old')
   })
 })
+
+
+describe('migrateAnnotations — anchor relation backfill', () => {
+  // A TypeScript field default does nothing to an object rehydrated from
+  // localStorage. Without an explicit backfill every annotation already on a
+  // reader's machine would carry `relation === undefined`, so the
+  // `relation === 'about'` gate would read false and silently DISABLE the
+  // undefined-term guard for the whole existing corpus — the exact opposite of
+  // what adding the relation was for.
+  it("backfills 'about' on a snapshot written before the field existed", () => {
+    const [migrated] = migrateAnnotations([makeAnnotation({ type: 'ask' })])
+    expect(migrated.relation).toBe('about')
+  })
+
+  it('leaves an explicit relation alone', () => {
+    const [migrated] = migrateAnnotations([
+      makeAnnotation({ type: 'ask', relation: 'sparked_by' }),
+    ])
+    expect(migrated.relation).toBe('sparked_by')
+  })
+
+  it('backfills alongside the legacy type migration rather than instead of it', () => {
+    const [migrated] = migrateAnnotations([makeAnnotation({ type: 'question' })])
+    expect(migrated.type).toBe('ask')
+    expect(migrated.relation).toBe('about')
+  })
+})

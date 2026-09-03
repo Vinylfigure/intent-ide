@@ -382,6 +382,37 @@ export function AnnotationCard({
   const label = ANNOTATION_LABELS[annotation.type]
   const defaultVerbosity = getDefaultVerbosity(annotation.anchor.scope, annotation.type)
   const currentVerbosity = annotation.verbosity || defaultVerbosity
+  const relation = annotation.relation ?? 'about'
+  // Show the correction affordance in exactly two places: when the answer was
+  // framed as a sparked-by tangent (so the reader knows why it went outside the
+  // document), and when the undefined-term guard actually fired on an "about"
+  // reading (the one moment a wrong "about" is visible and worth correcting).
+  // A chip on every ordinary answer would be pure noise.
+  const guardFired = (annotation.resolution?.content ?? '')
+    .trimStart()
+    .startsWith('This document does not define')
+  const showRelationChip = Boolean(annotation.resolution) && (relation === 'sparked_by' || guardFired)
+
+  async function reresolve(patch?: Partial<Annotation>) {
+    if (!view) return
+    if (patch) updateAnnotation(annotation.id, patch)
+    // Read fresh from the store so the patch above is part of what resolves.
+    const current = useAnnotationStore.getState().getById(annotation.id)
+    if (!current || current.status === 'resolving') return
+    updateAnnotation(annotation.id, { status: 'resolving', conversation: [] })
+    const msgId = generateId()
+    useAnnotationStore.getState().addMessage(annotation.id, {
+      id: msgId, role: 'agent', content: '', suggestedEdit: null, timestamp: Date.now(),
+    })
+    const resolution = await streamResolveAnnotation(current, view.state, (partial) => {
+      useAnnotationStore.getState().updateMessage(annotation.id, msgId, { content: partial })
+    })
+    useAnnotationStore.getState().updateMessage(annotation.id, msgId, {
+      content: resolution.content, suggestedEdit: resolution.suggestedEdit,
+    })
+    updateAnnotation(annotation.id, { status: 'resolved', resolution, resolvedAt: Date.now() })
+  }
+
   const showRegenerate = currentVerbosity !== defaultVerbosity
 
   return (
@@ -517,6 +548,34 @@ export function AnnotationCard({
         </div>
       )}
 
+      {/* Anchor relation: is the highlight the subject, or just where the
+          thought struck? Correctable in one click — the classifier guesses, and
+          a guess with an escape hatch beats a clarifying question when the
+          correction costs a click. */}
+      {showDetail && !held && showRelationChip && (
+        <div
+          className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-warm/40 px-2 py-1.5"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="text-[10px] text-muted-foreground">
+            {relation === 'sparked_by'
+              ? 'Answered as a thought this passage sparked — not as a question about it.'
+              : 'Answered as a question about the highlighted text.'}
+          </span>
+          <button
+            onClick={() =>
+              reresolve({ relation: relation === 'sparked_by' ? 'about' : 'sparked_by' })
+            }
+            disabled={annotation.status === 'resolving'}
+            className="text-[10px] font-medium text-accent hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {relation === 'sparked_by'
+              ? 'Ask about the highlight instead'
+              : "That wasn't my question — answer what I asked"}
+          </button>
+        </div>
+      )}
+
       {/* Verbosity toggle (when active and resolved; hidden while the answer is held) */}
       {showDetail && !held && annotation.resolution && (
         <div className="mt-2 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
@@ -538,24 +597,7 @@ export function AnnotationCard({
           ))}
           {showRegenerate && (
             <button
-              onClick={async () => {
-                if (!view) return
-                // Read fresh from store to avoid stale closure
-                const current = useAnnotationStore.getState().getById(annotation.id)
-                if (!current || current.status === 'resolving') return
-                updateAnnotation(annotation.id, { status: 'resolving', conversation: [] })
-                const msgId = generateId()
-                useAnnotationStore.getState().addMessage(annotation.id, {
-                  id: msgId, role: 'agent', content: '', suggestedEdit: null, timestamp: Date.now(),
-                })
-                const resolution = await streamResolveAnnotation(current, view.state, (partial) => {
-                  useAnnotationStore.getState().updateMessage(annotation.id, msgId, { content: partial })
-                })
-                useAnnotationStore.getState().updateMessage(annotation.id, msgId, {
-                  content: resolution.content, suggestedEdit: resolution.suggestedEdit,
-                })
-                updateAnnotation(annotation.id, { status: 'resolved', resolution, resolvedAt: Date.now() })
-              }}
+              onClick={() => reresolve()}
               disabled={annotation.status === 'resolving'}
               className="px-2 py-0.5 text-[10px] font-mono text-accent hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
             >

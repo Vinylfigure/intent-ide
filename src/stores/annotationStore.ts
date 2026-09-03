@@ -33,6 +33,12 @@ export function migrateAnnotations(annotations: Annotation[]): Annotation[] {
     documentId: a.documentId ?? LEGACY_DOCUMENT_ID,
     locationGroupKey: a.locationGroupKey ?? `${a.documentId ?? LEGACY_DOCUMENT_ID}:${a.anchor.from}:${a.anchor.to}`,
     type: mapLegacyType(a.type),
+    // A TypeScript default does nothing to an object rehydrated from
+    // localStorage. Without this backfill every existing annotation would have
+    // `relation === undefined`, so the `relation === 'about'` gate would read
+    // false and silently DISABLE the undefined-term guard for the entire
+    // existing corpus — the exact opposite of the intent.
+    relation: a.relation ?? 'about',
     resolution: a.resolution
       ? {
           ...a.resolution,

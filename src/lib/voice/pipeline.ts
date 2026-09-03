@@ -22,7 +22,7 @@ import { extractMermaidFence, ensureRenderableMermaid } from '@/lib/ai/mermaidGu
 import { ingestAnnotationEpisode } from '@/lib/graphrag/episodeIngestion'
 import { generateId } from '@/lib/utils/id'
 import { getDefaultVerbosity } from '@/lib/annotations/types'
-import type { Annotation, AnnotationType, TextAnchor } from '@/lib/annotations/types'
+import type { AnchorRelation, Annotation, AnnotationType, TextAnchor } from '@/lib/annotations/types'
 import { inferScopeFromText } from '@/lib/annotations/selectionOffers'
 
 const recorder = new AudioRecorder()
@@ -123,6 +123,12 @@ interface CreateAnnotationOptions {
   notify?: 'panel' | 'quiet'
   /** The exact quoted span from an AI answer this annotation was spun off from — see Annotation.sourceQuote. */
   quote?: string
+  /**
+   * Preset anchor relation. One-click offers know their own relation and set
+   * `skipClassify`, so there is no classifier round-trip to infer it from —
+   * without this the skipClassify path would silently always be 'about'.
+   */
+  relation?: AnchorRelation
 }
 
 /**
@@ -195,6 +201,7 @@ export function captureAnnotationFromText(
     childIds: [],
     createdAt: Date.now(),
     resolvedAt: null,
+    relation: options.relation ?? 'about',
     // A quoted sub-chat's subject matter is the quote itself, not the
     // parent's (possibly much larger) document anchor — a two-word quote
     // should get a two-word-sized budget, not the paragraph the parent was
@@ -258,18 +265,23 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
 
     const provisionalType = annotation.type
     let classifiedType = provisionalType
+    // A preset relation always wins: an offer that declares itself sparked_by
+    // knows better than a classifier that never saw the button.
+    let classifiedRelation: AnchorRelation = options.relation ?? annotation.relation ?? 'about'
 
     if (options.skipClassify) {
       classifiedType = options.suggestedType ?? provisionalType
     } else {
       try {
         const config = useSettingsStore.getState().llmConfig
-        classifiedType = await classifyAnnotation(
+        const classified = await classifyAnnotation(
           annotation.transcript,
           annotation.anchor.text,
           config,
           options.suggestedType ?? provisionalType,
         )
+        classifiedType = classified.type
+        if (!options.relation) classifiedRelation = classified.relation
       } catch {
         // Classification failed — use the provided type as fallback
         classifiedType = options.suggestedType ?? provisionalType
@@ -286,10 +298,11 @@ async function resolveCapturedAnnotation(id: string): Promise<void> {
       annotationStore.update(id, {
         type: classifiedType,
         status: 'classified',
+        relation: classifiedRelation,
         verbosity: getDefaultVerbosity(annotation.anchor.scope, classifiedType),
       })
     } else {
-      annotationStore.update(id, { status: 'classified' })
+      annotationStore.update(id, { status: 'classified', relation: classifiedRelation })
     }
 
     // Create a placeholder conversation message for streaming content
