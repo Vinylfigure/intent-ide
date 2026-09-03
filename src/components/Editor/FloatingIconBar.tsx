@@ -17,6 +17,9 @@ export function FloatingIconBar() {
   const contextMenu = useEditorStore((s) => s.contextMenu)
   const view = useEditorStore((s) => s.view)
   const clearContextMenu = useEditorStore((s) => s.clearContextMenu)
+  // null until the reader types — while it is null, focus stays in the document
+  // and Cmd+C, Cmd+X and caret keys all behave natively over the selection.
+  const composerSeed = useEditorStore((s) => s.composerSeed)
   const barRef = useRef<HTMLDivElement>(null)
 
   // Click outside + escape handler
@@ -69,6 +72,15 @@ export function FloatingIconBar() {
       <AnnotationComposer
         mode="selection"
         className="w-[360px]"
+        // Deliberately unfocused until the first keystroke. An autofocused
+        // input took the document selection the instant a highlight finished,
+        // which is why copying your own text did not work.
+        autoFocus={composerSeed !== null}
+        initialText={composerSeed ?? ''}
+        onCopy={() => {
+          void navigator.clipboard?.writeText(contextMenu.text)
+          clearContextMenu()
+        }}
         selectionAnchor={{
           from: contextMenu.from,
           to: contextMenu.to,

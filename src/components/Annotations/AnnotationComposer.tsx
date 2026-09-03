@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { startVoiceCapture, stopVoiceCaptureForTranscript } from '@/lib/voice/pipeline'
 import { useVoiceStore } from '@/stores/voiceStore'
 import type { AnnotationType, Scope } from '@/lib/annotations/types'
@@ -36,6 +36,18 @@ interface AnnotationComposerProps {
   }) => Promise<void> | void
   onCancel?: () => void
   className?: string
+  /**
+   * Focus the input on mount, and again whenever this flips true.
+   *
+   * Default true for the thread/inline composers, which the reader opened by
+   * clicking — focusing there is what they asked for. The SELECTION composer
+   * passes false: an autofocused input steals the document selection the moment
+   * a highlight finishes, which is what made Cmd+C copy nothing. It focuses
+   * later, on the first typed character.
+   */
+  autoFocus?: boolean
+  /** When given, renders a Copy chip first in the offers row. */
+  onCopy?: () => void
 }
 
 /**
@@ -53,12 +65,22 @@ export function AnnotationComposer({
   onSubmit,
   onCancel,
   className = '',
+  autoFocus = true,
+  onCopy,
 }: AnnotationComposerProps) {
   const isRecording = useVoiceStore((s) => s.isRecording)
   const voiceError = useVoiceStore((s) => s.error)
   const [value, setValue] = useState(initialText)
   const [activeIntent, setActiveIntent] = useState<SuggestedIntent | null>(suggestedIntent)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Focus on mount when asked, and again when the flag flips — the selection
+  // composer starts unfocused and is focused later by the first keystroke, so a
+  // mount-only `autoFocus` attribute would never fire for it.
+  useEffect(() => {
+    if (autoFocus) inputRef.current?.focus()
+  }, [autoFocus])
 
   const quoted = selectionAnchor?.text?.trim() ?? ''
   const offers = useMemo<Offer[]>(() => {
@@ -129,6 +151,7 @@ export function AnnotationComposer({
       )}
       <div className="flex items-center gap-2 px-3 py-2">
         <input
+          ref={inputRef}
           type="text"
           value={value}
           onChange={(e) => setValue(e.target.value)}
@@ -145,7 +168,6 @@ export function AnnotationComposer({
           }}
           placeholder={mode === 'selection' ? "What's on your mind?" : 'Add a note or follow-up'}
           className="flex-1 text-sm bg-transparent border-none focus:outline-none placeholder:text-muted-foreground/60"
-          autoFocus
         />
 
         <button
@@ -181,6 +203,15 @@ export function AnnotationComposer({
       </div>
 
       <div className="flex flex-wrap gap-1 px-3 pb-2">
+        {onCopy && (
+          <button
+            onClick={onCopy}
+            title="Copy the selected text (Cmd/Ctrl+C also works)"
+            className="px-2 py-1 text-[10px] font-mono rounded-full border border-border text-muted-foreground transition-colors hover:bg-warm/70 hover:text-ink"
+          >
+            Copy
+          </button>
+        )}
         {offers.map((action) => (
           <button
             key={action.label}
