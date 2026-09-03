@@ -146,6 +146,22 @@ interface SettingsState {
    */
   invariantEntailmentEnabled: boolean
   /**
+   * When consistency and ripple checks run.
+   *
+   * 'commit'  — at the existing autosave settle point, buffered and batched.
+   * 'demand'  — never in the background; only when explicitly asked.
+   * 'off'     — not at all.
+   *
+   * Default 'commit', and NEVER on keystroke. Published contradiction detectors
+   * run at roughly 16% precision for NLI-only pairwise detection and about 89%
+   * for the best hybrid; legal redlining products treat under 15% false
+   * positives as the bar for adoption. At keystroke cadence a checker that is
+   * wrong one time in three to six is a feature switched off within a week.
+   * Deferring to a settle point also matches the interruption-cost evidence:
+   * coarser breakpoints cost less to resume from than finer ones.
+   */
+  consistencyCheckMode: ConsistencyCheckMode
+  /**
    * Anonymous severity-calibration telemetry (default OFF — public repo,
    * other users). When on, cascade accept/reject decisions send metadata-only
    * events (severity × action, never document content or ids) to PostHog if
@@ -162,9 +178,21 @@ interface SettingsState {
   setEmbeddingsEnabled: (enabled: boolean) => void
   setJudgeEnabled: (enabled: boolean) => void
   setInvariantEntailmentEnabled: (enabled: boolean) => void
+  setConsistencyCheckMode: (mode: ConsistencyCheckMode) => void
   setTelemetryEnabled: (enabled: boolean) => void
   setGraphEnrichment: (setting: GraphEnrichmentSetting) => void
   hasKeys: () => boolean
+}
+
+export type ConsistencyCheckMode = 'commit' | 'demand' | 'off'
+
+const CONSISTENCY_CHECK_MODES: ConsistencyCheckMode[] = ['commit', 'demand', 'off']
+
+/** A snapshot from an older build carries no mode at all; fall back to the default. */
+export function normalizeConsistencyCheckMode(value: unknown): ConsistencyCheckMode {
+  return CONSISTENCY_CHECK_MODES.includes(value as ConsistencyCheckMode)
+    ? (value as ConsistencyCheckMode)
+    : 'commit'
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -182,6 +210,7 @@ export const useSettingsStore = create<SettingsState>()(
       embeddingsEnabled: true,
       judgeEnabled: true,
       invariantEntailmentEnabled: false,
+      consistencyCheckMode: 'commit' as ConsistencyCheckMode,
       telemetryEnabled: false,
       graphEnrichment: 'local-only',
       setLLMConfig: (config) =>
@@ -193,6 +222,7 @@ export const useSettingsStore = create<SettingsState>()(
       setEmbeddingsEnabled: (enabled) => set({ embeddingsEnabled: enabled }),
       setJudgeEnabled: (enabled) => set({ judgeEnabled: enabled }),
       setInvariantEntailmentEnabled: (enabled) => set({ invariantEntailmentEnabled: enabled }),
+      setConsistencyCheckMode: (mode) => set({ consistencyCheckMode: normalizeConsistencyCheckMode(mode) }),
       setTelemetryEnabled: (enabled) => set({ telemetryEnabled: enabled }),
       setGraphEnrichment: (setting) => set({ graphEnrichment: setting }),
       hasKeys: () => {
@@ -226,6 +256,14 @@ export const useSettingsStore = create<SettingsState>()(
         }
         if (state && typeof (state as { judgeEnabled?: unknown }).judgeEnabled !== 'boolean') {
           state.setJudgeEnabled(true)
+        }
+        // A snapshot from before the mode existed has none; normalize rather
+        // than leave it undefined, which would read as neither 'commit' nor
+        // 'off' at every call site.
+        if (state) {
+          state.setConsistencyCheckMode(
+            normalizeConsistencyCheckMode((state as { consistencyCheckMode?: unknown }).consistencyCheckMode),
+          )
         }
         // Snapshots written before the native-Ollama dialect carry no context
         // size. Backfilling the raised default (rather than leaving it unset)

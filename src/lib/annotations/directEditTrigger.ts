@@ -8,6 +8,7 @@ import { getDocGraph, getNeighborhood } from '@/lib/graphrag/docGraph'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useDocumentStore } from '@/stores/documentStore'
 import { useDirectEditOfferStore } from '@/stores/directEditOfferStore'
+import { detectRename, offerableOccurrences, type Occurrence } from './renameDetect'
 
 /**
  * Direct-edit cascade trigger (Flow v1 P4, issue #17).
@@ -123,36 +124,123 @@ function textDelta(before: string, after: string): number {
 }
 
 /**
+ * A rename the reader made, and everywhere the old name still stands.
+ *
+ * Separate from DirectEditOffer because it is found a different way: the
+ * dependent-section offer needs the doc graph, while a rename is visible in the
+ * text alone. A bare name mention creates no cross-reference, no defined term
+ * and no duplicated sentence, so it produces NO graph edge — which is exactly
+ * why changing "Cody" to "Joe" used to raise nothing at all.
+ */
+export interface RenameTarget {
+  blockId: string
+  occurrences: Occurrence[]
+}
+
+export interface RenameOffer {
+  documentId: string
+  /** The block the reader actually edited. */
+  blockId: string
+  from: string
+  to: string
+  /** Blocks elsewhere that still carry the old name, with their sentences. */
+  targets: RenameTarget[]
+  occurrenceCount: number
+}
+
+export interface SettleResult {
+  dependentOffer: DirectEditOffer | null
+  renameOffer: RenameOffer | null
+}
+
+const EMPTY_SETTLE: SettleResult = { dependentOffer: null, renameOffer: null }
+
+/**
+ * Scan EVERY touched block for a rename.
+ *
+ * Deliberately not folded into the biggest-delta selection below. That
+ * selection picks one winner across all touched blocks, so a large unrelated
+ * rewrite in one block would mask a small rename in another — and a settle
+ * window containing more than one edit is the normal case, not an edge case.
+ *
+ * Pure and synchronous: text in, offer out. No graph, no network.
+ */
+function scanForRename(
+  documentId: string,
+  touched: Set<string>,
+  prior: Map<string, string>,
+  current: Map<string, string>,
+): RenameOffer | null {
+  for (const blockId of touched) {
+    const beforeText = prior.get(blockId)
+    const text = current.get(blockId)
+    if (beforeText === undefined || text === undefined || beforeText === text) continue
+
+    const candidate = detectRename(beforeText, text)
+    if (!candidate) continue
+
+    const targets: RenameTarget[] = []
+    let occurrenceCount = 0
+    for (const [otherId, otherText] of current) {
+      if (otherId === blockId) continue
+      const occurrences = offerableOccurrences(otherText, candidate.from)
+      if (occurrences.length === 0) continue
+      targets.push({ blockId: otherId, occurrences })
+      occurrenceCount += occurrences.length
+    }
+    // The reader renamed the only mention there was. Nothing to offer.
+    if (occurrenceCount === 0) continue
+
+    // One offer at a time — the chip says one thing, and two competing renames
+    // in a single settle window is not a case worth a queue.
+    return { documentId, blockId, from: candidate.from, to: candidate.to, targets, occurrenceCount }
+  }
+  return null
+}
+
+/**
  * Settle point (autosave flush): diff touched blocks against the baseline and
- * offer the biggest changed block IF it has deterministic-graph dependents.
+ * produce up to two independent offers —
+ *
+ *   - a RENAME offer, from any touched block whose edit was a name swap;
+ *   - a DEPENDENT-SECTION offer, from the single biggest changed block, when
+ *     the deterministic graph says it has dependents.
+ *
  * Always refreshes the baseline and clears the touch set — each settle window
  * is independent. Deterministic graph only; zero network by construction.
  */
-export async function settleDirectEdits(state: EditorState): Promise<DirectEditOffer | null> {
+export async function settleDirectEdits(state: EditorState): Promise<SettleResult> {
   const doc = state.doc
   const touched = humanTouchedBlockIds
   const prior = baseline
   // Stamp the settle-time document — the graph await below can race a doc
-  // switch, and the offer must carry the document it was computed against.
+  // switch, and an offer must carry the document it was computed against.
   const documentId = useDocumentStore.getState().activeDocumentId ?? 'unknown'
 
   // Every settle starts the next window fresh, whatever we return.
-  baseline = snapshot(doc)
+  const current = snapshot(doc)
+  baseline = current
   humanTouchedBlockIds = new Set()
 
   // No baseline yet (fresh module) or nothing human-touched → nothing to offer.
-  if (!prior || touched.size === 0) return null
+  if (!prior || touched.size === 0) return EMPTY_SETTLE
+
+  // The reader can switch background checking off entirely. Checked here rather
+  // than at the call site so no arm can be added later that forgets to ask.
+  if (useSettingsStore.getState().consistencyCheckMode !== 'commit') return EMPTY_SETTLE
+
+  const renameOffer = scanForRename(documentId, touched, prior, current)
 
   let best: { blockId: string; beforeText: string; text: string; delta: number } | null = null
   for (const blockId of touched) {
     const beforeText = prior.get(blockId)
-    const text = baseline.get(blockId)
+    const text = current.get(blockId)
     // Block is new since baseline, vanished, or unchanged → not offerable.
     if (beforeText === undefined || text === undefined || beforeText === text) continue
     const delta = textDelta(beforeText, text)
     if (!best || delta > best.delta) best = { blockId, beforeText, text, delta }
   }
-  if (!best) return null
+  if (!best) return { dependentOffer: null, renameOffer }
 
   // Deterministic graph only — matches what scheduleDocGraphRebuild primes,
   // so this is usually a warm cache hit and NEVER a network call.
@@ -163,34 +251,46 @@ export async function settleDirectEdits(state: EditorState): Promise<DirectEditO
     skipGraphiti: true,
   })
   const dependentCount = getNeighborhood(graph, best.blockId, 2).size - 1
-  if (dependentCount <= 0) return null
+  if (dependentCount <= 0) return { dependentOffer: null, renameOffer }
 
   const live = findBlockById(doc, best.blockId)
-  if (!live || !live.node.isTextblock) return null
+  if (!live || !live.node.isTextblock) return { dependentOffer: null, renameOffer }
 
   return {
-    documentId,
-    blockId: best.blockId,
-    blockText: best.text,
-    beforeText: best.beforeText,
-    from: live.pos + 1,
-    to: live.pos + 1 + live.node.content.size,
-    dependentCount,
+    dependentOffer: {
+      documentId,
+      blockId: best.blockId,
+      blockText: best.text,
+      beforeText: best.beforeText,
+      from: live.pos + 1,
+      to: live.pos + 1 + live.node.content.size,
+      dependentCount,
+    },
+    renameOffer,
   }
 }
 
 /**
- * Resolution-time sink for a settled offer (EditorShell's autosave callback).
- * ALWAYS writes the store from the settle result: a real offer for the still-
+ * Resolution-time sink for a settled result (EditorShell's autosave callback).
+ * ALWAYS writes the stores from the settle result: a real offer for the still-
  * active document is surfaced; a null settle or an offer stamped for another
  * document (settle resolved after a doc switch) CLEARS any offer instead of
  * leaving a stale chip up.
  */
-export function acceptSettledOffer(offer: DirectEditOffer | null): void {
+export function acceptSettledOffer(result: SettleResult): void {
   const store = useDirectEditOfferStore.getState()
-  if (offer && offer.documentId === useDocumentStore.getState().activeDocumentId) {
-    store.setOffer(offer)
+  const activeId = useDocumentStore.getState().activeDocumentId
+
+  const { dependentOffer, renameOffer } = result
+  if (dependentOffer && dependentOffer.documentId === activeId) {
+    store.setOffer(dependentOffer)
   } else {
     store.clearOffer()
+  }
+
+  if (renameOffer && renameOffer.documentId === activeId) {
+    store.setRenameOffer(renameOffer)
+  } else {
+    store.clearRenameOffer()
   }
 }
