@@ -5,6 +5,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { captureAndResolveInBackground } from '@/lib/voice/pipeline'
 import { AnnotationComposer } from '@/components/Annotations/AnnotationComposer'
 import { peekRelatedCount } from '@/lib/ai/intentContext'
+import { detectUrl } from '@/lib/annotations/selectionOffers'
 
 const BAR_HEIGHT = 48
 const GAP = 8
@@ -57,6 +58,9 @@ export function FloatingIconBar() {
   // in the document about this", which is the difference between a generic
   // offer and one worth clicking.
   const relatedCount = view ? peekRelatedCount(view.state, contextMenu.from) : 0
+  // Cmd/Ctrl+click opens a link, but a modifier nobody announces is a modifier
+  // nobody finds — so a highlighted URL also gets a visible way out.
+  const selectedUrl = detectUrl(contextMenu.text)
 
   // Position above selection, clamped to viewport
   const barWidth = 360
@@ -77,6 +81,14 @@ export function FloatingIconBar() {
         // which is why copying your own text did not work.
         autoFocus={composerSeed !== null}
         initialText={composerSeed ?? ''}
+        onOpenLink={
+          selectedUrl
+            ? () => {
+                window.open(selectedUrl, '_blank', 'noopener,noreferrer')
+                clearContextMenu()
+              }
+            : undefined
+        }
         onCopy={() => {
           void navigator.clipboard?.writeText(contextMenu.text)
           clearContextMenu()

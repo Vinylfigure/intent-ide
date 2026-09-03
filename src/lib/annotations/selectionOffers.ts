@@ -75,12 +75,44 @@ export interface OfferContext {
  * phrase-scoped "30 days" is more useful offered "Why this figure?" than
  * "Define" — shape beats size once both apply.
  */
+/**
+ * The URL a selection points at, or null.
+ *
+ * Used to keep the selection bar useful when a reader highlights a link: the
+ * generic phrase offers ("Define", "Why this word?") are noise on a URL, and
+ * what they actually want is to open or copy it.
+ */
+export function detectUrl(text: string): string | null {
+  const trimmed = text.trim()
+  const match = /\bhttps?:\/\/[^\s<>"')\]]+/i.exec(trimmed)
+  if (match) return match[0]
+  // A bare domain, only when it is the WHOLE selection — otherwise ordinary
+  // prose containing a full stop starts looking like a hostname.
+  if (/^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(trimmed) && /\.[a-z]{2,}/i.test(trimmed)) {
+    return `https://${trimmed}`
+  }
+  return null
+}
+
 export function deriveOffers(
   anchor: { text: string; scope: Scope; nodeType?: string },
   ctx?: OfferContext,
 ): Offer[] {
   const text = truncate(anchor.text, MAX_PROMPT_TEXT)
   const offers: Offer[] = []
+
+  // A highlighted URL gets one offer, not four. "Why this word?" on a link is
+  // noise; opening and copying it are handled by their own chips, which are
+  // local actions rather than prompts and so cost none of the MAX_OFFERS slots.
+  if (detectUrl(anchor.text)) {
+    return [
+      {
+        label: 'What is this?',
+        intent: 'ask',
+        prompt: `What is at "${text}", and why is it referenced here?`,
+      },
+    ]
+  }
 
   if (ctx?.hasInvariant) {
     offers.push({

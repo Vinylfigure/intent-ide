@@ -312,6 +312,28 @@ export function parseMarkdownTable(lines: string[], start: number): ParsedTable 
   return { node: schema.nodes.table.create(null, rows), nextLine }
 }
 
+/**
+ * Only these schemes may become a live link.
+ *
+ * A pasted document is untrusted input: `javascript:` and `data:` URLs in an
+ * href are a script-execution vector, so they are kept as visible text instead.
+ * Returns the href to use, or null to refuse.
+ */
+export function safeHref(href: string): string | null {
+  const trimmed = href.trim()
+  if (!trimmed) return null
+  // Protocol-relative (`//host/...`) is refused: it carries no scheme to check
+  // and silently inherits the page's, which in a pasted document is not a
+  // decision the reader made. Checked BEFORE the root-relative branch, which
+  // would otherwise swallow it on the leading slash.
+  if (trimmed.startsWith('//')) return null
+  // Root-relative and in-document targets have no scheme to validate.
+  if (trimmed.startsWith('/') || trimmed.startsWith('#')) return trimmed
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(trimmed)
+  if (!scheme) return `https://${trimmed}`
+  return ['http', 'https', 'mailto'].includes(scheme[1].toLowerCase()) ? trimmed : null
+}
+
 function parseInlineMarks(text: string): Node[] {
   const nodes: Node[] = []
   let remaining = text
@@ -333,6 +355,35 @@ function parseInlineMarks(text: string): Node[] {
       continue
     }
 
+    // Link — [text](url)
+    //
+    // Markdown links used to fall straight through to the plain-text branch
+    // below, because the "next special character" scan did not include `[`.
+    // A document full of `[open resource](https://...)` rendered as those
+    // literal characters, while the identical syntax inside an AI answer
+    // rendered as a real link (answers go through Streamdown, which parses
+    // markdown properly). The schema always had the `link` mark; nothing ever
+    // created one.
+    const linkMatch = remaining.match(/^\[([^\]]*)\]\(([^\s)]+)\)/)
+    if (linkMatch) {
+      const [whole, label, href] = linkMatch
+      const safe = safeHref(href)
+      if (safe) {
+        // Marks inside the label still apply — `[**bold** link](url)` keeps
+        // its bold.
+        const inner = parseInlineMarks(label || safe)
+        const linkMark = schema.marks.link.create({ href: safe })
+        for (const node of inner) {
+          nodes.push(node.mark([...node.marks, linkMark]))
+        }
+      } else {
+        // An unsafe scheme is kept as visible text, never as a live link.
+        nodes.push(schema.text(whole))
+      }
+      remaining = remaining.slice(whole.length)
+      continue
+    }
+
     // Inline code
     const codeMatch = remaining.match(/^`(.+?)`/)
     if (codeMatch) {
@@ -341,8 +392,9 @@ function parseInlineMarks(text: string): Node[] {
       continue
     }
 
-    // Find next special char
-    const nextSpecial = remaining.search(/[\*`]/)
+    // Find next special char. `[` belongs here — without it the scan ran past
+    // the opening bracket of every link and the branch above never got a turn.
+    const nextSpecial = remaining.search(/[\*`[]/)
     if (nextSpecial > 0) {
       nodes.push(schema.text(remaining.slice(0, nextSpecial)))
       remaining = remaining.slice(nextSpecial)
@@ -361,6 +413,18 @@ export function parseHtmlToDoc(html: string): Node {
     // Remove script and style blocks entirely
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
+    // Anchors -> markdown links, BEFORE the generic tag strip below eats them.
+    // This function lowers HTML to markdown text and hands it to
+    // parseTextToDoc, so turning them into `[text](url)` here is all it takes
+    // for them to come out the other side as real link marks. Previously every
+    // href was silently dropped.
+    .replace(
+      /<a[^>]*?href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi,
+      (_, href, label) => {
+        const text = stripTags(label).trim()
+        return text ? `[${text}](${href})` : ''
+      },
+    )
     // Convert headings
     .replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, (_, t) => `\n# ${stripTags(t)}\n`)
     .replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, (_, t) => `\n## ${stripTags(t)}\n`)

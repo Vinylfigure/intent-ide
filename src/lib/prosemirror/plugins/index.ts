@@ -12,6 +12,7 @@ import { createConflictPlugin } from './conflictPlugin'
 import { createUncertaintyPlugin } from './uncertaintyPlugin'
 import { createProposedChangePlugin } from './proposedChangePlugin'
 import { createBlockIdPlugin } from './blockIdPlugin'
+import { createLinkClickPlugin } from './linkClickPlugin'
 import { columnResizing, goToNextCell, tableEditing } from 'prosemirror-tables'
 
 export function createPlugins(): Plugin[] {
@@ -35,6 +36,9 @@ export function createPlugins(): Plugin[] {
     createChangeTrackingPlugin(),
     createReadLinePlugin(),
     createContextMenuPlugin(),
+    // Before contextMenuPlugin's mouseup would matter: a Cmd+click that opens a
+    // link should not also leave a selection bar hanging over the document.
+    createLinkClickPlugin(),
     columnResizing(),
     // Keep this last: it handles broad mouse/arrow behavior after more
     // specific editor plugins and column resizing have had their turn.

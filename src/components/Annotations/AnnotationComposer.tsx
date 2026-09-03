@@ -48,6 +48,8 @@ interface AnnotationComposerProps {
   autoFocus?: boolean
   /** When given, renders a Copy chip first in the offers row. */
   onCopy?: () => void
+  /** When the selection is a link, renders an Open-link chip beside Copy. */
+  onOpenLink?: () => void
 }
 
 /**
@@ -67,6 +69,7 @@ export function AnnotationComposer({
   className = '',
   autoFocus = true,
   onCopy,
+  onOpenLink,
 }: AnnotationComposerProps) {
   const isRecording = useVoiceStore((s) => s.isRecording)
   const voiceError = useVoiceStore((s) => s.error)
@@ -210,6 +213,15 @@ export function AnnotationComposer({
             className="px-2 py-1 text-[10px] font-mono rounded-full border border-border text-muted-foreground transition-colors hover:bg-warm/70 hover:text-ink"
           >
             Copy
+          </button>
+        )}
+        {onOpenLink && (
+          <button
+            onClick={onOpenLink}
+            title="Open in a new tab (Cmd/Ctrl+click the link also works)"
+            className="px-2 py-1 text-[10px] font-mono rounded-full border border-accent/40 text-accent transition-colors hover:bg-warm/70"
+          >
+            Open link
           </button>
         )}
         {offers.map((action) => (
