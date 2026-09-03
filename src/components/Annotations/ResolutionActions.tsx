@@ -610,6 +610,10 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         // cascade-review.spec.ts caught by asserting that badge. They can
         // collapse or dismiss it afterwards, on their own timing.
         useAnnotationStore.getState().setHidden(annotation.id, true)
+        // The floating answer panel renders for whatever annotation is active,
+        // so hiding the row left the popup sitting on screen taking up space.
+        // "I am finished with this" has to mean the answer goes away.
+        useAnnotationStore.getState().setActive(null)
         if (changeSetId) {
           useChangesStore.getState().updateChangeSetStatus(changeSetId, 'rejected')
         }

@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Streamdown, type DiagramPlugin } from 'streamdown'
 import { AnnotationComposer } from '@/components/Annotations/AnnotationComposer'
 import { extractMermaidFence } from '@/lib/ai/mermaidGuard'
@@ -197,8 +198,18 @@ export function AgentMarkdown({ content, isStreaming = false, interactive = fals
           </div>
         </details>
       )}
-      {composer && (
+      {composer && createPortal(
         <>
+          {/* Portaled to document.body deliberately.
+              `position: fixed` resolves against the nearest ancestor with a
+              transform, filter or backdrop-filter — not the viewport. The
+              floating answer panel carries `backdrop-filter: blur(14px)`, so
+              rendered inline this click-catcher covered THAT PANEL exactly
+              rather than the screen, and at z-40 against sibling content at
+              z-auto it painted over the answer text: the panel appeared to go
+              blank the moment you highlighted anything inside it.
+              Do not "fix" this by dropping the backdrop-filter — the trap
+              returns the next time anyone adds a transform. */}
           <div className="fixed inset-0 z-40" onClick={() => setComposer(null)} />
           <div
             ref={composerRef}
@@ -226,7 +237,8 @@ export function AgentMarkdown({ content, isStreaming = false, interactive = fals
               onCancel={() => setComposer(null)}
             />
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   )

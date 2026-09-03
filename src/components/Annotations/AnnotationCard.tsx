@@ -413,7 +413,11 @@ export function AnnotationCard({
     updateAnnotation(annotation.id, { status: 'resolved', resolution, resolvedAt: Date.now() })
   }
 
-  const showRegenerate = currentVerbosity !== defaultVerbosity
+  // Always offered once there is an answer to re-run. Gating this on
+  // "verbosity differs from the default" meant that switching BACK to the
+  // default hid the button — exactly when the answer on screen was still the
+  // one generated at the other length.
+  const showRegenerate = Boolean(annotation.resolution)
 
   return (
     <div
@@ -583,9 +587,15 @@ export function AnnotationCard({
           {(['concise', 'normal', 'detailed'] as const).map((v) => (
             <button
               key={v}
+              // Changing the length used to write `verbosity` to the store and
+              // nothing else, so Short and Long rendered byte-identical text
+              // until Regenerate was found and clicked. The control now does
+              // what it looks like it does.
               onClick={() => {
-                updateAnnotation(annotation.id, { verbosity: v })
+                if (v === currentVerbosity) return
+                void reresolve({ verbosity: v })
               }}
+              disabled={annotation.status === 'resolving'}
               className={`px-2 py-0.5 text-[10px] font-mono rounded transition-colors ${
                 currentVerbosity === v
                   ? 'bg-ink text-white shadow-sm'
