@@ -24,6 +24,7 @@ import { UncertaintyTooltip } from './UncertaintyTooltip'
 import { ProposedEditControl } from './ProposedEditControl'
 import { FormattingToolbar } from './FormattingToolbar'
 import { DirectEditCascadeChip } from './DirectEditCascadeChip'
+import { RenameReview } from './RenameReview'
 
 const AUTOSAVE_DELAY = 5000 // 5 seconds idle
 
@@ -239,6 +240,7 @@ export function EditorShell() {
       <UncertaintyTooltip />
       <ProposedEditControl />
       <DirectEditCascadeChip />
+      <RenameReview />
     </div>
   )
 }
