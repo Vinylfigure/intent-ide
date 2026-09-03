@@ -173,3 +173,48 @@ describe('looksLikeTerm — why the obvious fix would have failed', () => {
     expect(looksLikeTerm('how are they identified?')).toBe(false)
   })
 })
+
+
+describe('continueThread — the coverage ledger reaches the prompt', () => {
+  it('tells the model what this thread already said', async () => {
+    // buildBranchChain covers CROSS-annotation ancestry and returns nothing for
+    // a follow-up inside one card — which is exactly where "Go deeper" was
+    // handing back the same answer twice. Passing the transcript as chat
+    // history was never enough on its own.
+    const { continueThread } = await loadResolverWithGraph()
+    const sent: unknown[] = []
+    stubFetchCapturing(sent)
+
+    const annotation = makeAnnotation()
+    annotation.conversation = [
+      { id: 'u1', role: 'user', content: 'what is this?', suggestedEdit: null, timestamp: 0 },
+      {
+        id: 'a1',
+        role: 'agent',
+        content: 'Hallucinations are found via audit logs. Adversarial tests also help.',
+        suggestedEdit: null,
+        timestamp: 1,
+      },
+    ]
+
+    await continueThread(annotation, 'go deeper', makeEditorState())
+
+    const prompt = promptOf(sent)
+    expect(prompt).toContain('ALREADY SAID IN THIS THREAD')
+    expect(prompt).toContain('Hallucinations are found via audit logs.')
+    expect(prompt).toContain('Add only what is NOT above')
+    // Explicit permission to decline — without it there is no legitimate path
+    // to "there is nothing more", so the model pads instead.
+    expect(prompt).toContain('nothing more to add')
+  })
+
+  it('adds no ledger block to the first follow-up of an empty thread', async () => {
+    const { continueThread } = await loadResolverWithGraph()
+    const sent: unknown[] = []
+    stubFetchCapturing(sent)
+
+    await continueThread(makeAnnotation(), 'go deeper', makeEditorState())
+
+    expect(promptOf(sent)).not.toContain('ALREADY SAID IN THIS THREAD')
+  })
+})

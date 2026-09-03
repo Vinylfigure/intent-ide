@@ -6,6 +6,7 @@ import { useEditorStore } from '@/stores/editorStore'
 import { useChangesStore } from '@/stores/changesStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useToastStore } from '@/stores/toastStore'
+import { isRepeatOf } from '@/lib/ai/coveredClaims'
 import { removeAnnotationDecoration } from '@/lib/prosemirror/plugins/annotationPlugin'
 import { generateId } from '@/lib/utils/id'
 import { continueThread, simplifyThread } from '@/lib/ai/resolver'
@@ -192,7 +193,22 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
         finishFollowUp()
         return
       }
-      useAnnotationStore.getState().addMessage(ann.id, agentMsg)
+      // Backstop that does not depend on the model behaving. The prompt asks
+      // it not to repeat itself and gives it explicit permission to say there
+      // is nothing more; verbosity bias and sycophancy research both say it
+      // will sometimes produce a rephrase anyway. Flag that rather than
+      // presenting it as a fresh answer — and flag rather than discard, since
+      // a crude word-overlap measure should not be allowed to eat a real reply.
+      const priorAgent = [...freshAnnotation.conversation].reverse()
+        .find((m) => m.role === 'agent' && m.content.trim())
+      const repeated = priorAgent ? isRepeatOf(agentMsg.content, priorAgent.content) : false
+
+      useAnnotationStore.getState().addMessage(ann.id, repeated
+        ? {
+            ...agentMsg,
+            content: `_This is substantially the same as the previous answer — there may be nothing further on this._\n\n${agentMsg.content}`,
+          }
+        : agentMsg)
       finishFollowUp()
     } catch (err) {
       console.error('Follow-up failed:', err)
@@ -631,7 +647,16 @@ export function ResolutionActions({ annotation }: ResolutionActionsProps) {
 
       case 'explore':
       case 'explore-deeper': {
-        await sendFollowUp(annotation, 'Go deeper on this. Provide more detail and evidence.')
+        // "Deeper" has no single meaning — question taxonomies separate
+        // mechanism, evidence, consequence and narrower detail as genuinely
+        // different moves. Asking for "more detail and evidence" invites a
+        // shallow survey of all of them, which is how two clicks produced two
+        // near-identical answers. Ask for ONE lane, and name the alternatives
+        // so the model picks rather than hedges.
+        await sendFollowUp(
+          annotation,
+          'Go one level deeper. Pick the single most useful lane — the mechanism (how it actually works), the evidence (what supports it), or the implication (what follows from it) — and go deep on that one rather than surveying all of them. Name which lane you chose in the first few words.',
+        )
         break
       }
       case 'tweak': {

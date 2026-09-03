@@ -19,6 +19,7 @@ import { logResolutionAudit } from '@/lib/audit/auditLogger'
 import { primaryProposedEdit, proposeCascadeEdits } from './orchestrator'
 import { pickUtilityModel } from './modelCapabilities'
 import { providerHeaders } from './providerHeaders'
+import { buildCoveredClaims, formatCoveredClaims } from './coveredClaims'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import { getDefaultVerbosity } from '@/lib/annotations/types'
 import type { Annotation, ConversationMessage, Resolution, ResolutionAction, SuggestedEdit, Scope, Verbosity } from '@/lib/annotations/types'
@@ -672,6 +673,10 @@ export async function continueThread(
   const branchChain = formatBranchChain(buildBranchChain(annotation.id))
 
   // Build messages from full conversation history
+  // What this thread has already said. buildBranchChain covers CROSS-annotation
+  // ancestry and returns nothing for a follow-up inside one card, which is
+  // exactly where "Go deeper" was handing back the same answer twice.
+  const coveredClaims = formatCoveredClaims(buildCoveredClaims(annotation.conversation))
   const messages: LLMMessage[] = [
     { role: 'system', content: systemPrompt },
     {
@@ -684,7 +689,7 @@ export async function continueThread(
     ? `Prompted by (context only, NOT the subject -- do not define or explain it, and do not remark on whether the document defines it): "${annotation.anchor.text}"\n  Answer what the reader actually said, on its own terms.`
     : `Selected text: "${annotation.anchor.text}"`}${annotation.sourceQuote ? `\n  Quoted from a previous answer — ANSWER ONLY ABOUT THIS: "${annotation.sourceQuote}"` : ''}
 
-${formatIntentContext(intentContext)}${branchChain}
+${formatIntentContext(intentContext)}${branchChain}${coveredClaims}
 ${reviewProgress}
 
 ${typePrompt}
