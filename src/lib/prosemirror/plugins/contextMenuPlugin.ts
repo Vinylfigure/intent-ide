@@ -55,6 +55,30 @@ export function createContextMenuPlugin(): Plugin {
         },
       },
       handleKeyDown(view, event) {
+        // Type-through: the selection bar does not take focus, so the reader
+        // keeps every native clipboard and caret shortcut over their own
+        // selection. The cost of that is that the composer is not listening —
+        // so the first printable keystroke is captured here and handed to it.
+        //
+        // Guarded on the modifier keys, which is the whole point: Cmd/Ctrl+C
+        // must reach the browser as a copy, not be swallowed as the first
+        // letter of a question.
+        const store = useEditorStore.getState()
+        if (
+          store.contextMenu &&
+          store.composerSeed === null &&
+          event.key.length === 1 &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.altKey
+        ) {
+          store.setComposerSeed(event.key)
+          // Swallowed deliberately: this character opens the question, it must
+          // not also overwrite the passage the reader just selected.
+          event.preventDefault()
+          return true
+        }
+
         // Trigger on keyboard selection (Shift+arrow/Home/End)
         if (event.shiftKey && /^Arrow|Home|End/.test(event.key)) {
           requestAnimationFrame(() => {

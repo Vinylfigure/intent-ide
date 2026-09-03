@@ -293,3 +293,53 @@ test.describe('threads can be closed', () => {
     await expect(page.getByText('Dismissed').first()).toBeVisible()
   })
 })
+
+test.describe('selecting text leaves the document usable', () => {
+  // The reported bug: you could not copy a sentence out of your own document.
+  // The selection composer autofocused, which took the document selection the
+  // instant the highlight finished, so Cmd+C had nothing to copy. Notion,
+  // Medium and Google Docs all show a selection toolbar WITHOUT taking focus,
+  // for exactly this reason.
+
+  test('the composer appears without stealing focus from the editor', async ({ page }) => {
+    await interceptLlm(page)
+    await loadDocument(page, LINKED_DOC)
+
+    await page.locator('.ProseMirror p', { hasText: 'Funding for the Pilot Program' }).first()
+      .click({ clickCount: 3 })
+    await expect(page.getByPlaceholder("What's on your mind?")).toBeVisible({ timeout: 30_000 })
+
+    // The invariant that makes copy work at all: focus is still inside the
+    // editor, so the live selection is still the one the browser will copy.
+    // This assertion fails before the fix.
+    const focusIsInEditor = await page.evaluate(
+      () => !!document.activeElement?.closest('.ProseMirror'),
+    )
+    expect(focusIsInEditor).toBe(true)
+
+    // And the selection itself survived.
+    const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '')
+    expect(selected).toContain('Pilot Program')
+  })
+
+  test('typing straight after selecting still goes into the composer', async ({ page }) => {
+    // Keeping focus in the editor must not cost the core move: highlight, then
+    // immediately type. The first keystroke seeds the composer and focuses it.
+    await interceptLlm(page)
+    await loadDocument(page, LINKED_DOC)
+
+    const target = page.locator('.ProseMirror p', { hasText: 'Funding for the Pilot Program' }).first()
+    const before = (await target.textContent()) ?? ''
+    await target.click({ clickCount: 3 })
+
+    const composer = page.getByPlaceholder("What's on your mind?")
+    await composer.waitFor({ state: 'visible', timeout: 30_000 })
+    await page.keyboard.press('w')
+
+    await expect(composer).toBeFocused()
+    await expect(composer).toHaveValue('w')
+    // The keystroke opened a question; it must not also have overwritten the
+    // passage that was selected.
+    expect(await target.textContent()).toBe(before)
+  })
+})
