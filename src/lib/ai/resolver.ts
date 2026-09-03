@@ -623,10 +623,24 @@ export async function continueThread(
     annotation.anchor.from,
     annotation.anchor.scope,
     annotation.sourceQuote ? inferScopeFromText(annotation.sourceQuote) : undefined,
-    // What the annotation is ABOUT, which is not the same question as where
-    // it is anchored. A child inherits its parent's document POSITION on
-    // purpose, but never its subject -- see annotationSubject.
-    annotationSubject(annotation),
+    // NO selected term on a follow-up, deliberately.
+    //
+    // `selectedText` feeds exactly one thing: the "this document does not
+    // define X" guard. That guard answers a question about the INITIAL
+    // selection -- "you highlighted a term; does the document explain it?" --
+    // and it is worth answering once. It is not a per-turn question.
+    //
+    // Passing anything here made every follow-up re-state the same line: five
+    // answers in one card all opening with `This document does not define
+    // "Model hallucination causes action"`. Passing the follow-up TEXT instead
+    // is worse, not better: `looksLikeTerm` rejects questions but not
+    // directives, so "elaborate on rate limiting" sails through as a term and
+    // the guard announces the document does not define it -- a more
+    // nonsensical version of the same bug.
+    //
+    // Retrieval is unaffected: `collectRelatedDetail` keys on blockId/pos, not
+    // on this argument.
+    undefined,
     annotation.relation ?? 'about',
   )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
