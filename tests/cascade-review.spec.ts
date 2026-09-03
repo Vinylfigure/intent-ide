@@ -273,14 +273,23 @@ test.describe('cascade review flow', () => {
     // crowding the overflow menu removes, so a real click works again.
     await page.getByRole('button', { name: /more panels/i }).click()
     await page.getByRole('menuitem', { name: 'History' }).click()
+    // BOTH rows are polled behind the same Refresh. They are written by two
+    // separate fire-and-forget commits — the 'apply' version after the cascade,
+    // and the root 'import' version back at the paste — so there is no order
+    // guarantee between them. Asserting 'Created' once, outside the retry that
+    // 'AI change' already had, made this flake: it failed and then passed on
+    // re-run twice on unrelated branches. Same assertions, same timeout; only
+    // the retry boundary moved.
     await expect(async () => {
       await page.getByRole('button', { name: 'Refresh' }).click()
       await expect(page.getByText('AI change', { exact: true })).toBeVisible({
         timeout: 2_000,
       })
+      await expect(page.getByText('AI + you').first()).toBeVisible({ timeout: 2_000 })
+      // The version chain also holds the root 'import' version from the paste.
+      await expect(page.getByText('Created', { exact: true })).toBeVisible({
+        timeout: 2_000,
+      })
     }).toPass({ timeout: 20_000 })
-    await expect(page.getByText('AI + you').first()).toBeVisible()
-    // The version chain also holds the root 'import' version from the paste.
-    await expect(page.getByText('Created', { exact: true })).toBeVisible()
   })
 })
