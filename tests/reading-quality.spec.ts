@@ -343,3 +343,115 @@ test.describe('selecting text leaves the document usable', () => {
     expect(await target.textContent()).toBe(before)
   })
 })
+
+test.describe('the floating answer panel', () => {
+  /** Move the answer out of the sidebar into the floating panel. */
+  async function goFloating(page: Page) {
+    await page.getByRole('button', { name: 'Floating', exact: true }).click()
+    await expect(page.getByRole('dialog', { name: /^Answer for/ })).toBeVisible({ timeout: 15_000 })
+  }
+
+  test('highlighting inside an answer does not blank the panel', async ({ page }) => {
+    // `position: fixed` resolves against the nearest ancestor with a transform,
+    // filter or backdrop-filter — not the viewport. The panel carries
+    // `backdrop-filter: blur(14px)`, so the drill composer's click-catcher
+    // covered THE PANEL exactly and painted over its own answer text.
+    await interceptLlm(page, 'Tokenization replaces sensitive data with a token.')
+    await loadDocument(page, LINKED_DOC)
+    await annotate(page, 'Funding for the Pilot Program', 'what is this?')
+    await goFloating(page)
+
+    const panel = page.getByRole('dialog', { name: /^Answer for/ })
+    await expect(panel).toContainText('Tokenization replaces sensitive data')
+
+    // Select a phrase inside the answer and fire the mouseup React listens for.
+    // A synthetic triple-click does not reliably produce a DOM Selection here,
+    // and the drill affordance keys off window.getSelection().
+    await page.evaluate(() => {
+      const body = document.querySelector('.agent-markdown')
+      if (!body) throw new Error('no answer body found in the panel')
+      const target = body.querySelector('p') ?? body
+      const range = document.createRange()
+      range.selectNodeContents(target)
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+      body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    })
+
+    // Prove the composer actually opened. Without this the test passes
+    // vacuously: if no composer renders, no click-catcher renders either, and
+    // "the panel is still readable" is trivially true.
+    await expect(page.getByPlaceholder('Add a note or follow-up')).toBeVisible({ timeout: 15_000 })
+
+    // The click-catcher must NOT live inside the panel.
+    //
+    // `position: fixed` resolves against the nearest ancestor with a transform,
+    // filter or backdrop-filter rather than the viewport, and the panel carries
+    // `backdrop-filter: blur(14px)` — so rendered inline, this `inset-0`
+    // overlay covered the panel exactly and, at z-40 over sibling content at
+    // z-auto, painted out the answer. Asserting the text is still "in the DOM"
+    // does not catch that: the text was always in the DOM, just underneath.
+    await expect(panel.locator('div.fixed.inset-0')).toHaveCount(0)
+
+    // And it does exist — at the body level, where it belongs.
+    await expect(page.locator('body > div.fixed.inset-0')).toHaveCount(1)
+
+    await expect(panel).toContainText('Tokenization replaces sensitive data')
+  })
+
+  test('Got it leaves no answer open, so the popup cannot reappear', async ({ page }) => {
+    // The floating panel renders for whatever annotation is ACTIVE, so
+    // "Got it" hiding the sidebar row still left the popup on screen taking up
+    // space. Dismissing now clears the active annotation too.
+    //
+    // Asserted this way round — dismiss in the sidebar, then switch to
+    // floating — because it tests the property that matters (nothing is left
+    // active) without depending on the floating card's own render conditions.
+    await interceptLlm(page)
+    await loadDocument(page, LINKED_DOC)
+    await annotate(page, 'Funding for the Pilot Program', 'what is this?')
+
+    await page.getByRole('button', { name: /^(Got it|Dismiss|Keep it)$/ }).first().click()
+    await expect(page.getByText('0 review items')).toBeVisible({ timeout: 15_000 })
+
+    await page.getByRole('button', { name: 'Floating', exact: true }).click()
+    await expect(page.getByRole('dialog', { name: /^Answer for/ })).toBeHidden()
+  })
+})
+
+test.describe('answer length', () => {
+  test('changing Length re-runs the answer instead of silently relabelling it', async ({ page }) => {
+    // Short and Long rendered byte-identical text, because the buttons only
+    // wrote `verbosity` to the store and nothing re-resolved.
+    await interceptLlm(page)
+    // Registered AFTER interceptLlm so this one wins for /api/resolve —
+    // Playwright matches the most recently registered route first. Each call
+    // answers differently, so a re-resolve is visible in the card itself.
+    let resolves = 0
+    await page.route('**/api/resolve', (route) => {
+      resolves += 1
+      const answer = `answer number ${resolves}`
+      const body = route.request().postDataJSON() as { stream?: boolean }
+      if (body.stream) {
+        return route.fulfill({
+          contentType: 'text/event-stream',
+          body:
+            `data: ${JSON.stringify({ responseId: `r${resolves}` })}\n\n` +
+            `data: ${JSON.stringify({ text: answer })}\n\n`,
+        })
+      }
+      return route.fulfill({ json: { content: answer, responseId: `r${resolves}`, logprobs: null } })
+    })
+
+    await loadDocument(page, LINKED_DOC)
+    await annotate(page, 'Funding for the Pilot Program', 'what is this?')
+    await expect(page.getByText('answer number 1')).toBeVisible({ timeout: 30_000 })
+
+    await page.getByRole('button', { name: 'Long', exact: true }).first().click()
+
+    // A second answer arrives. Before the fix, clicking Long only relabelled
+    // the store and this text never changed.
+    await expect(page.getByText('answer number 2')).toBeVisible({ timeout: 30_000 })
+  })
+})
