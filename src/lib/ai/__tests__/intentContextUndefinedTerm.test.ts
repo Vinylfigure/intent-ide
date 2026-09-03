@@ -220,3 +220,43 @@ describe('buildIntentContext — a heading carried down a thread', () => {
     expect(ctx.undefinedTerm).toBeNull()
   })
 })
+
+
+describe('buildIntentContext — the anchor as provenance, not subject', () => {
+  // The reported failure: the reader highlighted "AWS-heavy." and typed "I need
+  // to provide context on the different AWS modules". They did not ask what
+  // "AWS-heavy" means, so whether the document defines it is not a fact worth
+  // opening with — but the guard read the selection and never the question.
+  it('stays silent when the anchor is only where the thought struck', async () => {
+    useDocGraphStore.setState({ graph: graphOf([{ blockId: 'a', text: 'My background is AWS-heavy.' }]) })
+    const ctx = await buildIntentContext(
+      stateWith('My background is AWS-heavy.'),
+      1,
+      'phrase',
+      undefined,
+      'AWS-heavy',
+      'sparked_by',
+    )
+    expect(ctx.undefinedTerm).toBeNull()
+  })
+
+  it('still fires on the same term when the anchor IS the subject', async () => {
+    // The guard is suppressed by the relation, not disabled outright.
+    useDocGraphStore.setState({ graph: graphOf([{ blockId: 'a', text: 'My background is AWS-heavy.' }]) })
+    const ctx = await buildIntentContext(
+      stateWith('My background is AWS-heavy.'),
+      1,
+      'phrase',
+      undefined,
+      'AWS-heavy',
+      'about',
+    )
+    expect(ctx.undefinedTerm).toBe('AWS-heavy')
+  })
+
+  it("defaults to 'about', so an omitted relation keeps the old behaviour", async () => {
+    useDocGraphStore.setState({ graph: graphOf([{ blockId: 'a', text: 'Terraform / Atlantis sniff test' }]) })
+    const ctx = await buildIntentContext(stateWith('Terraform / Atlantis sniff test'), 1, 'section', undefined, 'Atlantis')
+    expect(ctx.undefinedTerm).toBe('Atlantis')
+  })
+})

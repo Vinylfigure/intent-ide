@@ -198,6 +198,7 @@ export async function resolveAnnotation(
     // it is anchored. A child inherits its parent's document POSITION on
     // purpose, but never its subject -- see annotationSubject.
     annotationSubject(annotation),
+    annotation.relation ?? 'about',
   )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
@@ -271,7 +272,9 @@ export async function resolveAnnotation(
   Type: ${annotation.type}
   Scope: ${scope}
   User said: "${annotation.transcript}"
-  Selected text: "${annotation.anchor.text}"${annotation.sourceQuote ? `\n  Quoted from a previous answer — ANSWER ONLY ABOUT THIS: "${annotation.sourceQuote}"` : ''}
+  ${(annotation.relation ?? 'about') === 'sparked_by'
+    ? `Prompted by (context only, NOT the subject -- do not define or explain it, and do not remark on whether the document defines it): "${annotation.anchor.text}"\n  Answer what the reader actually said, on its own terms.`
+    : `Selected text: "${annotation.anchor.text}"`}${annotation.sourceQuote ? `\n  Quoted from a previous answer — ANSWER ONLY ABOUT THIS: "${annotation.sourceQuote}"` : ''}
 
 ${formatIntentContext(intentContext)}${branchChain}
 ${reviewProgress}
@@ -387,6 +390,7 @@ export async function streamResolveAnnotation(
     // it is anchored. A child inherits its parent's document POSITION on
     // purpose, but never its subject -- see annotationSubject.
     annotationSubject(annotation),
+    annotation.relation ?? 'about',
   )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
@@ -461,7 +465,9 @@ export async function streamResolveAnnotation(
   Type: ${annotation.type}
   Scope: ${scope}
   User said: "${annotation.transcript}"
-  Selected text: "${annotation.anchor.text}"${annotation.sourceQuote ? `\n  Quoted from a previous answer — ANSWER ONLY ABOUT THIS: "${annotation.sourceQuote}"` : ''}
+  ${(annotation.relation ?? 'about') === 'sparked_by'
+    ? `Prompted by (context only, NOT the subject -- do not define or explain it, and do not remark on whether the document defines it): "${annotation.anchor.text}"\n  Answer what the reader actually said, on its own terms.`
+    : `Selected text: "${annotation.anchor.text}"`}${annotation.sourceQuote ? `\n  Quoted from a previous answer — ANSWER ONLY ABOUT THIS: "${annotation.sourceQuote}"` : ''}
 
 ${formatIntentContext(intentContext)}${branchChain}
 ${reviewProgress}
@@ -621,6 +627,7 @@ export async function continueThread(
     // it is anchored. A child inherits its parent's document POSITION on
     // purpose, but never its subject -- see annotationSubject.
     annotationSubject(annotation),
+    annotation.relation ?? 'about',
   )
   const contextSummary = sessionContext.annotationHistory || 'No prior context.'
 
@@ -659,7 +666,9 @@ export async function continueThread(
   Type: ${annotation.type}
   Scope: ${scope}
   User said: "${annotation.transcript}"
-  Selected text: "${annotation.anchor.text}"${annotation.sourceQuote ? `\n  Quoted from a previous answer — ANSWER ONLY ABOUT THIS: "${annotation.sourceQuote}"` : ''}
+  ${(annotation.relation ?? 'about') === 'sparked_by'
+    ? `Prompted by (context only, NOT the subject -- do not define or explain it, and do not remark on whether the document defines it): "${annotation.anchor.text}"\n  Answer what the reader actually said, on its own terms.`
+    : `Selected text: "${annotation.anchor.text}"`}${annotation.sourceQuote ? `\n  Quoted from a previous answer — ANSWER ONLY ABOUT THIS: "${annotation.sourceQuote}"` : ''}
 
 ${formatIntentContext(intentContext)}${branchChain}
 ${reviewProgress}

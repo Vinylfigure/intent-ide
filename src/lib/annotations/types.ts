@@ -24,6 +24,26 @@ export function mapLegacyType(type: string): AnnotationType {
   }
 }
 
+/**
+ * What the highlighted span IS to the annotation: its subject, or only where
+ * the thought happened to strike.
+ *
+ * A reader who highlights "AWS-heavy" and types "I need to learn the different
+ * AWS modules" has not asked what "AWS-heavy" means. The span is provenance,
+ * not subject — so answering "this document does not define AWS-heavy" is
+ * true, and useless.
+ *
+ * No shipping tool models this as one explicit toggle. The nearest precedents
+ * are Hypothes.is (an anchored annotation vs an unanchored Page Note) and
+ * Zettelkasten (a literature note about a source vs a fleeting note the source
+ * merely triggered); both split along exactly this line.
+ *
+ * Two states, deliberately. Native intent-selection accuracy falls off sharply
+ * as the option set grows, and a four-way scope picker would be one more
+ * decision on every annotation for a distinction that is binary in practice.
+ */
+export type AnchorRelation = 'about' | 'sparked_by'
+
 export type AnnotationStatus = 'pending' | 'classified' | 'resolving' | 'resolved' | 'applied' | 'dismissed'
 
 export type Scope = 'phrase' | 'sentence' | 'paragraph' | 'section'
@@ -81,6 +101,12 @@ export interface Annotation {
   createdAt: number
   resolvedAt: number | null
   verbosity: Verbosity
+  /**
+   * Whether the anchor is this annotation's subject or only its provenance.
+   * Absent on anything persisted before this field existed — migrateAnnotations
+   * backfills 'about', which is both the old behaviour and the common case.
+   */
+  relation?: AnchorRelation
   /** For a sub-chat spun off an AI answer: the exact quoted span that produced it. The document `anchor` stays the parent's positions so gutter/map/cascade keep working; this records what the branch is actually about. */
   sourceQuote?: string
   /**

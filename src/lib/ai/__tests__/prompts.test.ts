@@ -7,11 +7,20 @@ import {
 } from '../prompts'
 
 describe('Classification prompt', () => {
+  // The prompt now answers on TWO axes in one round-trip: what the reader wants
+  // done, and whether the highlighted span is the subject of what they said or
+  // only where the thought struck. Type names are lowercase now because the
+  // reply is a JSON object rather than a single shouted word.
   it('includes all 4 annotation types', () => {
-    expect(CLASSIFICATION_PROMPT).toContain('ASK')
-    expect(CLASSIFICATION_PROMPT).toContain('EDIT')
-    expect(CLASSIFICATION_PROMPT).toContain('DIG')
-    expect(CLASSIFICATION_PROMPT).toContain('FLAG')
+    expect(CLASSIFICATION_PROMPT).toContain('ask:')
+    expect(CLASSIFICATION_PROMPT).toContain('edit:')
+    expect(CLASSIFICATION_PROMPT).toContain('dig:')
+    expect(CLASSIFICATION_PROMPT).toContain('flag:')
+  })
+
+  it('includes both anchor relations', () => {
+    expect(CLASSIFICATION_PROMPT).toContain('about:')
+    expect(CLASSIFICATION_PROMPT).toContain('sparked_by:')
   })
 
   it('frames the classifier as a document review tool', () => {
@@ -23,8 +32,16 @@ describe('Classification prompt', () => {
     expect(CLASSIFICATION_PROMPT).toContain('{{anchoredText}}')
   })
 
-  it('instructs to respond with only the type name', () => {
-    expect(CLASSIFICATION_PROMPT).toContain('ONLY the type name')
+  it('demands a bare JSON object carrying both axes', () => {
+    expect(CLASSIFICATION_PROMPT).toContain('ONLY a JSON object')
+    expect(CLASSIFICATION_PROMPT).toContain('no code fence')
+    expect(CLASSIFICATION_PROMPT).toContain('{"type":"ask","relation":"about"}')
+  })
+
+  it('breaks the tie toward about, the safer default', () => {
+    // A wrong 'sparked_by' silently suppresses the undefined-term guard; a
+    // wrong 'about' just reproduces the old behaviour.
+    expect(CLASSIFICATION_PROMPT).toContain('answer about')
   })
 })
 

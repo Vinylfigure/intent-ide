@@ -1,13 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { CLASSIFICATION_PROMPT } from '@/lib/ai/prompts'
+import { parseClassification } from '@/lib/ai/classification'
 import {
   buildChatBody,
   extractContent,
   readProviderCtx,
   resolveChatUrlAndHeaders,
 } from '@/lib/server/llmProvider'
-
-const VALID_TYPES = ['ask', 'edit', 'dig', 'flag']
 
 export const maxDuration = 60
 
@@ -30,7 +29,8 @@ export async function POST(request: NextRequest) {
     const { url, headers, kind } = resolveChatUrlAndHeaders(ctx)
     const body = buildChatBody(ctx, {
       messages: [{ role: 'user', content: prompt }],
-      maxTokens: 50,
+      // Room for a small JSON object; the old single-word budget could clip it.
+      maxTokens: 100,
       temperature: 0,
     })
 
@@ -48,11 +48,11 @@ export async function POST(request: NextRequest) {
     }
 
     const data = await response.json()
-    const type = extractContent(kind, data).content.trim().toLowerCase()
-
-    // Extract just the type word (model might add punctuation)
-    const matched = VALID_TYPES.find((t) => type.includes(t))
-    return NextResponse.json({ type: matched || 'flag' })
+    const raw = extractContent(kind, data).content
+    // Never throws: a malformed reply degrades to a substring-matched type and
+    // relation 'about', which is exactly what this route returned before the
+    // relation axis existed.
+    return NextResponse.json(parseClassification(raw, suggestedType ?? null))
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Classification failed' },

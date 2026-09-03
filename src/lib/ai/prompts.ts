@@ -1,17 +1,36 @@
-// 4-type classification prompt (used by /api/classify)
-export const CLASSIFICATION_PROMPT = `You are an annotation classifier for a document review tool. Given the user's input and the text they selected, classify their intent into exactly one of these types:
+// Classification prompt (used by /api/classify). Returns TWO judgements:
+// what the reader wants done, and what the highlighted span is to what they
+// said. The second axis rides along here rather than in a separate call --
+// this round-trip already receives both the transcript and the anchored text,
+// so inferring scope inside a call that already happens costs no latency and
+// adds no second point of failure. (The same reason self-query retrievers
+// parse a query's filters inside one call instead of routing beforehand.)
+export const CLASSIFICATION_PROMPT = `You are an annotation classifier for a document review tool. A reader highlighted a span of a document and said something. Judge two things.
 
-- ASK: Seeking clarification ("What does this mean?", "Is this right?", "Why is this here?")
-- EDIT: Directing a change ("Change this to X", "Make it shorter", "Fix this", "Restructure", "This is wrong, it should be Y", "Reword this")
-- DIG: Investigating deeper ("Tell me more", "What are the implications?", "Research this", "What evidence supports this?")
-- FLAG: Marking something problematic ("This seems off", "Something's wrong here", "Come back to this", "Not sure about this")
+TYPE - what the reader wants done:
+- ask: Seeking clarification ("What does this mean?", "Is this right?", "Why is this here?")
+- edit: Directing a change ("Change this to X", "Make it shorter", "Fix this", "Restructure", "This is wrong, it should be Y", "Reword this")
+- dig: Investigating deeper ("Tell me more", "What are the implications?", "Research this", "What evidence supports this?")
+- flag: Marking something problematic ("This seems off", "Something's wrong here", "Come back to this", "Not sure about this")
 
-Respond with ONLY the type name in uppercase: ASK, EDIT, DIG, or FLAG.
+RELATION - what the highlighted text IS to what the reader said:
+- about: they are asking about the highlighted text itself. It is the subject.
+- sparked_by: the highlighted text triggered a thought that is NOT about it. It is where they were reading, not what they are asking about.
 
-User said: "{{transcript}}"
-Selected text: "{{anchoredText}}"
+Examples of sparked_by:
+- Highlighted "AWS-heavy." and said "I need to provide context on the different AWS modules" - they want the AWS modules explained, not the phrase "AWS-heavy" defined.
+- Highlighted any sentence and said "remind me to check whether we still support this" - the thought is a task, not a question about the span.
+Examples of about:
+- Highlighted "Bucket Lock" and said "what is this?"
+- Highlighted a paragraph and said "make this shorter"
 
-Type:`
+When genuinely torn, answer about.
+
+Respond with ONLY a JSON object, no prose and no code fence:
+{"type":"ask","relation":"about"}
+
+Reader said: "{{transcript}}"
+Highlighted text: "{{anchoredText}}"`
 
 // Sub-agent system prompts per annotation type
 export const RESOLVER_SYSTEM_PROMPT = `You are a scoped review agent for Intent IDE, a professional document review tool. You think like a lawyer examining a contract, an auditor verifying claims, or a PM stress-testing a PRD.

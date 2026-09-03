@@ -1,5 +1,5 @@
 import type { EditorState } from 'prosemirror-state'
-import type { Scope } from '@/lib/annotations/types'
+import type { AnchorRelation, Scope } from '@/lib/annotations/types'
 import { getBlockText, getSectionText } from '@/lib/prosemirror/helpers'
 import { blockIdAtPos } from '@/lib/prosemirror/blockIds'
 import {
@@ -343,6 +343,7 @@ export async function buildIntentContext(
   scope: Scope,
   quoteScope?: Scope,
   selectedText?: string,
+  relation: AnchorRelation = 'about',
 ): Promise<IntentContext> {
   const budget = BUDGET[quoteScope ?? scope] ?? BUDGET.paragraph
 
@@ -377,8 +378,13 @@ export async function buildIntentContext(
   // (see looksLikeTerm -- a sentence, heading or question is not a term the
   // document could define) and impossible on a cold graph, where
   // `graphUnavailable` already tells callers not to read silence as an answer.
+  //
+  // Only asked when the anchor IS the subject. A reader who highlighted
+  // "AWS-heavy" and typed "I need to provide context on the different AWS
+  // modules" did not ask what "AWS-heavy" means, so whether the document
+  // defines it is not a fact worth opening with.
   const term = selectedText?.trim() ?? ''
-  if (term && looksLikeTerm(term) && !documentDefines(graph, term)) {
+  if (relation === 'about' && term && looksLikeTerm(term) && !documentDefines(graph, term)) {
     ctx.undefinedTerm = term
   }
 
