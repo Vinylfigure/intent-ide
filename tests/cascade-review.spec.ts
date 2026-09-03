@@ -174,7 +174,22 @@ async function interceptLlmEndpoints(page: Page) {
 test.describe('cascade review flow', () => {
   test('annotate → cascade → per-change review → apply → history', async ({ page }) => {
     await interceptLlmEndpoints(page)
+
+    // Every version write goes through recordCommit, which is fire-and-forget
+    // and swallows failures with a console.warn (commits.ts:237-242) — a lost
+    // write is lost permanently, not late. That is why polling for the row does
+    // not rescue it, and why this assertion has failed intermittently.
+    //
+    // The import commit is the FIRST request this spec makes to /api/history,
+    // so it races that route's first-hit dev compile. Warming the route before
+    // the document exists takes the compile off the write's critical path.
+    const historyWarnings: string[] = []
+    page.on('console', (msg) => {
+      if (msg.text().includes('[history]')) historyWarnings.push(msg.text())
+    })
+
     await page.goto('/')
+    await page.request.get('/api/history?documentId=warmup&limit=1')
 
     // 1. First-run DocInputModal: paste the seeded document.
     await expect(page.getByRole('heading', { name: 'Load Document' })).toBeVisible({
@@ -287,9 +302,14 @@ test.describe('cascade review flow', () => {
       })
       await expect(page.getByText('AI + you').first()).toBeVisible({ timeout: 2_000 })
       // The version chain also holds the root 'import' version from the paste.
-      await expect(page.getByText('Created', { exact: true })).toBeVisible({
-        timeout: 2_000,
-      })
+      await expect(
+        page.getByText('Created', { exact: true }),
+        // Surface the swallowed warning in the failure message: without it a
+        // lost write looks like a mysteriously missing row.
+        historyWarnings.length
+          ? `history writes reported failures: ${historyWarnings.join(' | ')}`
+          : 'no [history] console warnings were emitted',
+      ).toBeVisible({ timeout: 2_000 })
     }).toPass({ timeout: 20_000 })
   })
 })
