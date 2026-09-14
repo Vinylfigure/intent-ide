@@ -103,10 +103,10 @@ jobs:
           set -euo pipefail
           [ -n "${START:-}" ] || { echo "::error::no start stamp — the credential step did not run"; exit 1; }
           pr=$(gh pr list --state all --limit 30 --json number,url,createdAt,headRefName \
-            --jq --arg p "$PREFIX" --arg s "$START" '[.[] | select(.headRefName | startswith($p)) | select(.createdAt >= $s)] | sort_by(.createdAt) | last // empty | "\(.number) \(.url)"')
+            | jq -r --arg p "$PREFIX" --arg s "$START" '[.[] | select(.headRefName | startswith($p)) | select(.createdAt >= $s)] | sort_by(.createdAt) | last // empty | "\(.number) \(.url)"')
           if [ -n "$pr" ]; then echo "delivered: PR $pr"; exit 0; fi
           line=$(gh issue view "$LIVENESS_ISSUE" --json comments \
-            --jq --arg n "$ROUTINE | " --arg s "$START" '[.comments[] | select(.createdAt >= $s) | .body | split("\n")[0] | select(startswith($n))] | last // empty')
+            | jq -r --arg n "$ROUTINE | " --arg s "$START" '[.comments[] | select(.createdAt >= $s) | .body | split("\n")[0] | select(startswith($n))] | last // empty')
           if [ -n "$line" ]; then echo "delivered: liveness line — $line"; exit 0; fi
           echo "::error::$ROUTINE fired and delivered nothing: no PR on $PREFIX* and no liveness line on #$LIVENESS_ISSUE since $START"
           exit 1
