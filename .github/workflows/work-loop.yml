@@ -1,0 +1,112 @@
+name: work-loop
+
+# The build loop's driver. Each firing runs ONE iteration of the work-loop
+# skill: consume exactly one ready task: issue and deliver it by PR, or say
+# so on the liveness log (#159). Replaces the claude.ai Routine `intent-ide
+# work-loop` (`trig_01VdXGtGRVpQUA3yu73UFCTC`, auto-disabled 2026-08-31) —
+# operator ruling 2026-09-14, overlord docs/DECISIONS.md
+# DL-2026-09-14-routines-in-repo: this repo, not an account-level scheduler,
+# is the source of truth for whether the loop runs. Same shape as
+# Vinylfigure/Plutus/.github/workflows/work-loop.yml.
+#
+# Judge this schedule by its artifact (a PR or a liveness line per firing),
+# never by green runs: GitHub cron is delayed under load and silently skipped
+# on repos idle >60 days. The last step fails the run when neither exists.
+on:
+  schedule:
+    # 4-hourly at :17 — off the top of the hour (the Routine's own minute).
+    - cron: "17 */4 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: work-loop
+  cancel-in-progress: false
+
+jobs:
+  iterate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    env:
+      # Same as ci.yml: the Prisma SQLite file the tests read.
+      DATABASE_URL: "file:./dev.db"
+    steps:
+      - name: Credential present
+        id: creds
+        env:
+          TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is empty or unset. Mint one with 'claude setup-token' and set it (overlord scripts/wire-secret.sh --repo Vinylfigure/intent-ide)."
+            exit 1
+          fi
+          printf 'credential present: %s chars\n' "${#TOKEN}"
+          echo "start=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The database is prepared here, as ci.yml does, so the model never
+      # needs `npx prisma migrate deploy` in its grant (claude.yml withholds
+      # it: a dispatched agent must never point a migration at a real
+      # database — this is the throwaway SQLite file).
+      - name: Prepare the test database
+        run: |
+          npm ci
+          npx prisma generate
+          npx prisma migrate deploy
+
+      # No GH_TOKEN override: the action's own token backs `gh` (Plutus#32).
+      # File tools are listed EXPLICITLY — prompt mode treats --allowedTools
+      # as a strict allowlist (Plutus firing #1). claude.yml's dispatch grant
+      # cannot deliver a PR at all (no commit, push or gh) — this loop's grant
+      # is the one place in this repo that can, which is why this file is
+      # operator-boundary and the machinery gate holds changes to it.
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Read memory-bank/* first (the published documents; the session-scratch files are gitignored and absent here — create nothing you cannot commit). Then run exactly ONE iteration of the work-loop skill at .claude/skills/work-loop/SKILL.md, following it exactly, against Vinylfigure/intent-ide's open `task:` issues (firing #${{ github.run_number }}, run id ${{ github.run_id }}, headless in GitHub Actions). Your GitHub tool is `gh`; a PR's CI is read with `gh run list --branch <head>`.
+
+            Ready means: carries the `task:` label and a runnable done-means, is inside this environment's tool grant, and is not `question:`-blocked or `loop:hold`-held. #19 stays blocked on an operator-supplied provider key — never fake a provider. Consult the Status dashboard issue (#25) and open PRs first — an unmerged claude/ PR with red checks from a prior firing outranks starting new work; resume it (`gh pr checkout`) rather than opening a rival. Apply the skill's headless permission preflight: `.claude/hooks/**`, `.github/workflows/**` and `.claude/settings.json` are operator-only — comment and skip.
+
+            Deliver by PR only on branch `claude/issue-<N>-<YYYYMMDD-HHMM>` from `origin/main` whose body says `Closes #N` — never push or merge main. Checks, in this order, all green before you push: `npm run typecheck`, `npm run lint`, `npm run test` (the database is already migrated; `npm ci` has run). Run the adversarial review the skill requires; if no subagent tool is available, do the adversarial pass yourself and say so in the PR body. Descoped remainders become new `task:` issues with a `discovered-from:` ref.
+
+            If nothing is ready, file at most TWO grounded proposal `task:` issues and stop; never execute a proposal in the firing that created it.
+
+            NO SILENT FIRING: if you open no PR, post exactly one comment on Vinylfigure/intent-ide#159 via `gh issue comment 159 --body-file <file>` whose first line is exactly `intent-ide work-loop | <YYYY-MM-DD>T<HH:MM>Z | fired, did nothing, because <reason>` (or names the proposals you filed). Write multi-line bodies to a file first. The step after you fails this run when neither a PR nor that line exists. End your final message stating which arm ran (consumed / proposed / empty / blocked-operator-only) and the PR link if any.
+          # Each npm/npx command named in full (claude.yml's rule: runners are
+          # arbitrary execution wearing a narrow costume), plus the delivery
+          # verbs claude.yml lacks, the resume verbs, and Actions reads.
+          claude_args: --max-turns 150 --allowedTools "Read,Glob,Grep,Edit,Write,TodoWrite,Bash(npm ci),Bash(npm run typecheck),Bash(npm run lint),Bash(npm run test),Bash(npm run build),Bash(npx prisma generate),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git checkout:*),Bash(git branch:*),Bash(git commit:*),Bash(git push:*),Bash(git log:*),Bash(git fetch origin:*),Bash(git ls-remote origin:*),Bash(git stash:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr list:*),Bash(gh pr checkout:*),Bash(gh pr ready:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh run list:*),Bash(gh run view:*)"
+
+      - name: Delivery audit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          START: ${{ steps.creds.outputs.start }}
+          ROUTINE: intent-ide work-loop
+          PREFIX: claude/
+          LIVENESS_ISSUE: "159"
+        run: |
+          set -euo pipefail
+          [ -n "${START:-}" ] || { echo "::error::no start stamp — the credential step did not run"; exit 1; }
+          pr=$(gh pr list --state all --limit 30 --json number,url,createdAt,headRefName \
+            --jq --arg p "$PREFIX" --arg s "$START" '[.[] | select(.headRefName | startswith($p)) | select(.createdAt >= $s)] | sort_by(.createdAt) | last // empty | "\(.number) \(.url)"')
+          if [ -n "$pr" ]; then echo "delivered: PR $pr"; exit 0; fi
+          line=$(gh issue view "$LIVENESS_ISSUE" --json comments \
+            --jq --arg n "$ROUTINE | " --arg s "$START" '[.comments[] | select(.createdAt >= $s) | .body | split("\n")[0] | select(startswith($n))] | last // empty')
+          if [ -n "$line" ]; then echo "delivered: liveness line — $line"; exit 0; fi
+          echo "::error::$ROUTINE fired and delivered nothing: no PR on $PREFIX* and no liveness line on #$LIVENESS_ISSUE since $START"
+          exit 1
