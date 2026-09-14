@@ -46,11 +46,17 @@ jobs:
       # via the claude-github-mcp-connector app; only the child's own comments
       # are `claude[bot]`. The pin is ordinary dependency hygiene, not a
       # response to bot-authored dispatch.
-      # Echo-retrigger needs no actor guard: `allowed_bots` defaults to "",
-      # so no bot can trigger this workflow at all.
+      # `allowed_bots` names the ONE bot allowed to wake this workflow: the
+      # operator's own overlord-ui deployment writes as `overlord-ui-joe[bot]`
+      # — an answer to a question, a decision on a PR ask, a Resolve tap on a
+      # conflict — and claude-code-action refuses every bot actor not listed
+      # (overlord run 34811438736: "Workflow initiated by non-human actor:
+      # overlord-ui-joe (type: Bot)"). Every other bot, `claude[bot]`'s own
+      # echoes included, stays refused, so this is still no echo-retrigger.
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: overlord-ui-joe[bot]
           # --max-turns is the runaway bound, not the effort budget; per-order
           # effort budgets live in the work-order spec.
           #
