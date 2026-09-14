@@ -29,12 +29,12 @@
 loops:
   - name: work-loop
     schedule: "17 */4 * * *"
-    driver: routine
-    skill: work-loop
-    enabled: false
-    armed_by: null
+    driver: github-action
+    workflow: work-loop.yml
+    enabled: true
+    armed_by: .github/workflows/work-loop.yml
     owner: Vinylfigure
-    notes: "arming tracked in issue #23"
+    notes: "one ready task: issue per firing, PR delivery, proposals only when idle; liveness log #159. Replaces the claude.ai Routine trig_01VdXGtGRVpQUA3yu73UFCTC (armed 2026-08-17 via #23, auto-disabled 2026-08-31) — overlord DL-2026-09-14-routines-in-repo"
 
   - name: fleet-status
     schedule: "17 */4 * * *"
