@@ -14,8 +14,8 @@ name: work-loop
 # on repos idle >60 days. The last step fails the run when neither exists.
 on:
   schedule:
-    # 4-hourly at :17 — off the top of the hour (the Routine's own minute).
-    - cron: "17 */4 * * *"
+    # 6-hourly at :17 — off the top of the hour (the Routine's own minute).
+    - cron: "17 */6 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -36,8 +36,45 @@ jobs:
       # Same as ci.yml: the Prisma SQLite file the tests read.
       DATABASE_URL: "file:./dev.db"
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Gate on backlog state before anything else costs a token, a runner
+      # minute past this step, or an email: scripts/ready-sweep.sh (overlord)
+      # is the mechanical half of the work-loop skill's step-1 "ready" test
+      # (L-064: unread must never render like empty). An empty backlog is a
+      # green run with a liveness line on #159 and never touches the
+      # credential; a ready task still runs the real gate below, so a
+      # missing token still fails loudly (a real signal, not spam).
+      - name: Ready sweep
+        id: sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ts="$(date -u +%FT%TZ)"
+          set +e
+          out="$(bash scripts/ready-sweep.sh Vinylfigure/intent-ide)"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::ready-sweep could not read the queue (exit 2) — unread, not empty; this is not the same as no ready task"
+            exit 1
+          fi
+          if [ -z "$out" ]; then
+            file="$(mktemp)"
+            echo "intent-ide work-loop | ${ts} | fired, did nothing, because ready-sweep found no ready task" > "$file"
+            gh issue comment 159 --body-file "$file"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "start=${ts}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Credential present
         id: creds
+        if: steps.sweep.outputs.ready == 'true'
         env:
           TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
@@ -47,10 +84,6 @@ jobs:
           fi
           printf 'credential present: %s chars\n' "${#TOKEN}"
           echo "start=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -75,6 +108,7 @@ jobs:
       # operator-boundary and the machinery gate holds changes to it.
       - uses: anthropics/claude-code-action@v1
         id: agent
+        if: steps.sweep.outputs.ready == 'true'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
@@ -100,7 +134,7 @@ jobs:
       # the model with a green step and no file when this workflow differs
       # from the default branch's (overlord L-20260915-action-branch-validation).
       - name: Keep the execution log
-        if: ${{ always() && steps.agent.outputs.execution_file != '' }}
+        if: ${{ always() && steps.sweep.outputs.ready == 'true' && steps.agent.outputs.execution_file != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: claude-execution-${{ github.run_id }}
@@ -112,7 +146,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          START: ${{ steps.creds.outputs.start }}
+          START: ${{ steps.sweep.outputs.start || steps.creds.outputs.start }}
           ROUTINE: intent-ide work-loop
           PREFIX: claude/
           LIVENESS_ISSUE: "159"
