@@ -28,7 +28,7 @@
 
 loops:
   - name: work-loop
-    schedule: "17 */4 * * *"
+    schedule: "17 */6 * * *"
     driver: github-action
     workflow: work-loop.yml
     enabled: true
