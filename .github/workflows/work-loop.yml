@@ -74,6 +74,7 @@ jobs:
       # is the one place in this repo that can, which is why this file is
       # operator-boundary and the machinery gate holds changes to it.
       - uses: anthropics/claude-code-action@v1
+        id: agent
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
@@ -90,6 +91,22 @@ jobs:
           # arbitrary execution wearing a narrow costume), plus the delivery
           # verbs claude.yml lacks, the resume verbs, and Actions reads.
           claude_args: --max-turns 150 --allowedTools "Read,Glob,Grep,Edit,Write,TodoWrite,Bash(npm ci),Bash(npm run typecheck),Bash(npm run lint),Bash(npm run test),Bash(npm run build),Bash(npx prisma generate),Bash(git status:*),Bash(git diff:*),Bash(git add:*),Bash(git checkout:*),Bash(git branch:*),Bash(git commit:*),Bash(git push:*),Bash(git log:*),Bash(git fetch origin:*),Bash(git ls-remote origin:*),Bash(git stash:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr edit:*),Bash(gh pr list:*),Bash(gh pr checkout:*),Bash(gh pr ready:*),Bash(gh pr comment:*),Bash(gh issue create:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh run list:*),Bash(gh run view:*)"
+
+      # The action hides the model's transcript from the job log; the
+      # execution file is the only way to read a silent firing (overlord run
+      # 35010911952: 56 turns, 32 permission denials, no PR, no liveness
+      # line, nothing left to diagnose; this loop: three such runs on
+      # 2026-09-15). Kept 14 days. Guarded on the output: the action skips
+      # the model with a green step and no file when this workflow differs
+      # from the default branch's (overlord L-20260915-action-branch-validation).
+      - name: Keep the execution log
+        if: ${{ always() && steps.agent.outputs.execution_file != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-execution-${{ github.run_id }}
+          path: ${{ steps.agent.outputs.execution_file }}
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Delivery audit
         if: always()
