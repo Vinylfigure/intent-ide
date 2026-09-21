@@ -25,13 +25,13 @@ typecheck, lint, 1412 unit tests, build, 12 e2e, and 5 live-model tests against 
 
 ## [2026-09-02] Score related passages, and say when nothing is related — branch `feat/reading-quality`
 
-Reported symptom: a passage about "Jira + Splunk access-grant reconciliation" surfaced two unrelated passages, labelled `references ("Sections 8")` and `references ("Sections 8") → references ("Aegis")`. Four independent causes, all measured against the real document with `scripts/calibrate-relevance.ts`.
+Reported symptom: a passage about "Jira + Splunk access-grant reconciliation" surfaced two unrelated passages, labelled `references ("Sections 8")` and `references ("Sections 8") → references ("a project name")`. Four independent causes, all measured against the real document with `scripts/calibrate-relevance.ts`.
 
 ### Fixed
 1. No relevance threshold — `collectRelated` returned the top N neighbours because they were the only N. `collectRelatedDetail` now scores every candidate and reports what it rejected.
 2. `/\bsections?\s+(\d+)/` matched the plural range in "Study Sections 8–14" (a reading instruction) and resolved "8" as a positional index into the heading list. Now singular-only, ranges/lists excluded, resolved against the headings' own numbering.
 3. Any bolded lead-in (`**Best use**:`, `**Note**:`) counted as a definition. Now requires a real definition to follow, rejects document furniture, skips headings.
-4. A project-wide term ("Aegis") linked every containing block to one definer, making the whole document one hop from itself. Terms linking more than `clamp(12% of blocks, 4, 8)` now produce NO edges and are recorded in `graph.hubTerms` — dropped, not truncated.
+4. A project-wide term ("a project name") linked every containing block to one definer, making the whole document one hop from itself. Terms linking more than `clamp(12% of blocks, 4, 8)` now produce NO edges and are recorded in `graph.hubTerms` — dropped, not truncated.
 
 ### Added
 - Score is `structural × corroboration` (IDF-weighted vocabulary overlap, gates every multi-hop path unconditionally). The 0.45 cut-off is derived: the arithmetic separating the weakest reject (0.372) from the weakest accept (0.630) is written out at the constant.
@@ -41,7 +41,7 @@ Reported symptom: a passage about "Jira + Splunk access-grant reconciliation" su
 - Thread hide/collapse: a collapse chevron per card, dismissal hides the card and drops it from the "N review items" count, and "Show N resolved" brings everything back. `hidden` is a view flag only — `remove()` remains whole-document-deletion only, and applying does NOT hide.
 
 ### Notes
-Measured on `Sierra_Onsite_Deep_Study_Guide.md` (512 blocks): the `Sections 8` edge no longer exists, "Aegis" is dropped as a hub term (with Authorization, Integrity, Evidence), and 192 of 320 candidates are now cut. Two pre-existing `cascade-review.spec.ts` assertions (broken before this work, verified at the merge commit) were realigned to the live UI — the Changes-panel summary was shortened to fit truncation, and the change-set status became a dropdown with a chevron.
+Measured on `real-study-guide.md` (512 blocks): the `Sections 8` edge no longer exists, "a project name" is dropped as a hub term (with Authorization, Integrity, Evidence), and 192 of 320 candidates are now cut. Two pre-existing `cascade-review.spec.ts` assertions (broken before this work, verified at the merge commit) were realigned to the live UI — the Changes-panel summary was shortened to fit truncation, and the change-set status became a dropdown with a chevron.
 
 ### Verification
 typecheck, lint, 1379 unit tests, 7 e2e green.
@@ -73,7 +73,7 @@ Native tables landed in the parser, but nothing re-parsed a document already sto
 - Hooked into `loadDocumentJson` (the single choke point both editor mount and document-switch read through) and persisted immediately, since an unsaved migration would redo on every load. The table's `blockId` is carried over so existing annotations/doc-graph/audit records still resolve.
 
 ### Added
-- `tests/reading-quality.spec.ts`, the deterministic e2e suite: real table nodes, single-cell Google-Docs callout tables, light computed background (the bug was light-on-#2d2a26), legacy conversion across a reload, and (when the file is present) the real 41-table `Sierra_Onsite_Deep_Study_Guide.md` rendering with no pipe left in any `<pre>`.
+- `tests/reading-quality.spec.ts`, the deterministic e2e suite: real table nodes, single-cell Google-Docs callout tables, light computed background (the bug was light-on-#2d2a26), legacy conversion across a reload, and (when the file is present) the real 41-table `real-study-guide.md` rendering with no pipe left in any `<pre>`.
 
 ### Verification
 15 migration unit tests, 6 store-boundary tests, 5 e2e tests green.
@@ -211,7 +211,7 @@ This firing found and reported a blocker rather than shipping a feature/bugfix; 
 - **Next firing:** check whether `main`'s most recent push-triggered `CI` run is green before doing anything else. If still red with the same 0ms-billable-runtime signature, it's the same operator-side block — comment again only if something material has changed; otherwise treat hosted CI as unusable for now and consider proceeding with local `typecheck`/`lint`/`test` (per the `test` skill) rather than re-running the same diagnostic report every 4 hours.
 
 ### Resolved
-- **2026-09-01 (fleet merge sweep):** the outage was account-level GitHub Actions capacity, not this repo — the identical `runner_id: 0` / empty `runner_name` / logs-404 signature hit `Vinylfigure/aegis-sentinel` and `Vinylfigure/job-search` over the same window. It cleared on its own (aegis-sentinel ran clean at 2026-09-01T00:50Z); `rerun_failed_jobs` on this repo's four stuck runs then returned **green with real durations** on the same unchanged head SHAs, proving the red was never the diffs. No code change was needed or made.
+- **2026-09-01 (fleet merge sweep):** the outage was account-level GitHub Actions capacity, not this repo — the identical `runner_id: 0` / empty `runner_name` / logs-404 signature hit `Vinylfigure/aegis-sentinel` and a private sibling over the same window. It cleared on its own (aegis-sentinel ran clean at 2026-09-01T00:50Z); `rerun_failed_jobs` on this repo's four stuck runs then returned **green with real durations** on the same unchanged head SHAs, proving the red was never the diffs. No code change was needed or made.
 
 ## [2026-08-28] `getDocGraph` inflight-dedupe capability mismatch — fix delivered, PR #131 open (not yet merged)
 
