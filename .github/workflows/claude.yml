@@ -20,11 +20,27 @@ concurrency:
 
 jobs:
   claude:
+    # The `@claude` mention states intent; it authorizes nothing. This repo is
+    # public, so without an actor gate any GitHub user could wake a job holding
+    # `contents: write` and the operator's subscription credential. Each event
+    # is checked against the author of the thing carrying the mention -- never
+    # against the issue author, which a stranger's comment on the operator's
+    # own issue would otherwise satisfy. `overlord-ui-joe[bot]` stays allowed:
+    # the operator's own deployment answers here and its comments carry no
+    # collaborator association of their own.
     if: |
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))) ||
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+      (github.event_name == 'issues' &&
+        (github.actor == 'overlord-ui-joe[bot]' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)) &&
+        (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))) ||
+      (github.event_name == 'issue_comment' &&
+        (github.actor == 'overlord-ui-joe[bot]' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) &&
+        contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' &&
+        (github.actor == 'overlord-ui-joe[bot]' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) &&
+        contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' &&
+        (github.actor == 'overlord-ui-joe[bot]' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) &&
+        contains(github.event.review.body, '@claude'))
     runs-on: ubuntu-latest
     # The primary cost bound. A stuck agent otherwise runs to GitHub's 6-hour
     # default, burning the shared subscription quota that also feeds live
