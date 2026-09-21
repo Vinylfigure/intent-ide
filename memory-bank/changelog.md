@@ -25,13 +25,13 @@ typecheck, lint, 1412 unit tests, build, 12 e2e, and 5 live-model tests against 
 
 ## [2026-09-02] Score related passages, and say when nothing is related — branch `feat/reading-quality`
 
-Reported symptom: a passage about "Jira + Splunk access-grant reconciliation" surfaced two unrelated passages, labelled `references ("Sections 8")` and `references ("Sections 8") → references ("a project name")`. Four independent causes, all measured against the real document with `scripts/calibrate-relevance.ts`.
+Reported symptom: a passage about "Jira + Splunk access-grant reconciliation" surfaced two unrelated passages, labelled `references ("Sections 8")` and `references ("Sections 8") → references ("Aegis")`. Four independent causes, all measured against the real document with `scripts/calibrate-relevance.ts`.
 
 ### Fixed
 1. No relevance threshold — `collectRelated` returned the top N neighbours because they were the only N. `collectRelatedDetail` now scores every candidate and reports what it rejected.
 2. `/\bsections?\s+(\d+)/` matched the plural range in "Study Sections 8–14" (a reading instruction) and resolved "8" as a positional index into the heading list. Now singular-only, ranges/lists excluded, resolved against the headings' own numbering.
 3. Any bolded lead-in (`**Best use**:`, `**Note**:`) counted as a definition. Now requires a real definition to follow, rejects document furniture, skips headings.
-4. A project-wide term ("a project name") linked every containing block to one definer, making the whole document one hop from itself. Terms linking more than `clamp(12% of blocks, 4, 8)` now produce NO edges and are recorded in `graph.hubTerms` — dropped, not truncated.
+4. A project-wide term ("Aegis") linked every containing block to one definer, making the whole document one hop from itself. Terms linking more than `clamp(12% of blocks, 4, 8)` now produce NO edges and are recorded in `graph.hubTerms` — dropped, not truncated.
 
 ### Added
 - Score is `structural × corroboration` (IDF-weighted vocabulary overlap, gates every multi-hop path unconditionally). The 0.45 cut-off is derived: the arithmetic separating the weakest reject (0.372) from the weakest accept (0.630) is written out at the constant.
@@ -41,7 +41,7 @@ Reported symptom: a passage about "Jira + Splunk access-grant reconciliation" su
 - Thread hide/collapse: a collapse chevron per card, dismissal hides the card and drops it from the "N review items" count, and "Show N resolved" brings everything back. `hidden` is a view flag only — `remove()` remains whole-document-deletion only, and applying does NOT hide.
 
 ### Notes
-Measured on `real-study-guide.md` (512 blocks): the `Sections 8` edge no longer exists, "a project name" is dropped as a hub term (with Authorization, Integrity, Evidence), and 192 of 320 candidates are now cut. Two pre-existing `cascade-review.spec.ts` assertions (broken before this work, verified at the merge commit) were realigned to the live UI — the Changes-panel summary was shortened to fit truncation, and the change-set status became a dropdown with a chevron.
+Measured on `real-study-guide.md` (512 blocks): the `Sections 8` edge no longer exists, "Aegis" is dropped as a hub term (with Authorization, Integrity, Evidence), and 192 of 320 candidates are now cut. Two pre-existing `cascade-review.spec.ts` assertions (broken before this work, verified at the merge commit) were realigned to the live UI — the Changes-panel summary was shortened to fit truncation, and the change-set status became a dropdown with a chevron.
 
 ### Verification
 typecheck, lint, 1379 unit tests, 7 e2e green.

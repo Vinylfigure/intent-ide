@@ -30,7 +30,7 @@ const FIXTURE_DOC = [
   '| Area | Current evidence | Gap | Priority |',
   '| :---- | :---- | :---- | :---- |',
   '| Control engineering | Branch protection as preventive control. | None conceptually. | MEDIUM |',
-  '| GCP | A project name reference: CAI discovery, Cloud Run, Pub/Sub. | Breadth of service vocabulary. | HIGH |',
+  '| GCP | Aegis reference: CAI discovery, Cloud Run, Pub/Sub. | Breadth of service vocabulary. | HIGH |',
   '',
   '## 2. Terraform / Atlantis "sniff test"',
   '',
