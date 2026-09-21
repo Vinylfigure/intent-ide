@@ -19,7 +19,8 @@ import path from 'node:path'
  * document is what actually exposed the bug (41 GFM tables, including the
  * single-cell callouts a Google Docs export emits).
  */
-const REAL_DOC = path.join(os.homedir(), 'Downloads', 'Sierra_Onsite_Deep_Study_Guide.md')
+const REAL_DOC = process.env.INTENT_IDE_REAL_DOC
+  ?? path.join(os.homedir(), 'Downloads', 'real-study-guide.md')
 
 const FIXTURE_DOC = [
   '# Deep Study Guide',
@@ -105,7 +106,7 @@ test.describe('tables render as tables, not as dark code blocks', () => {
   })
 
   test('the real study guide renders every table', async ({ page }) => {
-    test.skip(!fs.existsSync(REAL_DOC), 'Sierra study guide not present on this machine')
+    test.skip(!fs.existsSync(REAL_DOC), 'real study guide not present on this machine')
     await loadDocument(page, fs.readFileSync(REAL_DOC, 'utf8'))
 
     const tables = await page.locator('.ProseMirror table').count()

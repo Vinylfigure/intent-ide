@@ -56,7 +56,7 @@ describe('docJsonToText', () => {
             {
               type: 'table_row',
               content: [
-                { type: 'table_cell', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Sierra' }] }] },
+                { type: 'table_cell', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Sable' }] }] },
                 { type: 'table_cell', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Ready' }] }] },
               ],
             },
@@ -65,6 +65,6 @@ describe('docJsonToText', () => {
       ],
     }
 
-    expect(docJsonToText(tableDoc)).toBe('| Name | Status |\n| Sierra | Ready |')
+    expect(docJsonToText(tableDoc)).toBe('| Name | Status |\n| Sable | Ready |')
   })
 })

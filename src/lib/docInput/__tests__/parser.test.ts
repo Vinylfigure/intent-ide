@@ -10,14 +10,14 @@ describe('document input tables', () => {
     const doc = parseTextToDoc([
       '| Name | Status |',
       '| --- | --- |',
-      '| Sierra | Ready |',
+      '| Sable | Ready |',
     ].join('\n'))
 
     expect(doc.childCount).toBe(1)
     expect(doc.firstChild?.type).toBe(schema.nodes.table)
     expect(doc.firstChild?.child(0).child(0).type).toBe(schema.nodes.table_header)
     expect(doc.firstChild?.child(1).child(0).type).toBe(schema.nodes.table_cell)
-    expect(doc.textContent).toBe('NameStatusSierraReady')
+    expect(doc.textContent).toBe('NameStatusSableReady')
     expect(doc.toJSON()).not.toMatchObject({ content: [{ type: 'code_block' }] })
   })
 
@@ -88,7 +88,7 @@ describe('document input tables', () => {
     const doc = parseHtmlToDoc(`
       <table>
         <thead><tr><th>Name</th><th>Notes</th></tr></thead>
-        <tbody><tr><td>Sierra</td><td>A | B<script>alert(1)</script></td></tr></tbody>
+        <tbody><tr><td>Sable</td><td>A | B<script>alert(1)</script></td></tr></tbody>
       </table>
     `)
     expect(doc.firstChild?.type).toBe(schema.nodes.table)

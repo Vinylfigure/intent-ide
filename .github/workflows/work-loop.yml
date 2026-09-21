@@ -7,7 +7,7 @@ name: work-loop
 # operator ruling 2026-09-14, overlord docs/DECISIONS.md
 # DL-2026-09-14-routines-in-repo: this repo, not an account-level scheduler,
 # is the source of truth for whether the loop runs. Same shape as
-# Vinylfigure/Plutus/.github/workflows/work-loop.yml.
+# a private sibling's work-loop.yml.
 #
 # Judge this schedule by its artifact (a PR or a liveness line per firing),
 # never by green runs: GitHub cron is delayed under load and silently skipped
@@ -100,9 +100,9 @@ jobs:
           npx prisma generate
           npx prisma migrate deploy
 
-      # No GH_TOKEN override: the action's own token backs `gh` (Plutus#32).
+      # No GH_TOKEN override: the action's own token backs `gh` (a private sibling's #32).
       # File tools are listed EXPLICITLY — prompt mode treats --allowedTools
-      # as a strict allowlist (Plutus firing #1). claude.yml's dispatch grant
+      # as a strict allowlist (a private sibling's first firing). claude.yml's dispatch grant
       # cannot deliver a PR at all (no commit, push or gh) — this loop's grant
       # is the one place in this repo that can, which is why this file is
       # operator-boundary and the machinery gate holds changes to it.
